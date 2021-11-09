@@ -3,7 +3,7 @@ import typing
 from datetime import datetime, timedelta
 from typing import List
 
-from custom_components.light_scene.entity_management import StateDict
+from custom_components.magic_lights.entity_management import StateDict
 from homeassistant.const import STATE_OFF, STATE_ON
 from homeassistant.core import State
 

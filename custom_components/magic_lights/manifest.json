@@ -1,11 +1,15 @@
 {
-  "domain": "light_scene",
-  "name": "My testing component",
-  "documentation": "https://github.com/home-assistant/example-custom-config/tree/master/custom_components/example_load_platform/",
+  "domain": "magic_lights",
+  "name": "Magic Lights",
+  "documentation": "https://github.com/justanotherariel/hass_MagicLights",
   "dependencies": [
     "light"
   ],
-  "codeowners": [],
+  "codeowners": [
+    "@justanotherariel"
+  ],
   "requirements": [],
-  "version": "0.1"
+  "issue_tracker": "https://github.com/justanotherariel/hass_MagicLights/issues",
+  "version": "0.1",
+  "config_flow": false
 }

@@ -241,7 +241,7 @@ class Scene:
 
 
 class Pipe:
-    effect_folder_path = "custom_components/light_scene/effects/"
+    effect_folder_path = "custom_components/magic_lights/effects/"
     effect_main_class = "Main"
 
     def __init__(

@@ -1,4 +1,4 @@
-DOMAIN = "light_scene"
+DOMAIN = "magic_lights"
 
 PREDEFINED_SCENES = {
     "custom": {

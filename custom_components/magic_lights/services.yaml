@@ -1,0 +1,26 @@
+activate_scene:
+    name: Activate Scene
+    description: Activates specified scene.
+    fields:
+        zone:
+            name: Zone
+            description: Selected Zone
+            required: true
+            advanced: false
+            example: "bedroom"
+        scene:
+            name: Scene
+            description: Selected Scene
+            required: true
+            advanced: false
+            example: "off"
+
+disable_entities:
+    name: Disable Entities
+    description: Disable an entity of a room to exclude it from updating.
+    target:
+
+enable_entities:
+    name: Enable Entities
+    description: Re-enable an entity that got disabled.
+    target:
