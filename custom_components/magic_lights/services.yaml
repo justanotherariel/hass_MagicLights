@@ -1,6 +1,6 @@
 activate_scene:
     name: Activate Scene
-    description: Activates specified scene.
+    description: Activates the specified scene.
     fields:
         zone:
             name: Zone
@@ -15,12 +15,17 @@ activate_scene:
             advanced: false
             example: "off"
 
-disable_entities:
-    name: Disable Entities
+disable_entity:
+    name: Disable Entity
     description: Disable an entity of a room to exclude it from updating.
     target:
 
-enable_entities:
-    name: Enable Entities
+enable_entity:
+    name: Enable Entity
     description: Re-enable an entity that got disabled.
+    target:
+
+reset_scene:
+    name: Reset Scene
+    description: Reset a scene to its default settings.
     target:

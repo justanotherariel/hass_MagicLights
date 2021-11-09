@@ -1,6 +1,9 @@
+from custom_components.magic_lights.data_structures.living_space import Zone
+from custom_components.magic_lights.data_structures.magic import Magic
 import logging
 
 from homeassistant.helpers.entity import Entity
+from custom_components.magic_lights.helpers.entity_id import substitute_group_names
 
 from .const import DOMAIN
 
@@ -16,10 +19,10 @@ async def async_setup_platform(hass, config, add_entities, discovery_info=None):
     if discovery_info is None:
         return
 
-    living_space = hass.data[DOMAIN]["living_space"]
+    _magic: Magic = hass.data[DOMAIN]
 
     new_devices = []
-    for zone in living_space.zones:
+    for zone in _magic.living_space.values():
         new_devices.append(ZoneSensor(zone))
 
     if new_devices:
@@ -31,13 +34,9 @@ class ZoneSensor(Entity):
 
     should_poll = False
 
-    def __init__(self, zone):
+    def __init__(self, zone: Zone):
         """Initialize the sensor."""
         self._zone = zone
-
-        self._available_scenes = []
-        for scene_name in zone.scenes_config:
-            self._available_scenes.append(scene_name)
 
     @property
     def name(self):
@@ -59,17 +58,16 @@ class ZoneSensor(Entity):
         if self._zone.current_scene == None:
             return "Initializing"
 
-        return self._zone.current_scene.name
+        return self._zone.current_scene
 
     @property
-    def device_state_attributes(self):
+    def state_attributes(self):
         """Return the state attributes of the device."""
-        attr = {}
-        attr["available scenes"] = self._available_scenes
-        attr["entities"] = self._zone.entity_controller.entity_id_list
-        attr["disabled entities"] = self._zone.entity_controller.disabled_entities
-
-        return attr
+        return {
+            "available scenes": list(self._zone.scenes.keys()),
+            "entities": substitute_group_names(self._zone.entities, self._zone),
+            "disabled entities": self._zone.disabled_entities,
+        }
 
     @property
     def available(self) -> bool:
@@ -77,10 +75,19 @@ class ZoneSensor(Entity):
 
     async def async_added_to_hass(self):
         """Run when this Entity has been added to HA."""
-        self._zone.add_callback(self.async_write_ha_state)
+
+        def callback_wrapper():
+            # Hack for Updating state attributes in HASS Frontend.
+            # TODO Check if a proper solution is available.
+            current_state = self.state
+            self._zone.current_scene = "Updating Attributes"
+            self.async_write_ha_state()
+            self._zone.current_scene = current_state
+            self.async_write_ha_state()
+
+        self._zone.zone_sensor_callback = callback_wrapper
 
     async def async_will_remove_from_hass(self):
         """Entity being removed from hass."""
         # The opposite of async_added_to_hass. Remove any registered call backs here.
         # self._roller.remove_callback(self.async_write_ha_state)
-        pass

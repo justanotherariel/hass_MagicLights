@@ -1,0 +1,97 @@
+{
+    "onoff": {
+        "Bright": {}
+    },
+    "brightness": {
+        "Bright": {
+            "brightness": 255
+        },
+        "Dimmed": {
+            "brightness": 77
+        },
+        "Nightlight": {
+            "brightness": 1
+        }
+    },
+    "color_temp": {
+        "Bright": {
+            "brightness": 255,
+            "color_temp": 370
+        },
+        "Energize": {
+            "brightness": 255,
+            "color_temp": 156
+        },
+        "Concentrate": {
+            "brightness": 255,
+            "color_temp": 233
+        },
+        "Read": {
+            "brightness": 255,
+            "color_temp": 346
+        },
+        "Relax": {
+            "brightness": 145,
+            "color_temp": 447
+        },
+        "Dimmed": {
+            "brightness": 77,
+            "color_temp": 370
+        },
+        "Nightlight": {
+            "brightness": 1,
+            "color_temp": 370
+        }
+    },
+    "xy": {
+        "Bright": {
+            "brightness": 255,
+            "xy_color": [
+                0.457,
+                0.41
+            ]
+        },
+        "Energize": {
+            "brightness": 255,
+            "xy_color": [
+                0.314,
+                0.331
+            ]
+        },
+        "Concentrate": {
+            "brightness": 255,
+            "xy_color": [
+                0.37,
+                0.372
+            ]
+        },
+        "Read": {
+            "brightness": 255,
+            "xy_color": [
+                0.447,
+                0.406
+            ]
+        },
+        "Relax": {
+            "brightness": 145,
+            "xy_color": [
+                0.502,
+                0.414
+            ]
+        },
+        "Dimmed": {
+            "brightness": 77,
+            "xy_color": [
+                0.459,
+                0.408
+            ]
+        },
+        "Nightlight": {
+            "brightness": 1,
+            "xy_color": [
+                0.561,
+                0.404
+            ]
+        }
+    }
+}
