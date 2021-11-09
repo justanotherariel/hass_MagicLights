@@ -1,0 +1,7 @@
+{
+    "name": "Magic Lights",
+    "domains": [
+        "sensor"
+    ],
+    "iot_class": "Local Push"
+}

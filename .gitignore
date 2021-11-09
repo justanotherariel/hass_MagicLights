@@ -1,0 +1,7 @@
+__pycache__
+pythonenv*
+venv
+.venv
+.coverage
+
+.devcontainer/configuration.yaml

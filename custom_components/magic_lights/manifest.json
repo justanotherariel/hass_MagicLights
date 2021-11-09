@@ -1,0 +1,11 @@
+{
+  "domain": "light_scene",
+  "name": "My testing component",
+  "documentation": "https://github.com/home-assistant/example-custom-config/tree/master/custom_components/example_load_platform/",
+  "dependencies": [
+    "light"
+  ],
+  "codeowners": [],
+  "requirements": [],
+  "version": "0.1"
+}
