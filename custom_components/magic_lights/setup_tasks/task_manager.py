@@ -1,7 +1,5 @@
 from __future__ import annotations
 
-from os import posix_fadvise
-from typing import Dict, List
 from custom_components.magic_lights.magicbase.share import get_magic
 from custom_components.magic_lights.setup_tasks.task import SetupTask
 import asyncio
@@ -19,10 +17,10 @@ class TaskManager:
         self.magic = get_magic()
         self.log = logging.getLogger(__name__)
 
-        self.__tasks: Dict[str, SetupTask] = {}
+        self.__tasks: dict[str, SetupTask] = {}
 
     @property
-    def tasks(self) -> List[SetupTask]:
+    def tasks(self) -> list[SetupTask]:
         """Return all list of all tasks."""
         return list(self.__tasks.values())
 

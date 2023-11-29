@@ -1,8 +1,6 @@
 import asyncio
-import enum
 from custom_components.magic_lights.plugin_effects import Effect
-import logging
-from typing import Callable, List
+from collections.abc import Callable
 import numpy as np
 import re
 
@@ -37,7 +35,7 @@ class Transition(Effect):
     def __init__(
         self,
         async_call_service: Callable[[str, str, dict], bool],
-        entities: List[str],
+        entities: list[str],
         conf: any,
     ):
         super().__init__(async_call_service, entities, conf)
@@ -120,12 +118,12 @@ class Transition(Effect):
 
 
 def generate_transition(
-    color1: List[int],
-    color2: List[int],
+    color1: list[int],
+    color2: list[int],
     color_space: str,
     transition_color_space: str,
     frames_per_transtion: int,
-) -> List[List[int]]:
+) -> list[list[int]]:
     # Convert Colors to Transition Color Space (tcs)
     color1_tcs = cspace_convert(color1, color_space, transition_color_space)
     color2_tcs = cspace_convert(color2, color_space, transition_color_space)
@@ -154,7 +152,7 @@ def convert_colors(colors, color_space: str, target_color_space: str):
     return cache
 
 
-def hex_to_rgb(hex_color: str) -> List[int]:
+def hex_to_rgb(hex_color: str) -> list[int]:
     if hex_color[0] != "#" or len(hex_color) != 7:
         return None
     hex_color = hex_color[1:7]

@@ -1,9 +1,5 @@
-from types import new_class
-from custom_components.magic_lights.const import DOMAIN
 import logging
-from custom_components.magic_lights.data_structures.living_space import Zone
 from homeassistant.core import Event, State, callback
-from homeassistant.const import STATE_OFF
 
 from custom_components.magic_lights.magicbase.share import get_magic
 

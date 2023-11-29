@@ -1,4 +1,3 @@
-from typing import Dict
 
 from homeassistant.components.light import (
     COLOR_MODE_ONOFF,
@@ -29,7 +28,7 @@ class Static(Effect):
             "Nightlight",
         ]
 
-        self.service_data: Dict[str, Dict] = {}
+        self.service_data: dict[str, dict] = {}
 
         if "preset" in self.conf:
             if self.conf["preset"] not in supported_scenes:

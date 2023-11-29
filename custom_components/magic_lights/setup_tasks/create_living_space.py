@@ -1,11 +1,8 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from custom_components.magic_lights.data_structures.magic import Magic
 from custom_components.magic_lights.setup_tasks.task import SetupTask
-from custom_components.magic_lights.helpers.service_call import create_async_call
-from typing import Dict, Tuple
 
 from custom_components.magic_lights.magicbase.share import get_magic
 from custom_components.magic_lights.data_structures.living_space import (
@@ -85,7 +82,7 @@ class Task(SetupTask):
         self.stage = 0
 
     async def execute(self):
-        zones: Dict[str, Zone] = {}
+        zones: dict[str, Zone] = {}
 
         for zone_name, zone_conf in self.magic.raw.items():
             zones.update({zone_name: _init_zone(self.magic, zone_name, zone_conf)})

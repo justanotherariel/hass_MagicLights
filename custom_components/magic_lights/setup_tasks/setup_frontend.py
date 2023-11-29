@@ -58,7 +58,7 @@ def setup_frontend():
                 "name": "hacs-frontend",
                 "embed_iframe": True,
                 "trust_external": False,
-                "js_url": f"/magiclights_files/frontend/entrypoint.js",
+                "js_url": "/magiclights_files/frontend/entrypoint.js",
             }
         },
         require_admin=True,

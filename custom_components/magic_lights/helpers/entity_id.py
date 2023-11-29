@@ -1,8 +1,7 @@
 from custom_components.magic_lights.data_structures.living_space import Zone
-from typing import Dict, List
 
 
-def substitute_group_names(entities: List[str], zone: Zone) -> List[str]:
+def substitute_group_names(entities: list[str], zone: Zone) -> list[str]:
     result = []
 
     for entity in entities:
@@ -25,7 +24,7 @@ def get_name(entity_id: str) -> str:
     return entity_id.rsplit(".")[1]
 
 
-def get_unused_entities(zone: Zone, scene_name: str) -> List[str]:
+def get_unused_entities(zone: Zone, scene_name: str) -> list[str]:
     zone_entities = set(substitute_group_names(zone.entities, zone))
     used_entities = set()
 

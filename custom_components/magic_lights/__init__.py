@@ -1,9 +1,7 @@
 """Light Scene Integration for better and dynamic Light Settings."""
 from homeassistant.core import HomeAssistant
-import voluptuous as vol
 
 from .const import DOMAIN
-from .configuration_schema import magic_lights_config_schema
 from .magicbase.core import magic_yaml_setup
 
 PLATFORMS = ["sensor"]

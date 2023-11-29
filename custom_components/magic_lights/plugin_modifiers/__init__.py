@@ -1,6 +1,6 @@
 """Modifier Plugins used in Magic Lights"""
 import logging
-from typing import Callable, List, Tuple
+from collections.abc import Callable
 
 from custom_components.magic_lights.data_structures.magic import Magic
 from custom_components.magic_lights.magicbase.share import get_magic
@@ -10,7 +10,7 @@ class Modifier:
     def __init__(
         self,
         async_call_service: Callable[[str, str, dict], bool],
-        entities: List[str],
+        entities: list[str],
         conf: any,
     ):
         self.log = logging.getLogger(__name__)
@@ -25,5 +25,5 @@ class Modifier:
 
     def update(
         self, domain: str, service: str, service_data: dict
-    ) -> Tuple[str, str, dict]:
+    ) -> tuple[str, str, dict]:
         raise NotImplementedError

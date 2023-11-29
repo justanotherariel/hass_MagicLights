@@ -3,14 +3,11 @@ from custom_components.magic_lights.helpers.entity_id import (
     get_domain,
     get_unused_entities,
 )
-from typing import List
 
 from custom_components.magic_lights.data_structures.living_space import Pipe, Scene
 from custom_components.magic_lights.magicbase.share import get_magic
 import logging
 
-from homeassistant.core import Context
-from custom_components.magic_lights.const import DOMAIN
 
 
 class SceneManager:
@@ -70,7 +67,7 @@ class SceneManager:
             if not task.cancelled():
                 task.cancel()
 
-    def _start_pipe(self, pipe: Pipe) -> List[asyncio.Task]:
+    def _start_pipe(self, pipe: Pipe) -> list[asyncio.Task]:
         tasks = []
 
         # Start Modifers

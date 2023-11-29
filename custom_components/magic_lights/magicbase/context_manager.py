@@ -1,8 +1,5 @@
 import logging
-import time
 
-from typing import List
-from custom_components.magic_lights.magicbase.share import get_magic
 from homeassistant.core import Context
 
 _LOGGER = logging.getLogger(__name__)
@@ -12,10 +9,10 @@ _LOGGER = logging.getLogger(__name__)
 # TODO: Periodically check and delete old context entries.
 
 class ContextManager:
-    _created_contexts: List[str] = None
+    _created_contexts: list[str] = None
 
     def __init__(self) -> None:
-        self._created_contexts: List[Context] = []
+        self._created_contexts: list[Context] = []
 
     def create_context(self) -> Context:
         context = Context()

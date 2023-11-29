@@ -1,8 +1,6 @@
 from custom_components.magic_lights.plugin_effects import Effect
-import logging
-from typing import Callable, List
+from collections.abc import Callable
 
-from homeassistant.core import HomeAssistant
 
 
 CONFIG_SCHEMA = None
@@ -15,7 +13,7 @@ class Custom(Effect):
     def __init__(
         self,
         async_call_service: Callable[[str, str, dict], bool],
-        entities: List[str],
+        entities: list[str],
         conf: any,
     ):
         super().__init__(async_call_service, entities, conf)

@@ -2,7 +2,7 @@
 
 
 import logging
-from typing import Callable, List
+from collections.abc import Callable
 
 from custom_components.magic_lights.data_structures.magic import Magic
 from custom_components.magic_lights.magicbase.share import get_magic
@@ -12,7 +12,7 @@ class Effect:
     def __init__(
         self,
         async_call_service: Callable[[str, str, dict], bool],
-        entities: List[str],
+        entities: list[str],
         conf: any,
     ):
         self.log = logging.getLogger(__name__)

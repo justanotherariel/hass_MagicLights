@@ -2,7 +2,7 @@
 from __future__ import annotations
 from dataclasses import dataclass
 
-from typing import Dict, TYPE_CHECKING, List
+from typing import TYPE_CHECKING
 
 from homeassistant.core import HomeAssistant
 
@@ -20,7 +20,7 @@ class Magic:
 
     hass: HomeAssistant | None = None
     raw: dict | None = None  # Raw Config/DB Data which should get deserialized
-    living_space: Dict[str, Zone] | None = None
+    living_space: dict[str, Zone] | None = None
 
     plugin_manager: PluginManager | None = None
     scene_manager: SceneManager | None = None

@@ -2,7 +2,6 @@ from custom_components.magic_lights.helpers.entity_id import (
     substitute_group_names,
 )
 import math
-from typing import List
 from custom_components.magic_lights.magicbase.share import get_magic
 import logging
 import asyncio

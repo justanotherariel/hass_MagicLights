@@ -7,15 +7,14 @@ import importlib
 import inspect
 import pkgutil
 
-from typing import List
 from custom_components.magic_lights import plugin_effects, plugin_modifiers
 from custom_components.magic_lights.data_structures.plugin import Plugin
 from custom_components.magic_lights.helpers.service_call import create_async_call
 
 
 class PluginManager:
-    effect_descriptions: List[plugin_effects.Effect] = []
-    modifier_descriptions: List[plugin_modifiers.Modifier] = []
+    effect_descriptions: list[plugin_effects.Effect] = []
+    modifier_descriptions: list[plugin_modifiers.Modifier] = []
 
     def __init__(self) -> None:
         self.magic = get_magic()

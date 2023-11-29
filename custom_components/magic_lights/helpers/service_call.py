@@ -1,17 +1,13 @@
 from __future__ import annotations
-import base64
-from custom_components.magic_lights.const import DOMAIN
 from custom_components.magic_lights.magicbase.share import get_magic
 import logging
 from typing import TYPE_CHECKING
 
-from homeassistant.core import Context
-import ulid_transform
 
 _LOGGER = logging.getLogger(__name__)
 
 if TYPE_CHECKING:
-    from custom_components.magic_lights.data_structures.living_space import Pipe, Zone
+    from custom_components.magic_lights.data_structures.living_space import Pipe
 
 
 def create_async_call(pipe: Pipe) -> callable:
