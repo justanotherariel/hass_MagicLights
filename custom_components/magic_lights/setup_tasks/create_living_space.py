@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from custom_components.magic_lights.data_structures.magic import Magic
 from custom_components.magic_lights.setup_tasks.task import SetupTask
 from custom_components.magic_lights.helpers.service_call import create_async_call
 from typing import Dict, Tuple
@@ -58,7 +59,7 @@ def _init_scene(zone, name, conf: dict) -> Scene:
     return obj
 
 
-def _init_zone(name, conf: dict) -> Zone:
+def _init_zone(magic: Magic, name: str, conf: dict) -> Zone:
     obj = Zone()
 
     obj.name = name
@@ -67,6 +68,12 @@ def _init_zone(name, conf: dict) -> Zone:
 
     for scene_name, scene_conf in conf["scenes"].items():
         obj.scenes.update({scene_name: _init_scene(obj, scene_name, scene_conf)})
+
+    current_scene_off = True
+    for entity in obj.entities:
+        if magic.hass.states.get(entity) != "off":
+            current_scene_off = False
+    obj.current_scene = "off" if current_scene_off else "custom"
 
     return obj
 
@@ -81,6 +88,6 @@ class Task(SetupTask):
         zones: Dict[str, Zone] = {}
 
         for zone_name, zone_conf in self.magic.raw.items():
-            zones.update({zone_name: _init_zone(zone_name, zone_conf)})
+            zones.update({zone_name: _init_zone(self.magic, zone_name, zone_conf)})
 
         self.magic.living_space = zones
