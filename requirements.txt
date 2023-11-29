@@ -3,3 +3,7 @@ ruff==0.1.6
 homeassistant==2023.8.0
 colorlog==6.7.0
 colorspace
+
+# Fix: https://github.com/home-assistant/core/issues/95192
+urllib3==1.26.16
+git+https://github.com/boto/botocore

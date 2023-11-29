@@ -3,6 +3,7 @@
   "name": "Magic Lights",
   "documentation": "https://github.com/justanotherariel/hass_MagicLights",
   "dependencies": [
+    "http",
     "light"
   ],
   "codeowners": [
