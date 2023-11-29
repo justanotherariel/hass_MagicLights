@@ -14,7 +14,7 @@ PLATFORMS = ["sensor"]
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
-    """Setup Magic Lights"""
+    """Setup Magic Lights."""
 
     await magic_yaml_setup(hass, config)
 

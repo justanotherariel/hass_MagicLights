@@ -1,4 +1,4 @@
-"""Effect Plugins used in Magic Lights"""
+"""Effect Plugins used in Magic Lights."""
 
 
 import logging

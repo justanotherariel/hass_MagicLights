@@ -85,7 +85,7 @@ async def _valid_entity_id(hass: HomeAssistant, entity_id: str) -> bool:
 
     for _ in range(0, math.ceil(timeout_s / check_interval_s)):
         state = hass.states.get(entity_id)
-        if state == None:
+        if state is None:
             await asyncio.sleep(check_interval_s)
         else:
             return True

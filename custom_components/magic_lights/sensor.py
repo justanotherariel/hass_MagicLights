@@ -55,7 +55,7 @@ class ZoneSensor(Entity):
     @property
     def state(self):
         """Return the state of the sensor."""
-        if self._zone.current_scene == None:
+        if self._zone.current_scene is None:
             return "Initializing"
 
         return self._zone.current_scene

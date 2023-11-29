@@ -63,20 +63,11 @@ class Transition(Effect):
             self.colors = conf["colors"]
             self.color_space = conf["color_space"]
 
-        if "transition_color_space" in conf:
-            self.transition_color_space = conf["transition_color_space"]
-        else:
-            self.transition_color_space = "XYZ100"
+        self.transition_color_space = conf.get("transition_color_space", "XYZ100")
 
-        if "transition_time" in conf:
-            self.transition_time = conf["transition_time"]
-        else:
-            self.transition_time = 60
+        self.transition_time = conf.get("transition_time", 60)
 
-        if "update_rate_s" in conf:
-            self.update_rate_s = conf["update_rate_s"]
-        else:
-            self.update_rate_s = 10
+        self.update_rate_s = conf.get("update_rate_s", 10)
 
         fpt = self.transition_time / self.update_rate_s
         color_loop_tcs = []

@@ -62,7 +62,7 @@ class SceneManager:
         scene.zone.zone_sensor_callback()
 
     def stop_scene(self, zone_name: str):
-        """Stops a scene in a given zone. (only relevant for dynamic scenes)"""
+        """Stops a scene in a given zone. (only relevant for dynamic scenes)."""
         for task in self.magic.living_space[zone_name].current_tasks:
             if not task.cancelled():
                 task.cancel()

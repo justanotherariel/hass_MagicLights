@@ -1,1 +1,1 @@
-"""Data Structures for MagicLights"""
+"""Data Structures for MagicLights."""

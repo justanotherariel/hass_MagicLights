@@ -1,4 +1,4 @@
-"""Modifier Plugins used in Magic Lights"""
+"""Modifier Plugins used in Magic Lights."""
 import logging
 from collections.abc import Callable
 
