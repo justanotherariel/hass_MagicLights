@@ -6,7 +6,7 @@
 4. Download _all_ the files from the `custom_components/magic_lights/` directory (folder) in this repository.
 5. Place the files you downloaded in the new directory (folder) you created.
 6. Restart Home Assistant
-7. Configure Magic Lights in your configuration.yaml as described below.
+7. Configure Magic Lights in your configuration.yaml.
 
 # Installation (HACS)
 

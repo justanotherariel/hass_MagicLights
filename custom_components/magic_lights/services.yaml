@@ -15,17 +15,30 @@ activate_scene:
             advanced: false
             example: "off"
 
-disable_entity:
-    name: Disable Entity
-    description: Disable an entity of a room to exclude it from updating.
-    target:
+toggle_scene:
+    name: Toggle Scene
+    description: Toggle a scene between the chosen scene below and "off".
+    fields:
+        zone:
+            name: Zone
+            description: Selected Zone
+            required: true
+            advanced: false
+            example: "bedroom"
+        scene:
+            name: Scene
+            description: Selected Scene
+            required: true
+            advanced: false
+            example: "bright"
 
 enable_entity:
     name: Enable Entity
     description: Re-enable an entity that got disabled.
     target:
 
-reset_scene:
-    name: Reset Scene
-    description: Reset a scene to its default settings.
+disable_entity:
+    name: Disable Entity
+    description: Disable an entity of a room to exclude it from updating.
     target:
+

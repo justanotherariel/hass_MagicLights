@@ -1,0 +1,55 @@
+# https://www.home-assistant.io/integrations/default_config/
+default_config:
+
+# https://www.home-assistant.io/integrations/logger/
+logger:
+  default: info
+  logs:
+    custom_components.magic_lights: debug
+
+magic_lights:
+  bedroom:
+    entities:
+      - light.entrance_color_white_lights
+      - light.ceiling_lights
+      - light.kitchen_lights
+      - light.bed_light
+
+    groups:
+      main_lights:
+        - light.entrance_color_white_lights
+        - light.ceiling_lights
+        - light.kitchen_lights
+
+    scenes:
+      bright:
+        - entities:
+            - light.bed_light
+
+          effect:
+            name: static
+            conf:
+              preset: Bright
+
+      dimmed:
+        - entities:
+            - light.bed_light
+
+          effect:
+            name: static
+            conf:
+              preset: Dimmed
+
+      tokyo:
+        - entities:
+            - light.all
+
+          effect:
+            name: transitions
+            conf:
+
+              preset: pink-glow
+
+              transition_color_space: CIELab
+              transition_time: 30
+              update_rate_s: 5
