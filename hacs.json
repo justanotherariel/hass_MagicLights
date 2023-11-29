@@ -1,11 +1,7 @@
 {
     "name": "Magic Lights",
-    "render_readme": true,
-    "hide_default_branch": true,
     "zip_release": true,
     "filename": "magic_lights.zip",
-    "domains": [
-        "sensor"
-    ],
-    "iot_class": "Local Push"
+    "hide_default_branch": true,
+    "render_readme": true
 }
