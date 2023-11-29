@@ -1,10 +1,12 @@
 from __future__ import annotations
+import base64
 from custom_components.magic_lights.const import DOMAIN
 from custom_components.magic_lights.magicbase.share import get_magic
 import logging
 from typing import TYPE_CHECKING
 
 from homeassistant.core import Context
+import ulid_transform
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -40,9 +42,9 @@ def disabled_entity(pipe: Pipe, service_data: dict) -> bool:
 async def async_call_service(domain: str, service: str, service_data: dict):
     _LOGGER.debug("Updating state: %s", service_data)
 
-    context = Context(None, DOMAIN)
-
     magic = get_magic()
+
     return await magic.hass.services.async_call(
-        domain, service, service_data, context=context
+        domain, service, service_data,
+        context=magic.context_manager.create_context()
     )

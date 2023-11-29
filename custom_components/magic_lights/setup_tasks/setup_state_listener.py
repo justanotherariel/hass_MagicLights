@@ -2,7 +2,6 @@ from custom_components.magic_lights.magicbase.state_listener import StateListene
 from custom_components.magic_lights.magicbase.share import get_magic
 from custom_components.magic_lights.setup_tasks.task import SetupTask
 
-# TODO
 class Task(SetupTask):
     def __init__(self) -> None:
         self.magic = get_magic()
@@ -12,4 +11,3 @@ class Task(SetupTask):
     async def execute(self):
         if not self.magic.state_listener:
             self.magic.state_listener = StateListener()
-            pass

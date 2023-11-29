@@ -40,26 +40,21 @@ class StateListener:
 
     @callback
     def call_event_filter(self, event: Event):
-        if (
-            event.context.parent_id != DOMAIN
-            and event.data["domain"] in self.accepted_domains
-        ):
-            return True
-
-        return False
+        return event.data[
+            "domain"
+        ] in self.accepted_domains and not self.magic.context_manager.context_ours(
+            event.context
+        )
 
     async def state_listener(self, event: Event):
-        magic = get_magic()
-
         # Find Zone for entity
         for zone in self.magic.living_space.values():
             if event.data["entity_id"] in zone.entities:
-
                 # Check if all entities in zone are off
                 if event.data["new_state"].state == "off":
                     zone_on = False
                     for entity in zone.entities:
-                        state: State = magic.hass.states.get(entity)
+                        state: State = self.magic.hass.states.get(entity)
                         if state.state == "on":
                             zone_on = True
                             break

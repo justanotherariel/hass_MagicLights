@@ -44,7 +44,6 @@ def setup_frontend():
         _LOGGER.warning("Frontend development mode enabled. Do not run in production!")
         magic.hass.http.register_view(MagicLigtsFrontend())
     else:
-        #
         magic.hass.http.register_static_path(
             f"{URL_BASE}/frontend", None, cache_headers=False
         )

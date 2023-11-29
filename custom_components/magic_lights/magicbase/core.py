@@ -35,11 +35,14 @@ def register_services(magic: Magic):
         magic.scene_manager.init_scene(call.data["zone"], call.data["scene"])
 
     @callback
-    async def enable_entity(call):
-        pass
+    async def toggle_scene(call):
+        if magic.living_space[call.data["zone"]].current_scene != call.data["scene"]:
+            magic.scene_manager.init_scene(call.data["zone"], call.data["scene"])
+        else:
+            magic.scene_manager.init_scene(call.data["zone"], "off")
 
     @callback
-    async def enable_all_entites(call):
+    async def enable_entity(call):
         pass
 
     @callback
@@ -47,6 +50,7 @@ def register_services(magic: Magic):
         pass
 
     magic.hass.services.async_register(DOMAIN, "activate_scene", activate_scene)
-    magic.hass.services.async_register(DOMAIN, "enable_entity", enable_entity)
-    magic.hass.services.async_register(DOMAIN, "enable_all_entites", enable_all_entites)
-    magic.hass.services.async_register(DOMAIN, "disable_entity", disable_entity)
+    magic.hass.services.async_register(DOMAIN, "toggle_scene", toggle_scene)
+
+    # magic.hass.services.async_register(DOMAIN, "enable_entity", enable_entity)
+    # magic.hass.services.async_register(DOMAIN, "disable_entity", disable_entity)

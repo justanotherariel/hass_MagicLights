@@ -43,7 +43,6 @@ class Static(Effect):
         self.presets = await load_presets()
 
         for entity in self.entities:
-
             # Check if entity is light
             domain = entity.rsplit(".")[0]
             if domain != "light":
@@ -54,7 +53,9 @@ class Static(Effect):
             try:
                 light_type = state.attributes["supported_color_modes"]
             except KeyError:
-                self.log.warn("An unexpected Error occured.")
+                self.log.warn(
+                    "Entity %s does not specify its supported color modes", entity
+                )
 
             # Save function and service data
             if COLOR_MODE_ONOFF in light_type:
@@ -69,7 +70,7 @@ class Static(Effect):
             elif COLOR_MODE_XY in light_type:
                 self.service_data.update({entity: self.get_preset_value("xy")})
 
-        self.log.info("Effect Static Initialized")
+        self.log.debug("Effect Static Initialized")
 
     def get_preset_value(self, light_type: str):
         if self.selected_preset not in self.presets[light_type]:
@@ -78,7 +79,7 @@ class Static(Effect):
             return self.presets[light_type][self.selected_preset]
 
     async def async_start(self):
-        self.log.info(f"Static Effect started. \nConfig: {self.conf}")
+        self.log.debug(f"Static Effect started. \nConfig: {self.conf}")
 
         for entity in self.entities:
             s_data = {"entity_id": entity}

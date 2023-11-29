@@ -45,10 +45,10 @@ class SceneManager:
         for entity in unused_entities:
             if get_domain(entity) == "light":
                 service_data = {"entity_id": entity}
-                context = Context(None, DOMAIN)
                 self.magic.hass.async_create_task(
                     self.magic.hass.services.async_call(
-                        "light", "turn_off", service_data, context=context
+                        "light", "turn_off", service_data,
+                        context=self.magic.context_manager.create_context()
                     )
                 )
 
