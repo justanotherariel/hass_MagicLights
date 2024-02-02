@@ -60,7 +60,7 @@ def _init_zone(magic: Magic, name: str, conf: dict) -> Zone:
     obj = Zone()
 
     obj.name = name
-    obj.groups = conf["groups"]
+    obj.groups = conf.get("groups", {})
     obj.entities = conf["entities"]
 
     for scene_name, scene_conf in conf["scenes"].items():
