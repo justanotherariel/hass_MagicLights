@@ -81,7 +81,7 @@ class Task(SetupTask):
 
 async def _valid_entity_id(hass: HomeAssistant, entity_id: str) -> bool:
     timeout_s = 120
-    check_interval_s = 0.1
+    check_interval_s = 0.5
 
     for _ in range(0, math.ceil(timeout_s / check_interval_s)):
         state = hass.states.get(entity_id)
