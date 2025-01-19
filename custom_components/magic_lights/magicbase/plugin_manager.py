@@ -1,3 +1,4 @@
+from functools import partial
 from custom_components.magic_lights.helpers.entity_id import (
     substitute_group_names,
 )
@@ -16,10 +17,9 @@ class PluginManager:
     effect_descriptions: list[plugin_effects.Effect] = []
     modifier_descriptions: list[plugin_modifiers.Modifier] = []
 
-    def __init__(self) -> None:
+    async def setup(self) -> None:
         self.magic = get_magic()
-
-        self._fetch_plugins()
+        await self._fetch_plugins()
 
     def init_scenes(self) -> None:
         """Initialize all plugins defined in living_space."""
@@ -75,17 +75,20 @@ class PluginManager:
             if modifier.domain == modifier_name:
                 return modifier.init
 
-    def _fetch_plugins(self):
+    async def _fetch_plugins(self):
+        hass = self.magic.hass
         packages = [
             (self.effect_descriptions, plugin_effects, plugin_effects.Effect),
             (self.modifier_descriptions, plugin_modifiers, plugin_modifiers.Modifier),
         ]
 
         for plugin_list, package, subclass in packages:
-            namespace = pkgutil.iter_modules(package.__path__, package.__name__ + ".")
+            namespace = await hass.async_add_executor_job(
+                pkgutil.iter_modules, package.__path__, package.__name__ + ".")
+            namespace = await hass.async_add_executor_job(list, namespace)
 
             for _, name, _ in namespace:
-                module = importlib.import_module(name)
+                module = await hass.async_add_executor_job(importlib.import_module, name)
 
                 clsmembers = inspect.getmembers(module, inspect.isclass)
                 for (_, c) in clsmembers:

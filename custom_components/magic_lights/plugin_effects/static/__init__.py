@@ -1,10 +1,4 @@
-
-from homeassistant.components.light import (
-    COLOR_MODE_ONOFF,
-    COLOR_MODE_BRIGHTNESS,
-    COLOR_MODE_COLOR_TEMP,
-    COLOR_MODE_XY,
-)
+from homeassistant.components.light import ColorMode
 from custom_components.magic_lights.plugin_effects import Effect
 from .helpers.io_helper import load_presets
 
@@ -57,16 +51,19 @@ class Static(Effect):
                 )
 
             # Save function and service data
-            if COLOR_MODE_ONOFF in light_type:
-                self.service_data.update({entity: self.get_preset_value("onoff")})
+            if ColorMode.ONOFF in light_type:
+                self.service_data.update(
+                    {entity: self.get_preset_value("onoff")})
 
-            elif COLOR_MODE_BRIGHTNESS in light_type:
-                self.service_data.update({entity: self.get_preset_value("brightness")})
+            elif ColorMode.BRIGHTNESS in light_type:
+                self.service_data.update(
+                    {entity: self.get_preset_value("brightness")})
 
-            elif COLOR_MODE_COLOR_TEMP in light_type:
-                self.service_data.update({entity: self.get_preset_value("color_temp")})
+            elif ColorMode.COLOR_TEMP in light_type:
+                self.service_data.update(
+                    {entity: self.get_preset_value("color_temp")})
 
-            elif COLOR_MODE_XY in light_type:
+            elif ColorMode.XY in light_type:
                 self.service_data.update({entity: self.get_preset_value("xy")})
 
         self.log.debug("Effect Static Initialized")

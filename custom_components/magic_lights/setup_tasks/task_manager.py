@@ -26,6 +26,8 @@ class TaskManager:
 
     async def async_load(self) -> None:
         """Load all tasks."""
+        hass = self.magic.hass
+
         task_files = Path(__file__).parent
         task_modules = (
             module.stem
@@ -34,7 +36,7 @@ class TaskManager:
         )
 
         for module_name in task_modules:
-            task_module = import_module(f"{__package__}.{module_name}")
+            task_module = await hass.async_add_executor_job(import_module, f"{__package__}.{module_name}")
             if task := task_module.Task():
                 self.__tasks[task.slug] = task
 
@@ -50,7 +52,8 @@ class TaskManager:
         stages = collections.OrderedDict(sorted(stages.items()))
 
         # Setup all other tasks
-        self.log.info("Loaded %s stages with %s tasks", len(stages), len(self.tasks))
+        self.log.info("Loaded %s stages with %s tasks",
+                      len(stages), len(self.tasks))
 
         for stage, tasks in stages.items():
             self.log.debug("Executing Stage %s", stage)

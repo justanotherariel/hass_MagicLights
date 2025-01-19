@@ -5,6 +5,7 @@ import voluptuous as vol
 from .const import DOMAIN
 from .configuration_schema import magic_lights_config_schema
 from .magicbase.core import magic_yaml_setup
+from homeassistant.helpers.discovery import load_platform
 
 
 PLATFORMS = ["sensor"]
@@ -23,6 +24,6 @@ async def async_setup(hass: HomeAssistant, config: dict):
 
     # Setup Components (Sensors)
     for component in PLATFORMS:
-        hass.helpers.discovery.load_platform(component, DOMAIN, {}, config)
+        load_platform(hass, component, DOMAIN, {}, config)
 
     return True

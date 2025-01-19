@@ -15,5 +15,6 @@ class Task(SetupTask):
     async def execute(self):
         if not self.magic.plugin_manager:
             self.magic.plugin_manager = PluginManager()
+            await self.magic.plugin_manager.setup()
 
         self.magic.plugin_manager.init_scenes()

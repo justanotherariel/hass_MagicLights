@@ -1,6 +1,6 @@
 {
-    "name": "ludeeus/magic_lights",
-    "image": "mcr.microsoft.com/devcontainers/python:3.11-bullseye",
+    "name": "justanotherariel/magic_lights",
+    "image": "mcr.microsoft.com/devcontainers/python:3.13",
     "postCreateCommand": "scripts/setup",
     "forwardPorts": [
         8123
@@ -25,7 +25,7 @@
                 "editor.tabSize": 4,
                 "python.defaultInterpreterPath": "/usr/bin/python3",
                 "python.autoComplete.extraPaths": [
-                    "/home/vscode/.local/lib/python3.11/site-packages"
+                    "/home/vscode/.local/lib/python3.13/site-packages"
                 ],
                 "python.analysis.autoSearchPaths": false,
                 "editor.formatOnPaste": false,
