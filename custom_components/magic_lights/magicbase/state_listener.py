@@ -1,5 +1,6 @@
 import logging
 from homeassistant.core import Event, State, callback
+from homeassistant.const import EVENT_CALL_SERVICE
 
 from custom_components.magic_lights.magicbase.share import get_magic
 
@@ -15,13 +16,18 @@ class StateListener:
 
         # Check for non-MagicLights changes.
         self.magic.hass.bus.async_listen(
-            "call_service", self.call_listener, self.call_event_filter
+            EVENT_CALL_SERVICE, self.call_listener, self.call_event_filter
         )
 
         # Check if all entities in a zone are off.
         self.magic.hass.bus.async_listen("state_changed", self.state_listener)
 
     async def call_listener(self, event: Event):
+        if self.magic.context_manager.context_ours(
+            event.context
+        ):
+            return
+
         event_entity_id = event.data["service_data"]["entity_id"]
 
         for zone in self.magic.living_space.values():
@@ -35,12 +41,10 @@ class StateListener:
                 break
 
     @callback
-    def call_event_filter(self, event: Event):
-        return event.data[
+    def call_event_filter(self, event: dict) -> bool:
+        return event[
             "domain"
-        ] in self.accepted_domains and not self.magic.context_manager.context_ours(
-            event.context
-        )
+        ] in self.accepted_domains
 
     async def state_listener(self, event: Event):
         # Find Zone for entity

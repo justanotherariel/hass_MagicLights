@@ -5,7 +5,6 @@ from homeassistant.core import Context
 _LOGGER = logging.getLogger(__name__)
 
 
-
 # TODO: Periodically check and delete old context entries.
 
 class ContextManager:
