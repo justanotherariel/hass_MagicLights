@@ -17,14 +17,13 @@ magic_lights:
 
     groups:
       main_lights:
-        - light.entrance_color_white_lights
         - light.ceiling_lights
         - light.kitchen_lights
 
     scenes:
       bright:
         - entities:
-            - light.bed_light
+            - light.all
 
           effect:
             name: static
@@ -33,7 +32,7 @@ magic_lights:
 
       dimmed:
         - entities:
-            - light.bed_light
+            - main_lights
 
           effect:
             name: static
