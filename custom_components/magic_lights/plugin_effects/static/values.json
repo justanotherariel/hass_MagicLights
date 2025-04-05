@@ -1,105 +1,515 @@
 {
-    "Bright": {
-        "color_temp": {
-            "brightness": 255,
-            "color_temp_kelvin": 370
-        },
-        "brightness": {
-            "brightness": 255
-        },
-        "onoff": {
-            
-        },
-        "xy": {
-            "brightness": 255,
-            "xy_color": [
-                0.457,
-                0.41
-            ]
-        }
-    },
-    "Dimmed": {
-        "brightness": {
-            "brightness": 77
-        },
-        "color_temp": {
-            "brightness": 77,
-            "color_temp_kelvin": 370
-        },
-        "xy": {
-            "brightness": 77,
-            "xy_color": [
-                0.459,
-                0.408
-            ]
-        }
-    },
-    "Nightlight": {
-        "brightness": {
-            "brightness": 1
-        },
-        "color_temp": {
-            "brightness": 1,
-            "color_temp_kelvin": 370
-        },
-        "xy": {
-            "brightness": 1,
-            "xy_color": [
-                0.561,
-                0.404
-            ]
-        }
-    },
-    "Energize": {
-        "color_temp": {
-            "brightness": 255,
-            "color_temp_kelvin": 156
-        },
-        "xy": {
-            "brightness": 255,
-            "xy_color": [
-                0.314,
-                0.331
-            ]
-        }
-    },
-    "Concentrate": {
-        "color_temp": {
-            "brightness": 255,
-            "color_temp_kelvin": 233
-        },
-        "xy": {
-            "brightness": 255,
-            "xy_color": [
-                0.37,
-                0.372
-            ]
-        }
+    "Relax": {
+        "hs": [
+            {
+                "brightness": 145,
+                "hs_color": [36.568, 66.275]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 145,
+                "rgb_color": [255, 188, 85]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 145,
+                "xy_color": [0.502, 0.414]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 145,
+                "color_temp_kelvin": 2237
+            }
+        ]
     },
     "Read": {
-        "color_temp": {
-            "brightness": 255,
-            "color_temp_kelvin": 346
-        },
-        "xy": {
-            "brightness": 255,
-            "xy_color": [
-                0.447,
-                0.406
-            ]
-        }
+        "hs": [
+            {
+                "brightness": 255,
+                "hs_color": [38.88, 49.02]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 255,
+                "rgb_color": [255, 210, 129]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 255,
+                "xy_color": [0.447, 0.406]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 255,
+                "color_temp_kelvin": 2890
+            }
+        ]
     },
-    "Relax": {
-        "color_temp": {
-            "brightness": 145,
-            "color_temp_kelvin": 447
-        },
-        "xy": {
-            "brightness": 145,
-            "xy_color": [
-                0.502,
-                0.414
-            ]
-        }
+    "Concentrate": {
+        "hs": [
+            {
+                "brightness": 255,
+                "hs_color": [45, 21.961]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 255,
+                "rgb_color": [255, 240, 198]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 255,
+                "xy_color": [0.37, 0.372]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 255,
+                "color_temp_kelvin": 4292
+            }
+        ]
+    },
+    "Energize": {
+        "hs": [
+            {
+                "brightness": 255,
+                "hs_color": [173.333, 3.529]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 255,
+                "rgb_color": [246, 255, 254]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 255,
+                "xy_color": [0.314, 0.331]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 255,
+                "color_temp_kelvin": 6410
+            }
+        ]
+    },
+    "Savanna Sunset": {
+        "hs": [
+            {
+                "brightness": 200,
+                "hs_color": [14.717, 83.137]
+            },
+            {
+                "brightness": 200,
+                "hs_color": [28.605, 67.451]
+            },
+            {
+                "brightness": 200,
+                "hs_color": [14.93, 83.529]
+            },
+            {
+                "brightness": 200,
+                "hs_color": [18.387, 72.941]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 200,
+                "rgb_color": [255, 95, 43]
+            },
+            {
+                "brightness": 200,
+                "rgb_color": [255, 165, 82]
+            },
+            {
+                "brightness": 200,
+                "rgb_color": [255, 95, 42]
+            },
+            {
+                "brightness": 200,
+                "rgb_color": [255, 126, 69]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 200,
+                "xy_color": [0.635, 0.335]
+            },
+            {
+                "brightness": 200,
+                "xy_color": [0.531, 0.389]
+            },
+            {
+                "brightness": 200,
+                "xy_color": [0.636, 0.335]
+            },
+            {
+                "brightness": 200,
+                "xy_color": [0.586, 0.353]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 145,
+                "color_temp_kelvin": 2237
+            }
+        ]
+    },
+    "Tropical Twilight": {
+        "hs": [
+            {
+                "brightness": 123,
+                "hs_color": [263.182, 34.51]
+            },
+            {
+                "brightness": 123,
+                "hs_color": [263.864, 34.51]
+            },
+            {
+                "brightness": 123,
+                "hs_color": [321.509, 20.784]
+            },
+            {
+                "brightness": 123,
+                "hs_color": [27.797, 69.412]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 123,
+                "rgb_color": [200, 166, 255]
+            },
+            {
+                "brightness": 123,
+                "rgb_color": [202, 166, 255]
+            },
+            {
+                "brightness": 123,
+                "rgb_color": [255, 202, 236]
+            },
+            {
+                "brightness": 123,
+                "rgb_color": [255, 160, 77]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 123,
+                "xy_color": [0.29, 0.224]
+            },
+            {
+                "brightness": 123,
+                "xy_color": [0.292, 0.224]
+            },
+            {
+                "brightness": 123,
+                "xy_color": [0.359, 0.29]
+            },
+            {
+                "brightness": 123,
+                "xy_color": [0.541, 0.386]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 187,
+                "color_temp_kelvin": 3106
+            }
+        ]
+    },
+    "Arctic Aurora": {
+        "hs": [
+            {
+                "brightness": 138,
+                "hs_color": [201.308, 83.922]
+            },
+            {
+                "brightness": 138,
+                "hs_color": [202.871, 79.216]
+            },
+            {
+                "brightness": 138,
+                "hs_color": [235, 75.294]
+            },
+            {
+                "brightness": 134,
+                "hs_color": [144.564, 58.431]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 138,
+                "rgb_color": [40, 179, 255]
+            },
+            {
+                "brightness": 138,
+                "rgb_color": [52, 178, 255]
+            },
+            {
+                "brightness": 138,
+                "rgb_color": [63, 79, 255]
+            },
+            {
+                "brightness": 134,
+                "rgb_color": [106, 255, 167]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 138,
+                "xy_color": [0.152, 0.219]
+            },
+            {
+                "brightness": 138,
+                "xy_color": [0.156, 0.218]
+            },
+            {
+                "brightness": 138,
+                "xy_color": [0.158, 0.087]
+            },
+            {
+                "brightness": 134,
+                "xy_color": [0.209, 0.487]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 150,
+                "color_temp_kelvin": 6536
+            }
+        ]
+    },
+    "Spring Blossom": {
+        "hs": [
+            {
+                "brightness": 215,
+                "hs_color": [339.718, 27.843]
+            },
+            {
+                "brightness": 215,
+                "hs_color": [338.333, 28.235]
+            },
+            {
+                "brightness": 215,
+                "hs_color": [339.718, 27.843]
+            },
+            {
+                "brightness": 215,
+                "hs_color": [339.6, 58.824]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 215,
+                "rgb_color": [255, 184, 208]
+            },
+            {
+                "brightness": 215,
+                "rgb_color": [255, 183, 209]
+            },
+            {
+                "brightness": 215,
+                "rgb_color": [255, 184, 208]
+            },
+            {
+                "brightness": 215,
+                "rgb_color": [255, 104, 155]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 215,
+                "xy_color": [0.394, 0.298]
+            },
+            {
+                "brightness": 215,
+                "xy_color": [0.394, 0.295]
+            },
+            {
+                "brightness": 215,
+                "xy_color": [0.394, 0.298]
+            },
+            {
+                "brightness": 215,
+                "xy_color": [0.505, 0.268]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 215
+            }
+        ]
+    },
+    "Bright": {
+        "hs": [
+            {
+                "brightness": 255,
+                "hs_color": [38.667, 52.941]
+            },
+            {
+                "brightness": 255,
+                "hs_color": [38.824, 53.333]
+            },
+            {
+                "brightness": 255,
+                "hs_color": [38.222, 52.941]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 255,
+                "rgb_color": [255, 207, 120]
+            },
+            {
+                "brightness": 255,
+                "rgb_color": [255, 207, 119]
+            },
+            {
+                "brightness": 255,
+                "rgb_color": [255, 205, 120]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 255,
+                "xy_color": [0.457, 0.41]
+            },
+            {
+                "brightness": 255,
+                "xy_color": [0.458, 0.411]
+            },
+            {
+                "brightness": 255,
+                "xy_color": [0.459, 0.408]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 255
+            }
+        ],
+        "brightness": [
+            {
+                "brightness": 255
+            }
+        ]
+    },
+    "Dimmed": {
+        "hs": [
+            {
+                "brightness": 77,
+                "hs_color": [38.222, 52.941]
+            },
+            {
+                "brightness": 77,
+                "hs_color": [38.978, 53.725]
+            },
+            {
+                "brightness": 77,
+                "hs_color": [38.222, 52.941]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 77,
+                "rgb_color": [255, 205, 120]
+            },
+            {
+                "brightness": 77,
+                "rgb_color": [255, 207, 118]
+            },
+            {
+                "brightness": 77,
+                "rgb_color": [255, 205, 120]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 77,
+                "xy_color": [0.459, 0.408]
+            },
+            {
+                "brightness": 77,
+                "xy_color": [0.458, 0.412]
+            },
+            {
+                "brightness": 77,
+                "xy_color": [0.459, 0.408]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 77
+            }
+        ],
+        "brightness": [
+            {
+                "brightness": 77
+            }
+        ]
+    },
+    "Nightlight": {
+        "hs": [
+            {
+                "brightness": 1,
+                "hs_color": [33.767, 84.314]
+            },
+            {
+                "brightness": 1,
+                "hs_color": [36.053, 89.412]
+            },
+            {
+                "brightness": 25,
+                "hs_color": [33.767, 84.314]
+            }
+        ],
+        "rgb": [
+            {
+                "brightness": 1,
+                "rgb_color": [255, 160, 39]
+            },
+            {
+                "brightness": 1,
+                "rgb_color": [255, 164, 26]
+            },
+            {
+                "brightness": 25,
+                "rgb_color": [255, 160, 39]
+            }
+        ],
+        "xy": [
+            {
+                "brightness": 1,
+                "xy_color": [0.561, 0.404]
+            },
+            {
+                "brightness": 1,
+                "xy_color": [0.559, 0.412]
+            },
+            {
+                "brightness": 25,
+                "xy_color": [0.561, 0.404]
+            }
+        ],
+        "color_temp": [
+            {
+                "brightness": 1
+            }
+        ],
+        "brightness": [
+            {
+                "brightness": 1
+            }
+        ]
     }
 }

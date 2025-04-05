@@ -30,7 +30,8 @@ class Static(Effect):
     async def async_preset_setup(self, selected_preset: str):
         # Load presets
         presets = await load_presets()
-        selected_preset_conf = presets.get(selected_preset, None)
+        selected_preset_conf: dict[str, Any] | None = presets.get(
+            selected_preset, None)
         if selected_preset_conf is None:
             self.log.error("Unknown preset '%s'", self.selected_preset)
             return
@@ -66,7 +67,7 @@ class Static(Effect):
                     self.log.debug(
                         "Entity %s supports preset '%s' with mode '%s'", entity, selected_preset, scene_supported_mode
                     )
-                    self.service_data[entity] = selected_preset_conf[scene_supported_mode]
+                    self.service_data[entity] = selected_preset_conf[scene_supported_mode][0]
                     break
 
         self.log.debug("Effect Static Initialized. Preset: %s, Number of Entities: %s",
