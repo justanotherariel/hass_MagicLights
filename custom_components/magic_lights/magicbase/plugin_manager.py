@@ -1,4 +1,3 @@
-from functools import partial
 from custom_components.magic_lights.helpers.entity_id import (
     substitute_group_names,
 )

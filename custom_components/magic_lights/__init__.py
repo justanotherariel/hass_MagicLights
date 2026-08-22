@@ -18,7 +18,7 @@ CONFIG_SCHEMA = vol.Schema(
 
 
 async def async_setup(hass: HomeAssistant, config: dict):
-    """Setup Magic Lights."""
+    """Set up Magic Lights."""
 
     await magic_yaml_setup(hass, config)
 

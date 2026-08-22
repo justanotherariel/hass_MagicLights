@@ -1,5 +1,4 @@
-""""
-Setup the Integration.
+"""Set up the integration.
 
 It does so by using stages, each stage is responsible for setting up the next.
 * Pre-Setup:

@@ -51,7 +51,7 @@ class StateListener:
         for zone in self.magic.living_space.values():
             if event.data["entity_id"] in zone.entities:
                 # self.log.debug("State Change Event: %s", event.data)
-                
+
                 # Check if all entities in zone are off
                 if event.data["new_state"].state == "off":
                     zone_on = False

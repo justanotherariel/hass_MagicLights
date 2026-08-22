@@ -99,7 +99,7 @@ class Static(Effect):
 
 async def load_presets() -> dict:
     async with aiofiles.open(
-        os.path.join(os.path.dirname(__file__), "values.json"), mode="r"
+        os.path.join(os.path.dirname(__file__), "values.json")
     ) as f:
         values = await f.read()
 
