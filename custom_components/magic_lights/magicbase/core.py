@@ -2,6 +2,7 @@ from custom_components.magic_lights.setup_tasks.task_manager import TaskManager
 from custom_components.magic_lights.data_structures.magic import Magic
 import logging
 from homeassistant.core import callback
+import voluptuous as vol
 
 from custom_components.magic_lights.const import DOMAIN
 from custom_components.magic_lights.magicbase.share import get_magic
@@ -37,7 +38,8 @@ def register_services(magic: Magic):
     @callback
     async def toggle_scene(call):
         if magic.living_space[call.data["zone"]].current_scene != call.data["scene"]:
-            magic.scene_manager.init_scene(call.data["zone"], call.data["scene"])
+            magic.scene_manager.init_scene(
+                call.data["zone"], call.data["scene"])
         else:
             magic.scene_manager.init_scene(call.data["zone"], "off")
 
@@ -49,8 +51,16 @@ def register_services(magic: Magic):
     async def disable_entity(call):
         pass
 
-    magic.hass.services.async_register(DOMAIN, "activate_scene", activate_scene)
-    magic.hass.services.async_register(DOMAIN, "toggle_scene", toggle_scene)
+    schema = vol.Schema(
+        {
+            vol.Required("zone"): vol.All(vol.Coerce(str)),
+            vol.Required("scene"): vol.All(vol.Coerce(str)),
+        }
+    )
+    magic.hass.services.async_register(
+        DOMAIN, "activate_scene", activate_scene, schema=schema)
+    magic.hass.services.async_register(
+        DOMAIN, "toggle_scene", toggle_scene, schema=schema)
 
     # magic.hass.services.async_register(DOMAIN, "enable_entity", enable_entity)
     # magic.hass.services.async_register(DOMAIN, "disable_entity", disable_entity)
