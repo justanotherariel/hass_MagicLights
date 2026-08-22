@@ -7,9 +7,6 @@ logger:
   logs:
     custom_components.magic_lights: debug
 
-http:
-  server_port: 9123
-
 magic_lights:
   bedroom:
     entities:
