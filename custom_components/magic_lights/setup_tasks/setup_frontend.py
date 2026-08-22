@@ -1,6 +1,8 @@
 import logging
 from custom_components.magic_lights.magicbase.share import get_magic
 from custom_components.magic_lights.const import DOMAIN
+from homeassistant.components import frontend
+from homeassistant.components.http import StaticPathConfig
 from homeassistant.components.http.view import HomeAssistantView
 from aiohttp import web
 from homeassistant.helpers.aiohttp_client import async_create_clientsession
@@ -33,7 +35,7 @@ class MagicLigtsFrontend(HomeAssistantView):
             return response
 
 
-def setup_frontend():
+async def setup_frontend():
     magic = get_magic()
 
     magic.session = async_create_clientsession(magic.hass)
@@ -44,11 +46,12 @@ def setup_frontend():
         _LOGGER.warning("Frontend development mode enabled. Do not run in production!")
         magic.hass.http.register_view(MagicLigtsFrontend())
     else:
-        magic.hass.http.register_static_path(
-            f"{URL_BASE}/frontend", None, cache_headers=False
+        await magic.hass.http.async_register_static_paths(
+            [StaticPathConfig(f"{URL_BASE}/frontend", None, cache_headers=False)]
         )
 
-    magic.hass.components.frontend.async_register_built_in_panel(
+    frontend.async_register_built_in_panel(
+        magic.hass,
         component_name="custom",
         sidebar_title="Magic Lights",
         sidebar_icon="mdi:lightbulb-on-outline",
