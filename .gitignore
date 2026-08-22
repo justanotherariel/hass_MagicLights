@@ -6,6 +6,11 @@ __pycache__
 */dist/*
 
 
+# devenv / direnv
+.devenv*
+.direnv
+
+
 # misc
 .coverage
 # .vscode
