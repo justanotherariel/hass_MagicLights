@@ -14,7 +14,9 @@ fi
 ## This let's us have the structure we want <root>/custom_components/magic_lights
 ## while at the same time have Home Assistant configuration inside <root>/config
 ## without resulting to symlinks.
-export PYTHONPATH="${PYTHONPATH}:${PWD}/custom_components"
+## The repo root (not custom_components itself) must be on PYTHONPATH so that
+## HA's loader can `import custom_components` as a package.
+export PYTHONPATH="${PYTHONPATH}:${PWD}"
 
 # Start Home Assistant
 hass --config "${PWD}/config" --debug

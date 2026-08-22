@@ -6,9 +6,10 @@ __pycache__
 */dist/*
 
 
-# devenv / direnv
+# dev environment
 .devenv*
 .direnv
+.vscode/settings.json
 
 
 # misc
