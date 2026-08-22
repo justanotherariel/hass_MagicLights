@@ -1,4 +1,5 @@
 from __future__ import annotations
+from custom_components.magic_lights.magicbase.context import create_context
 from custom_components.magic_lights.magicbase.share import get_magic
 import logging
 from typing import TYPE_CHECKING
@@ -42,5 +43,5 @@ async def async_call_service(domain: str, service: str, service_data: dict):
 
     return await magic.hass.services.async_call(
         domain, service, service_data,
-        context=magic.context_manager.create_context()
+        context=create_context()
     )

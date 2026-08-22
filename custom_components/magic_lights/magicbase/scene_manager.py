@@ -3,6 +3,7 @@ from custom_components.magic_lights.helpers.entity_id import (
     get_domain,
     get_unused_entities,
 )
+from custom_components.magic_lights.magicbase.context import create_context
 
 from custom_components.magic_lights.data_structures.living_space import Pipe, Scene
 from custom_components.magic_lights.magicbase.share import get_magic
@@ -45,7 +46,7 @@ class SceneManager:
                 self.magic.hass.async_create_task(
                     self.magic.hass.services.async_call(
                         "light", "turn_off", service_data,
-                        context=self.magic.context_manager.create_context()
+                        context=create_context()
                     )
                 )
 

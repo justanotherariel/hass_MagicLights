@@ -2,6 +2,7 @@ import logging
 from homeassistant.core import Event, State, callback
 from homeassistant.const import EVENT_CALL_SERVICE
 
+from custom_components.magic_lights.magicbase.context import is_our_context
 from custom_components.magic_lights.magicbase.share import get_magic
 
 _LOGGER = logging.getLogger(__name__)
@@ -23,9 +24,7 @@ class StateListener:
         self.magic.hass.bus.async_listen("state_changed", self.state_listener)
 
     async def call_listener(self, event: Event):
-        if self.magic.context_manager.context_ours(
-            event.context
-        ):
+        if is_our_context(event.context):
             return
 
         event_entity_id = event.data["service_data"]["entity_id"]
