@@ -1,5 +1,6 @@
 {
     "name": "Magic Lights",
+    "homeassistant": "2026.8.0",
     "zip_release": true,
     "filename": "magic_lights.zip",
     "hide_default_branch": true,
