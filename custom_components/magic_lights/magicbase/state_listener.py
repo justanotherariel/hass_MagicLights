@@ -1,6 +1,10 @@
 import logging
 from homeassistant.core import Event, State, callback
 from homeassistant.const import EVENT_CALL_SERVICE
+from homeassistant.helpers.target import (
+    TargetSelection,
+    async_extract_referenced_entity_ids,
+)
 
 from custom_components.magic_lights.magicbase.context import is_our_context
 from custom_components.magic_lights.magicbase.share import get_magic
@@ -27,17 +31,23 @@ class StateListener:
         if is_our_context(event.context):
             return
 
-        event_entity_id = event.data["service_data"]["entity_id"]
+        # Resolve entity ids from the call, including area/device/label
+        # targets and entity_id given as a list.
+        selected = async_extract_referenced_entity_ids(
+            self.magic.hass, TargetSelection(event.data["service_data"])
+        )
+        entity_ids = selected.referenced | selected.indirectly_referenced
 
-        for zone in self.magic.living_space.values():
-            if event_entity_id in zone.entities:
-                if zone.current_scene == "custom":
-                    return
-                if event_entity_id not in zone.disabled_entities:
-                    self.log.debug("Disabling %s", event_entity_id)
-                    zone.disabled_entities.append(event_entity_id)
-                    zone.zone_sensor_callback()  # Update Sensor
-                break
+        for event_entity_id in entity_ids:
+            for zone in self.magic.living_space.values():
+                if event_entity_id in zone.entities:
+                    if zone.current_scene == "custom":
+                        break
+                    if event_entity_id not in zone.disabled_entities:
+                        self.log.debug("Disabling %s", event_entity_id)
+                        zone.disabled_entities.append(event_entity_id)
+                        zone.zone_sensor_callback()  # Update Sensor
+                    break
 
     @callback
     def call_event_filter(self, event: dict) -> bool:
