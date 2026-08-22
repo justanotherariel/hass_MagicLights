@@ -3,10 +3,10 @@
     "image": "mcr.microsoft.com/devcontainers/python:3.13",
     "postCreateCommand": "scripts/setup",
     "forwardPorts": [
-        8123
+        9123
     ],
     "portsAttributes": {
-        "8123": {
+        "9123": {
             "label": "Home Assistant",
             "onAutoForward": "notify"
         }
@@ -14,9 +14,9 @@
     "customizations": {
         "vscode": {
             "extensions": [
+                "charliermarsh.ruff",
                 "ms-python.python",
                 "ms-python.vscode-pylance",
-                "ms-python.black-formatter",
                 "github.vscode-pull-request-github",
                 "ryanluker.vscode-coverage-gutters"
             ],
@@ -31,9 +31,17 @@
                 "editor.formatOnPaste": false,
                 "editor.formatOnSave": true,
                 "editor.formatOnType": true,
-                "files.trimTrailingWhitespace": true
+                "files.trimTrailingWhitespace": true,
+                "[python]": {
+                    "editor.defaultFormatter": "charliermarsh.ruff"
+                }
             }
         }
     },
-    "remoteUser": "vscode"
+    "remoteUser": "vscode",
+    "features": {
+        "ghcr.io/devcontainers-extra/features/apt-packages:1": {
+            "packages": "ffmpeg,libturbojpeg0,libpcap-dev"
+        }
+    }
 }

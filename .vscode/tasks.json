@@ -6,6 +6,21 @@
             "type": "shell",
             "command": "scripts/develop",
             "problemMatcher": []
+        },
+        {
+            "label": "kill_hass",
+            "type": "shell",
+            "linux": {
+                "command": "lsof -ti:8123 | xargs -r kill -9 || true"
+            },
+            "windows": {
+                "command": "FOR /F \"tokens=5\" %P IN ('netstat -a -n -o | findstr :8123') DO TaskKill /PID %P /F || exit 0"
+            },
+            "presentation": {
+                "reveal": "never",
+                "panel": "dedicated"
+            },
+            "problemMatcher": []
         }
     ]
 }
