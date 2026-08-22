@@ -10,13 +10,16 @@
 
 # Installation (HACS)
 
-1. If you don't have HACS yet installed: [install HACS][install_hacs_doc]
-2. Go to the HACS store in your HomeAssistant Instance
-3. Click on "Integrations"
-4. Click on the button on your bottom left: "EXPLORE & ADD REPOSITORIES"
-5. Search for "Magic Lights" and click on the top result
-6. Click on "INSTALL THIS REPOSITORY IN HACS"
+This integration is not (yet) part of the HACS default store, so you need to add this repository as a custom repository first:
+
+1. If you don't have HACS installed yet: [install HACS][install_hacs_doc]
+2. Open HACS in your Home Assistant instance
+3. Click the three-dot menu in the top right corner and select "Custom repositories"
+4. Paste `https://github.com/justanotherariel/hass_MagicLights` as the repository, select type "Integration", and click "Add"
+5. Now search for "Magic Lights" in HACS and open it
+6. Click "Download"
+7. Restart Home Assistant
 
 
 <!-- External Links to Docs -->
-[install_hacs_doc]: https://hacs.xyz/docs/installation/installation/
+[install_hacs_doc]: https://hacs.xyz/docs/use/download/download/
