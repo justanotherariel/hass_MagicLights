@@ -81,12 +81,22 @@ def _is_group(attrs: Mapping[str, Any]) -> bool:
     )
 
 
-def _is_group_entry(entry: er.RegistryEntry) -> bool:
+@callback
+def _is_group_entry(hass: HomeAssistant, entry: er.RegistryEntry) -> bool:
     """Whether the registry marks a group, even while its state lacks the flags."""
-    return (
+    if (
         entry.platform == GROUP_PLATFORM
         or (entry.platform == "hue" and entry.translation_key == "hue_grouped_light")
         or (entry.platform == "deconz" and "-/groups/" in entry.unique_id)
+    ):
+        return True
+    if entry.platform != "mqtt" or entry.device_id is None:
+        return False
+    device = dr.async_get(hass).async_get(entry.device_id)
+    return (
+        device is not None
+        and device.manufacturer == "Zigbee2MQTT"
+        and device.model == "Group"
     )
 
 
@@ -262,7 +272,7 @@ class LightIndexImpl:
         if entry is not None and (
             entry.disabled_by is not None
             or entry.entity_category is not None
-            or _is_group_entry(entry)
+            or _is_group_entry(hass, entry)
         ):
             return None
         if state is not None and state.state != STATE_UNAVAILABLE:

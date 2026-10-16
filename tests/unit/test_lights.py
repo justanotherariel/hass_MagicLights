@@ -375,9 +375,15 @@ class LightIndexTest(unittest.TestCase):
         h.add_entity(
             "light.deconz_kitchen", "deconz", "00212EFFFF-/groups/1", area_id="kitchen"
         )
+        z2m = h.add_config_entry("mqtt", "MQTT")
+        group = h.add_device(
+            z2m, area_id="kitchen", manufacturer="Zigbee2MQTT", model="Group"
+        )
+        h.add_entity("light.z2m_kitchen", "mqtt", "1_light_zigbee2mqtt", device=group)
         self.assertEqual(self.changes, [])
         self.assertNotIn("light.hue_living", self.index.lights)
         self.assertNotIn("light.deconz_kitchen", self.index.lights)
+        self.assertNotIn("light.z2m_kitchen", self.index.lights)
 
     def test_state_only_light_comes_and_goes(self) -> None:
         self.hass.set_state(

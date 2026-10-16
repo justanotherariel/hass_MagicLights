@@ -199,6 +199,8 @@ class FakeHass:
         via: dr.DeviceEntry | None = None,
         name: str | None = None,
         area_id: str | None = None,
+        manufacturer: str | None = None,
+        model: str | None = None,
     ) -> dr.DeviceEntry:
         device = dr.DeviceEntry(
             config_entry_id=entry.entry_id if entry else "none",
@@ -207,6 +209,8 @@ class FakeHass:
             via_device_id=via.id if via else None,
             name=name,
             area_id=area_id,
+            manufacturer=manufacturer,
+            model=model,
         )
         self.dev_reg.devices[device.id] = device
         return device
