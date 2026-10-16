@@ -41,13 +41,8 @@ async def async_setup_entry(
     def add(target_ids: Iterable[TargetId]) -> None:
         new = [t for t in target_ids if t in targets and t not in added]
         added.update(new)
-        devices = dr.async_get(hass)
         async_add_entities(
-            TargetSceneSelect(
-                data,
-                targets[t],
-                place=devices.async_get_device(identifiers={(DOMAIN, t)}) is None,
-            )
+            TargetSceneSelect(data, targets[t], place=_select_entry(hass, t) is None)
             for t in new
         )
 
@@ -58,17 +53,23 @@ async def async_setup_entry(
         devices = dr.async_get(hass)
         for target_id in removed:
             added.discard(target_id)
-            if entity_id := entities.async_get_entity_id(
-                Platform.SELECT, DOMAIN, target_id
-            ):
-                entities.async_remove(entity_id)
-            if device := devices.async_get_device(identifiers={(DOMAIN, target_id)}):
-                devices.async_remove_device(device.id)
+            if (select := _select_entry(hass, target_id)) is None:
+                continue
+            entities.async_remove(select.entity_id)
+            if select.device_id is not None:
+                devices.async_remove_device(select.device_id)
 
     add(list(targets))
     entry.async_on_unload(
         async_dispatcher_connect(hass, SIGNAL_TARGETS, targets_changed)
     )
+
+
+@callback
+def _select_entry(hass: HomeAssistant, target_id: TargetId) -> er.RegistryEntry | None:
+    entities = er.async_get(hass)
+    entity_id = entities.async_get_entity_id(Platform.SELECT, DOMAIN, target_id)
+    return entities.async_get(entity_id) if entity_id else None
 
 
 def _current_option(status: TargetStatus) -> str:
@@ -197,9 +198,8 @@ class TargetSceneSelect(SelectEntity):
 
     def _rename_device(self, name: str) -> None:
         self._device_name = name
-        devices = dr.async_get(self.hass)
-        if device := devices.async_get_device(identifiers={(DOMAIN, self._target_id)}):
-            devices.async_update_device(device.id, name=name)
+        if (entry := self.registry_entry) and entry.device_id:
+            dr.async_get(self.hass).async_update_device(entry.device_id, name=name)
 
     async def async_select_option(self, option: str) -> None:
         coordinator = self._coordinator
