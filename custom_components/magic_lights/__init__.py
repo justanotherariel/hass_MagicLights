@@ -3,14 +3,10 @@
 from __future__ import annotations
 
 import dataclasses
-from typing import Any
 
-import voluptuous as vol
-
-from homeassistant.config_entries import SOURCE_IMPORT
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er, issue_registry as ir
+from homeassistant.helpers import config_validation as cv, entity_registry as er
 from homeassistant.helpers.dispatcher import (
     async_dispatcher_connect,
     async_dispatcher_send,
@@ -24,7 +20,6 @@ from .data import MagicLightsConfigEntry, MagicLightsData
 from .effects import async_get_registry
 from .engine import create_engine
 from .lights import LightIndexImpl
-from .migrate_v1 import V1_CONFIG_SCHEMA
 from .models import Config, LightsChange
 from .native import build_drivers
 from .panel import async_register_panel, async_register_static, async_unregister_panel
@@ -33,10 +28,7 @@ from .services import async_setup_services
 from .store import ConfigStore, RuntimeStoreImpl
 from .websocket import async_register_websocket
 
-# The v1 YAML block stays valid so async_setup can import it.
-CONFIG_SCHEMA = vol.Schema(
-    {vol.Optional(DOMAIN): V1_CONFIG_SCHEMA}, extra=vol.ALLOW_EXTRA
-)
+CONFIG_SCHEMA = cv.config_entry_only_config_schema(DOMAIN)
 
 
 async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
@@ -44,33 +36,10 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
     await async_register_static(hass, str(integration.version))
     async_register_websocket(hass)
     async_setup_services(hass)
-    if DOMAIN in config:
-        await _async_import_yaml(hass, config[DOMAIN])
     return True
 
 
-async def _async_import_yaml(hass: HomeAssistant, yaml_config: dict[str, Any]) -> None:
-    """Move a v1 YAML configuration into the store and create the entry."""
-    store = ConfigStore(hass)
-    if await store.async_load() is None:
-        await store.async_import_v1(yaml_config)
-    hass.async_create_task(
-        hass.config_entries.flow.async_init(
-            DOMAIN, context={"source": SOURCE_IMPORT}, data={}
-        )
-    )
-    ir.async_create_issue(
-        hass,
-        DOMAIN,
-        "yaml_deprecated",
-        is_fixable=False,
-        severity=ir.IssueSeverity.WARNING,
-        translation_key="yaml_deprecated",
-    )
-
-
 async def async_setup_entry(hass: HomeAssistant, entry: MagicLightsConfigEntry) -> bool:
-    _remove_v1_entities(hass)
     registry = async_get_registry(hass)
     store = ConfigStore(hass)
     config = await store.async_load_config() or Config()
@@ -221,11 +190,3 @@ def _rename_light(config: Config, old: str, new: str) -> Config:
             },
         ),
     )
-
-
-def _remove_v1_entities(hass: HomeAssistant) -> None:
-    """Remove the per-zone sensors Magic Lights v1 created."""
-    registry = er.async_get(hass)
-    for entry in list(registry.entities.values()):
-        if entry.platform == DOMAIN and entry.domain == Platform.SENSOR:
-            registry.async_remove(entry.entity_id)

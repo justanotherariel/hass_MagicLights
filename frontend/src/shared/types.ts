@@ -58,7 +58,6 @@ export interface Settings {
   native_effects: boolean;
   buses: Record<string, Partial<BusLimits>>;
   light_buses: Record<string, string>; // entity_id -> bus id
-  migration_notes: string[];
 }
 
 // ---- websocket

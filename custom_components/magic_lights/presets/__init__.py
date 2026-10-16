@@ -18,21 +18,13 @@ _LOGGER = logging.getLogger(__name__)
 SCENES_FILE = Path(__file__).with_name("scenes.json")
 
 
-def preset_rows() -> list[dict[str, Any]]:
-    """Return the built-in scenes as stored, unvalidated (for the v1 migration).
-
-    Reads a file: call it from the executor.
-    """
-    return json.loads(SCENES_FILE.read_text(encoding="utf-8"))
-
-
 def load_presets(registry: EffectLookup) -> dict[str, Scene]:
     """Load and validate the built-in scenes, in catalogue order.
 
     Reads a file: call it from the executor.
     """
     presets: dict[str, Scene] = {}
-    for data in preset_rows():
+    for data in json.loads(SCENES_FILE.read_text(encoding="utf-8")):
         try:
             scene = validate_preset(data, registry)
         except vol.Invalid as err:

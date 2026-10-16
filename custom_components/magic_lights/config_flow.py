@@ -22,7 +22,3 @@ class MagicLightsConfigFlow(ConfigFlow, domain=DOMAIN):
         if user_input is not None:
             return self.async_create_entry(title=TITLE, data={})
         return self.async_show_form(step_id="user")
-
-    async def async_step_import(self, import_data: dict[str, Any]) -> ConfigFlowResult:
-        """Create the entry for a YAML-only install; the store holds the config."""
-        return self.async_create_entry(title=TITLE, data={})

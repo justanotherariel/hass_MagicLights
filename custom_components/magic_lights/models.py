@@ -421,14 +421,12 @@ class Settings:
     # Partial BusLimits overrides per bus id, merged over the bus kind's defaults.
     buses: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
     light_buses: Mapping[str, str] = field(default_factory=dict)
-    migration_notes: tuple[str, ...] = ()
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Settings:
         return cls(
             buses={k: dict(v) for k, v in (data.get("buses") or {}).items()},
             light_buses=dict(data.get("light_buses") or {}),
-            migration_notes=tuple(data.get("migration_notes") or ()),
             **_present(data, "transition", "default_scene", "native_effects"),
         )
 
@@ -439,7 +437,6 @@ class Settings:
             "native_effects": self.native_effects,
             "buses": {k: dict(v) for k, v in self.buses.items()},
             "light_buses": dict(self.light_buses),
-            "migration_notes": list(self.migration_notes),
         }
 
 

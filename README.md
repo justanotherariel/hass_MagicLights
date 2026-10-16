@@ -164,12 +164,7 @@ The card is also in the card picker, with a visual editor. It reads everything f
 
 ## Upgrading from version 1
 
-Version 2 is a rewrite and needs no YAML. Your old configuration is converted on the first start:
-
-- A `magic_lights:` block in `configuration.yaml` is imported into the panel. A repair asks you to remove the block afterwards.
-- A configuration saved by the old panel is converted; the original file is kept as `.storage/magic_lights.v1.bak`.
-
-A v1 zone whose lights are exactly one area becomes that room; the others become zones. The `static`, `transitions` and `off` effects become White, Colour, Colour palette and Off layers; `transitions` scenes play dynamic. Modifiers, the `custom` effect and scenes called `off` are dropped. Scenes whose names clash with a built-in scene get " (v1)" appended. The panel lists every such change once. The old per-zone sensors are removed; the selects replace them.
+Version 2 is a rewrite and does not convert the v1 configuration. Remove the `magic_lights:` block from `configuration.yaml`, then set up your scenes in the panel. The v1 per-zone sensors are gone; use the selects instead.
 
 ## Limitations
 

@@ -413,7 +413,7 @@ class ConfigTest(HarnessCase):
 
 
 class StoredParamsTest(HarnessCase):
-    # As the v1 migration writes it: no colour, the effect's default applies.
+    # Stored without a colour: the effect's default applies.
     storage = {
         "version": 2,
         "minor_version": 1,

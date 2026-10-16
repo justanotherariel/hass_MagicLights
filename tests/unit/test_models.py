@@ -290,7 +290,6 @@ class RoundTripTest(unittest.TestCase):
                 native_effects=False,
                 buses={"zigbee:abc": {"rate": 5.0}},
                 light_buses={"light.a": "zigbee:abc"},
-                migration_notes=("note",),
             ),
         )
 

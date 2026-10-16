@@ -113,7 +113,6 @@ SETTINGS_SCHEMA = vol.Schema(
         vol.Optional("native_effects", default=True): bool,
         vol.Optional("buses", default=dict): {str: BUS_LIMITS_SCHEMA},
         vol.Optional("light_buses", default=dict): {_LIGHT_ID: str},
-        vol.Optional("migration_notes", default=list): [str],
     }
 )
 

@@ -31,12 +31,6 @@
       "message": "No scene is running on {target_id}."
     }
   },
-  "issues": {
-    "yaml_deprecated": {
-      "title": "Magic Lights YAML configuration was imported",
-      "description": "Your `magic_lights:` configuration was converted to rooms, zones and scenes, which you now edit in the Magic Lights panel. Remove the `magic_lights:` block from your configuration.yaml and restart Home Assistant to fix this issue."
-    }
-  },
   "services": {
     "activate_scene": {
       "name": "Activate scene",

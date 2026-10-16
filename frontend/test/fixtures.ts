@@ -105,7 +105,6 @@ export const CONFIG: ConfigDto = {
     native_effects: true,
     buses: {},
     light_buses: {},
-    migration_notes: [],
   },
   version: "2.0.0",
 };

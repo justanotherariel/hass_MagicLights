@@ -26,7 +26,7 @@ Requires Home Assistant 2026.8 or newer.
 1. Open **Magic Lights** in the sidebar.
 {% endif %}
 
-Upgrading from version 1? Your YAML or panel configuration is converted on the first start; see the [README][readme] for what changes.
+Upgrading from version 1? Version 2 does not convert the old configuration; see the [README][readme].
 
 ***
 

@@ -1,9 +1,9 @@
-// Home: one tile per room, then per zone and "New zone", plus the one-time migration notes.
+// Home: one tile per room, then per zone and "New zone".
 
 import { LitElement, css, html, nothing } from "lit";
 import { property } from "lit/decorators.js";
 import type { HomeAssistant, TargetInfo } from "../shared/types";
-import { defineElement, fire, navigate, toastOnError } from "../shared/util";
+import { defineElement, fire, navigate } from "../shared/util";
 import "./ml-target-tile";
 import type { MlStore } from "./store";
 import { newCardStyles, pageStyles } from "./styles";
@@ -16,24 +16,9 @@ class MlHome extends LitElement {
   @property({ type: Boolean }) narrow = false;
 
   protected render() {
-    const notes = this.store.config.settings.migration_notes;
     const rooms = this.store.targets.filter((t) => t.kind === "room");
     const zones = this.store.targets.filter((t) => t.kind === "zone");
     return html`
-      ${
-        notes.length
-          ? html`<ha-alert
-              alert-type="info"
-              title="Imported from Magic Lights 1"
-              dismissable
-              @alert-dismissed-clicked=${this._dismissNotes}
-            >
-              <ul>
-                ${notes.map((note) => html`<li>${note}</li>`)}
-              </ul>
-            </ha-alert>`
-          : nothing
-      }
       ${
         rooms.length
           ? this._section("Rooms", rooms)
@@ -71,10 +56,6 @@ class MlHome extends LitElement {
       </div>`;
   }
 
-  private _dismissNotes(): void {
-    toastOnError(this, this.store.saveSettings({ migration_notes: [] }), "Could not dismiss the notes");
-  }
-
   static styles = [
     pageStyles,
     newCardStyles,
@@ -85,10 +66,6 @@ class MlHome extends LitElement {
       }
       .new-title {
         font-weight: var(--ha-font-weight-medium);
-      }
-      ul {
-        margin: 0;
-        padding-inline-start: var(--ha-space-5);
       }
       .empty {
         display: flex;
