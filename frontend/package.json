@@ -1,0 +1,20 @@
+{
+  "name": "magic-lights-frontend",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "build": "npm run typecheck && npm run bundle -- --minify",
+    "bundle": "esbuild magic-lights-panel=src/panel/main.ts magic-lights-card=src/card/main.ts --bundle --format=esm --target=es2022 --outdir=../custom_components/magic_lights/panel",
+    "watch": "npm run bundle -- --watch",
+    "typecheck": "tsc --noEmit",
+    "test": "esbuild test/*.test.ts --bundle --platform=node --format=esm --outdir=.test-build --log-level=warning && node --test .test-build/*.test.js"
+  },
+  "dependencies": {
+    "lit": "^3.3.3"
+  },
+  "devDependencies": {
+    "esbuild": "^0.28.2",
+    "typescript": "^7.0.2"
+  }
+}

@@ -1,0 +1,150 @@
+{
+  "config": {
+    "step": {
+      "user": {
+        "title": "Magic Lights",
+        "description": "Every area with lights becomes a room with its own scene select. Rooms, zones and scenes are set up in the Magic Lights panel."
+      }
+    },
+    "abort": {
+      "single_instance_allowed": "Magic Lights is already set up."
+    }
+  },
+  "entity": {
+    "select": {
+      "scene": {
+        "name": "Scene"
+      }
+    }
+  },
+  "exceptions": {
+    "unknown_scene": {
+      "message": "There is no scene \"{scene}\"."
+    },
+    "scene_not_available": {
+      "message": "The scene \"{scene}\" is not available in {target_id}."
+    },
+    "unknown_target": {
+      "message": "There is no room or zone {target_id}."
+    },
+    "no_scene": {
+      "message": "No scene is running on {target_id}."
+    }
+  },
+  "issues": {
+    "yaml_deprecated": {
+      "title": "Magic Lights YAML configuration was imported",
+      "description": "Your `magic_lights:` configuration was converted to rooms, zones and scenes, which you now edit in the Magic Lights panel. Remove the `magic_lights:` block from your configuration.yaml and restart Home Assistant to fix this issue."
+    }
+  },
+  "services": {
+    "activate_scene": {
+      "name": "Activate scene",
+      "description": "Runs a scene on a room or zone. Activating the running scene again brings back lights that were changed by hand.",
+      "fields": {
+        "scene": {
+          "name": "Scene",
+          "description": "Scene id or name."
+        },
+        "brightness": {
+          "name": "Brightness",
+          "description": "Brightness of the brightest light; the other lights keep their levels relative to it."
+        },
+        "dynamic": {
+          "name": "Dynamic",
+          "description": "Let palette scenes move through their colours, or hold them."
+        },
+        "transition": {
+          "name": "Transition",
+          "description": "Fade time in seconds."
+        }
+      }
+    },
+    "turn_off": {
+      "name": "Turn off",
+      "description": "Turns off every light of a room or zone.",
+      "fields": {
+        "transition": {
+          "name": "Transition",
+          "description": "Fade time in seconds."
+        }
+      }
+    },
+    "toggle_scene": {
+      "name": "Toggle scene",
+      "description": "Turns a room or zone off if the scene is running there, otherwise activates it.",
+      "fields": {
+        "scene": {
+          "name": "Scene",
+          "description": "Scene id or name."
+        },
+        "brightness": {
+          "name": "Brightness",
+          "description": "Brightness of the brightest light; the other lights keep their levels relative to it."
+        },
+        "dynamic": {
+          "name": "Dynamic",
+          "description": "Let palette scenes move through their colours, or hold them."
+        }
+      }
+    },
+    "next_scene": {
+      "name": "Next scene",
+      "description": "Activates the next scene of the menu; after the last one comes Off.",
+      "fields": {
+        "cycle": {
+          "name": "Cycle",
+          "description": "Start over at the first scene after Off."
+        }
+      }
+    },
+    "previous_scene": {
+      "name": "Previous scene",
+      "description": "Activates the previous scene of the menu.",
+      "fields": {
+        "cycle": {
+          "name": "Cycle",
+          "description": "Wrap around at the first scene."
+        }
+      }
+    },
+    "adjust_brightness": {
+      "name": "Adjust brightness",
+      "description": "Changes the brightness of the running scene, measured at its brightest light; the other lights follow in proportion.",
+      "fields": {
+        "step": {
+          "name": "Step",
+          "description": "Percentage points to add or remove."
+        },
+        "brightness": {
+          "name": "Brightness",
+          "description": "New brightness of the brightest light."
+        }
+      }
+    },
+    "set_dynamic": {
+      "name": "Set dynamic",
+      "description": "Plays or holds the colours of the running scene. Unlike activating the scene again, this leaves manual lights alone.",
+      "fields": {
+        "dynamic": {
+          "name": "Dynamic",
+          "description": "Move through the colours, or hold them."
+        }
+      }
+    },
+    "release": {
+      "name": "Release",
+      "description": "Stops the scene without changing the lights; the status becomes Manual."
+    },
+    "reclaim": {
+      "name": "Reclaim",
+      "description": "Brings lights that were changed by hand back into the running scene.",
+      "fields": {
+        "light": {
+          "name": "Light",
+          "description": "Only this light; all of them when left out."
+        }
+      }
+    }
+  }
+}

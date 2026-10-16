@@ -24,12 +24,19 @@
     openssl
   ];
 
+  # Panel frontend (Lit + TypeScript, bundled with esbuild)
+  languages.javascript = {
+    enable = true;
+    npm.enable = true;
+  };
+
   languages.python = {
     enable = true;
     # HA 2026.3+ requires Python >= 3.14.2
     version = "3.14.5";
     venv.enable = true;
-    venv.requirements = ./requirements.txt;
+    # The test file adds Home Assistant's frontend for the end-to-end tests.
+    venv.requirements = builtins.readFile ./requirements.txt + builtins.readFile ./requirements_test.txt;
     # Shared libraries that C-extension wheels dlopen at runtime.
     libraries = with pkgs; [
       libyaml
@@ -50,6 +57,7 @@
   scripts = {
     develop.exec = ''exec "$DEVENV_ROOT"/scripts/develop "$@"'';
     lint.exec = ''exec "$DEVENV_ROOT"/scripts/lint "$@"'';
+    build-frontend.exec = ''exec "$DEVENV_ROOT"/scripts/build-frontend "$@"'';
   };
 
   enterShell = ''

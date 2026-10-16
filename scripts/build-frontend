@@ -1,0 +1,16 @@
+#!/usr/bin/env bash
+# Build the panel and card bundles into custom_components/magic_lights/panel/.
+# --watch rebuilds on change (unminified, no typecheck); --test runs the pure-logic tests.
+
+set -euo pipefail
+cd "$(dirname "$0")/../frontend"
+
+if [[ ! -d node_modules ]]; then
+    npm ci
+fi
+
+case "${1:-}" in
+    --watch) npm run watch ;;
+    --test) npm test ;;
+    *) npm run build ;;
+esac

@@ -1,0 +1,17 @@
+#!/usr/bin/env bash
+# Run the unit tests, then the end-to-end scenarios when present.
+
+set -e
+
+cd "$(dirname "$0")/.."
+
+python="${PYTHON:-python}"
+if [[ -z "${PYTHON:-}" && -x .devenv/state/venv/bin/python ]]; then
+    python=.devenv/state/venv/bin/python
+fi
+
+"$python" -m unittest discover -s tests/unit -t . "$@"
+
+if [[ -d tests/e2e ]]; then
+    "$python" -m unittest discover -s tests/e2e -t . "$@"
+fi

@@ -5,6 +5,10 @@ __pycache__
 */build/*
 */dist/*
 
+# built frontend bundle (built by scripts/build-frontend locally
+# and by the release workflow for HACS zips)
+custom_components/magic_lights/panel/
+
 
 # dev environment
 .devenv*

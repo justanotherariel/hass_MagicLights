@@ -1,29 +1,231 @@
-"""Light Scene Integration for better and dynamic Light Settings."""
-from homeassistant.core import HomeAssistant
+"""Magic Lights: curated, dynamic and adaptive scenes for rooms and zones."""
+
+from __future__ import annotations
+
+import dataclasses
+from typing import Any
 
 import voluptuous as vol
-from .const import DOMAIN
-from .configuration_schema import magic_lights_config_schema
-from .magicbase.core import magic_yaml_setup
-from homeassistant.helpers.discovery import load_platform
 
+from homeassistant.config_entries import SOURCE_IMPORT
+from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
+from homeassistant.core import Event, HomeAssistant, callback
+from homeassistant.helpers import entity_registry as er, issue_registry as ir
+from homeassistant.helpers.dispatcher import (
+    async_dispatcher_connect,
+    async_dispatcher_send,
+)
+from homeassistant.helpers.start import async_at_started
+from homeassistant.helpers.typing import ConfigType
+from homeassistant.loader import async_get_integration
 
-PLATFORMS = ["sensor"]
+from .const import DOMAIN, SIGNAL_CONFIG, SIGNAL_EFFECTS
+from .data import MagicLightsConfigEntry, MagicLightsData
+from .effects import async_get_registry
+from .engine import create_engine
+from .lights import LightIndexImpl
+from .migrate_v1 import V1_CONFIG_SCHEMA
+from .models import Config, LightsChange
+from .native import build_drivers
+from .panel import async_register_panel, async_register_static, async_unregister_panel
+from .presets import load_presets
+from .services import async_setup_services
+from .store import ConfigStore, RuntimeStoreImpl
+from .websocket import async_register_websocket
+
+# The v1 YAML block stays valid so async_setup can import it.
 CONFIG_SCHEMA = vol.Schema(
-    {DOMAIN: magic_lights_config_schema()}, extra=vol.ALLOW_EXTRA
+    {vol.Optional(DOMAIN): V1_CONFIG_SCHEMA}, extra=vol.ALLOW_EXTRA
 )
 
-# TODO:
-# * Figure something out regarding Dependencies. I cannot list all light components to make sure all lights are loaded before my component starts.
 
-
-async def async_setup(hass: HomeAssistant, config: dict):
-    """Set up Magic Lights."""
-
-    await magic_yaml_setup(hass, config)
-
-    # Setup Components (Sensors)
-    for component in PLATFORMS:
-        load_platform(hass, component, DOMAIN, {}, config)
-
+async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
+    integration = await async_get_integration(hass, DOMAIN)
+    await async_register_static(hass, str(integration.version))
+    async_register_websocket(hass)
+    async_setup_services(hass)
+    if DOMAIN in config:
+        await _async_import_yaml(hass, config[DOMAIN])
     return True
+
+
+async def _async_import_yaml(hass: HomeAssistant, yaml_config: dict[str, Any]) -> None:
+    """Move a v1 YAML configuration into the store and create the entry."""
+    store = ConfigStore(hass)
+    if await store.async_load() is None:
+        await store.async_import_v1(yaml_config)
+    hass.async_create_task(
+        hass.config_entries.flow.async_init(
+            DOMAIN, context={"source": SOURCE_IMPORT}, data={}
+        )
+    )
+    ir.async_create_issue(
+        hass,
+        DOMAIN,
+        "yaml_deprecated",
+        is_fixable=False,
+        severity=ir.IssueSeverity.WARNING,
+        translation_key="yaml_deprecated",
+    )
+
+
+async def async_setup_entry(hass: HomeAssistant, entry: MagicLightsConfigEntry) -> bool:
+    _remove_v1_entities(hass)
+    registry = async_get_registry(hass)
+    store = ConfigStore(hass)
+    config = await store.async_load_config() or Config()
+    presets = await hass.async_add_executor_job(load_presets, registry)
+    runtime = RuntimeStoreImpl(hass)
+    snapshot = await runtime.load()
+    integration = await async_get_integration(hass, DOMAIN)
+
+    # Registries are loaded here; light states may not be yet.
+    drivers = build_drivers(hass)
+    lights = LightIndexImpl(hass, config, drivers)
+    lights.rebuild()
+    coordinator = create_engine(
+        hass, lights, registry, drivers, config, presets, runtime
+    )
+    # Before the select platform, so the selects are born with this status.
+    coordinator.restore_ownership(snapshot)
+    data = entry.runtime_data = MagicLightsData(
+        coordinator,
+        lights,
+        store,
+        runtime,
+        registry,
+        presets,
+        str(integration.version),
+    )
+
+    @callback
+    def _light_renamed(event: Event[er.EventEntityRegistryUpdatedData]) -> None:
+        old, new = event.data["old_entity_id"], event.data["entity_id"]
+        coordinator.rename_light(old, new)
+        config = coordinator.config
+        if (renamed := _rename_light(config, old, new)) != config:
+            data.apply_config(hass, renamed)
+            entry.async_create_task(hass, store.async_save_config(renamed))
+
+    # Ahead of the index's own listener, so the new id is never read under
+    # the old config or ownership (an excluded or manual lamp would be claimed).
+    entry.async_on_unload(
+        hass.bus.async_listen(
+            er.EVENT_ENTITY_REGISTRY_UPDATED,
+            _light_renamed,
+            event_filter=_is_light_rename,
+        )
+    )
+    entry.async_on_unload(lights.async_listen())
+
+    @callback
+    def _lights_changed(change: LightsChange) -> None:
+        # Targets changed: the panel's copy of the config is stale.
+        if change.changed_targets:
+            async_dispatcher_send(hass, SIGNAL_CONFIG)
+
+    entry.async_on_unload(lights.subscribe(_lights_changed))
+
+    @callback
+    def _effects_changed() -> None:
+        coordinator.apply_config(coordinator.config)
+        async_dispatcher_send(hass, SIGNAL_CONFIG)  # new swatches
+
+    entry.async_on_unload(
+        async_dispatcher_connect(hass, SIGNAL_EFFECTS, _effects_changed)
+    )
+
+    await hass.config_entries.async_forward_entry_setups(entry, [Platform.SELECT])
+    await async_register_panel(hass, data.version)
+
+    @callback
+    def _start(hass: HomeAssistant) -> None:
+        coordinator.start()
+
+    entry.async_on_unload(async_at_started(hass, _start))
+
+    async def _stop(event: Event) -> None:
+        coordinator.shutdown()
+        await runtime.flush()
+
+    entry.async_on_unload(hass.bus.async_listen_once(EVENT_HOMEASSISTANT_STOP, _stop))
+    return True
+
+
+async def async_unload_entry(
+    hass: HomeAssistant, entry: MagicLightsConfigEntry
+) -> bool:
+    if not await hass.config_entries.async_unload_platforms(entry, [Platform.SELECT]):
+        return False
+    data = entry.runtime_data
+    data.coordinator.shutdown()
+    await data.runtime.flush()
+    async_unregister_panel(hass)
+    return True
+
+
+async def async_remove_entry(
+    hass: HomeAssistant, entry: MagicLightsConfigEntry
+) -> None:
+    """Forget what ran; rooms, zones and scenes stay for the next entry."""
+    await RuntimeStoreImpl(hass).remove()
+
+
+@callback
+def _is_light_rename(data: er.EventEntityRegistryUpdatedData) -> bool:
+    return (
+        data["action"] == "update"
+        and "old_entity_id" in data
+        and data["entity_id"].startswith(f"{Platform.LIGHT}.")
+    )
+
+
+def _rename_light(config: Config, old: str, new: str) -> Config:
+    """Return the config with every reference to light `old` pointing to `new`."""
+
+    def ids(entity_ids: tuple[str, ...]) -> tuple[str, ...]:
+        return tuple(new if e == old else e for e in entity_ids)
+
+    replace = dataclasses.replace
+    return replace(
+        config,
+        zones={
+            zone_id: replace(zone, lights=ids(zone.lights))
+            for zone_id, zone in config.zones.items()
+        },
+        targets={
+            target_id: replace(
+                options,
+                excluded_lights=ids(options.excluded_lights),
+                extra_lights=ids(options.extra_lights),
+            )
+            for target_id, options in config.targets.items()
+        },
+        scenes={
+            scene_id: replace(
+                scene,
+                layers=tuple(
+                    layer
+                    if layer.lights == "all"
+                    else replace(layer, lights=ids(layer.lights))
+                    for layer in scene.layers
+                ),
+            )
+            for scene_id, scene in config.scenes.items()
+        },
+        settings=replace(
+            config.settings,
+            light_buses={
+                new if e == old else e: bus_id
+                for e, bus_id in config.settings.light_buses.items()
+            },
+        ),
+    )
+
+
+def _remove_v1_entities(hass: HomeAssistant) -> None:
+    """Remove the per-zone sensors Magic Lights v1 created."""
+    registry = er.async_get(hass)
+    for entry in list(registry.entities.values()):
+        if entry.platform == DOMAIN and entry.domain == Platform.SENSOR:
+            registry.async_remove(entry.entity_id)

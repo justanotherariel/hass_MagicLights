@@ -2,5 +2,3 @@ pip>=25.2
 ruff==0.16.4
 homeassistant==2026.8.3
 colorlog==6.12.0
-colorspace==1.0.0
-colorspacious==1.1.2

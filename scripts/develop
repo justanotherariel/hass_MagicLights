@@ -10,6 +10,11 @@ if [[ ! -d "${PWD}/config" ]]; then
     hass --config "${PWD}/config" --script ensure_config
 fi
 
+# Build the panel bundle if it doesn't exist yet
+if [[ ! -f "${PWD}/custom_components/magic_lights/panel/magic-lights-panel.js" ]]; then
+    "${PWD}/scripts/build-frontend"
+fi
+
 # Set the path to custom_components
 ## This let's us have the structure we want <root>/custom_components/magic_lights
 ## while at the same time have Home Assistant configuration inside <root>/config

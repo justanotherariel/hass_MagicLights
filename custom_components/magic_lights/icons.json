@@ -1,0 +1,42 @@
+{
+  "entity": {
+    "select": {
+      "scene": {
+        "default": "mdi:lightbulb-auto",
+        "state": {
+          "Off": "mdi:lightbulb-off-outline",
+          "Manual": "mdi:lightbulb-on-outline"
+        }
+      }
+    }
+  },
+  "services": {
+    "activate_scene": {
+      "service": "mdi:palette"
+    },
+    "turn_off": {
+      "service": "mdi:lightbulb-off"
+    },
+    "toggle_scene": {
+      "service": "mdi:lightbulb-auto"
+    },
+    "next_scene": {
+      "service": "mdi:skip-next"
+    },
+    "previous_scene": {
+      "service": "mdi:skip-previous"
+    },
+    "adjust_brightness": {
+      "service": "mdi:brightness-6"
+    },
+    "set_dynamic": {
+      "service": "mdi:play-pause"
+    },
+    "release": {
+      "service": "mdi:hand-back-left"
+    },
+    "reclaim": {
+      "service": "mdi:restore"
+    }
+  }
+}

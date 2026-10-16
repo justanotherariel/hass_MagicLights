@@ -1,0 +1,26 @@
+Magic Lights built-in scenes (scenes.json)
+
+The colour palettes, brightness levels and colour-temperature fallbacks of the
+built-in colour scenes are derived from hass-scene_presets by Sören Beye
+(Hypfer), https://github.com/Hypfer/hass-scene_presets, licensed under the
+Apache License, Version 2.0:
+
+    Copyright 2018 Sören Beye
+
+    Licensed under the Apache License, Version 2.0 (the "License");
+    you may not use this file except in compliance with the License.
+    You may obtain a copy of the License at
+
+        http://www.apache.org/licenses/LICENSE-2.0
+
+    Unless required by applicable law or agreed to in writing, software
+    distributed under the License is distributed on an "AS IS" BASIS,
+    WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+    See the License for the specific language governing permissions and
+    limitations under the License.
+
+Changes: values were converted to Magic Lights' scene format (xy rounded to
+four decimals, brightness in percent) and cross-checked against white and
+palette values observed on Philips Hue bridges. Scene names are those of the
+Philips Hue app; Philips Hue is a trademark of Signify, which does not endorse
+this project.
