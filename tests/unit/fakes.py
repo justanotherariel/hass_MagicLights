@@ -401,8 +401,8 @@ PARAM_TABLE: dict[str, vol.Schema] = {
                 [
                     {"value": "static", "label": "None (static)"},
                     {"value": "default", "label": "Dim after sunset"},
-                    {"value": "linear", "label": "Linear ramp"},
-                    {"value": "tanh", "label": "Smooth ramp"},
+                    {"value": "linear", "label": "Linear"},
+                    {"value": "tanh", "label": "Smooth"},
                 ]
             ),
             vol.Required("brightness", default=100): PCT,

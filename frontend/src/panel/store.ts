@@ -92,6 +92,55 @@ export const toStored = (scene: StoredScene): StoredScene => ({
 /** The id a scene has in menus, services and runtime: an edited preset goes by its preset's id. */
 export const menuId = (scene: StoredScene): string => scene.preset ?? scene.id;
 
+/** The ids a target's menu holds, fitting or not; a default menu is its fitting user scenes. */
+export const menuIds = (target: TargetInfo): string[] => [...(target.options.visible_scenes ?? target.scenes)];
+
+/** A menu with `sceneId` appended (kept in place if there) or removed. */
+export const withScene = (ids: readonly string[], sceneId: string, shown: boolean): string[] => {
+  if (!shown) return ids.filter((id) => id !== sceneId);
+  return ids.includes(sceneId) ? [...ids] : [...ids, sceneId];
+};
+
+/** A menu with `sceneId` moved in front of `before` (to the end without one). */
+export const movedBefore = (ids: readonly string[], sceneId: string, before?: string): string[] => {
+  const rest = ids.filter((id) => id !== sceneId);
+  const at = before === undefined ? -1 : rest.indexOf(before);
+  rest.splice(at < 0 ? rest.length : at, 0, sceneId);
+  return rest;
+};
+
+/** Where a scene stands in one target. */
+export interface Availability {
+  target: TargetInfo;
+  /** In the target's menu. */
+  shown: boolean;
+  /** It has lights there and can run. */
+  fits: boolean;
+  /** In the menu without lights there: it shows greyed out until it is set up. */
+  needsSetUp: boolean;
+  /** It runs when a light is switched on while the room is off. */
+  isDefault: boolean;
+}
+
+/** `scene` as menus know it (a preset resolved to its edit); `globalDefault` is settings.default_scene. */
+export const availabilityIn = (
+  scene: SceneInfo,
+  target: TargetInfo,
+  globalDefault: string | null,
+): Availability => {
+  const id = menuId(scene);
+  const shown = menuIds(target).includes(id);
+  const fits = scene.fits.includes(target.id);
+  const fallback = target.options.default_scene ?? globalDefault;
+  return {
+    target,
+    shown,
+    fits,
+    needsSetUp: shown && !fits,
+    isDefault: target.kind === "room" && fallback === id,
+  };
+};
+
 export class MlStore {
   static async load(host: StoreHost): Promise<MlStore> {
     const ctx: StoreContext = { host, seq: 0, writes: Promise.resolve() };
@@ -173,6 +222,27 @@ export class MlStore {
     return (scene.preset && this._scenes.get(scene.preset)) || scene;
   }
 
+  /** A preset that has an edit for every room (or that edit itself). */
+  edited(sceneId: string): boolean {
+    const scene = this._scenes.get(sceneId);
+    return !!(scene?.override || scene?.preset);
+  }
+
+  /** Per target: whether the scene is in its menu, fits there, needs setting up, is its switch-on scene. */
+  availability(sceneId: string): Availability[] {
+    const scene = this.resolveScene(sceneId);
+    if (!scene) return [];
+    const globalDefault = this.config.settings.default_scene;
+    return this.targets.map((target) => availabilityIn(scene, target, globalDefault));
+  }
+
+  /** The room the target-free editor previews a scene in: the first it fits, else the first room. */
+  previewTarget(sceneId: string): TargetInfo | undefined {
+    const fits = new Set(this.resolveScene(sceneId)?.fits ?? []);
+    const rooms = this.targets.filter((t) => t.kind === "room");
+    return rooms.find((t) => fits.has(t.id)) ?? this.targets.find((t) => fits.has(t.id)) ?? rooms[0];
+  }
+
   /** Visible (or hidden) scenes of a target, resolved and in menu order. */
   scenesFor(targetId: string, which: "visible" | "hidden" = "visible"): SceneInfo[] {
     const target = this._targets.get(targetId);
@@ -180,9 +250,9 @@ export class MlStore {
     return ids.flatMap((id) => this.resolveScene(id) ?? []);
   }
 
-  /** The user's scenes, for the global default scene. */
-  globalScenes(): SceneInfo[] {
-    return this.config.scenes.filter((s) => !s.builtin && !s.preset);
+  /** Every scene once, as menus know it: presets (an edited one as its edit) and the user's. */
+  menuScenes(): SceneInfo[] {
+    return this.config.scenes.flatMap((s) => (s.preset ? [] : (this.resolveScene(s.id) ?? [])));
   }
 
   /** The gallery section of a scene; an edited preset sits where its preset does. */
@@ -221,18 +291,19 @@ export class MlStore {
   readonly swatchesOf = (sceneId: string, owner: TargetId): readonly string[] | undefined =>
     this._targets.get(owner)?.swatches[sceneId] ?? this.resolveScene(sceneId)?.swatches;
 
-  // ---- editor drafts (sessionStorage, keyed by scene: one scene, one draft in every room)
+  // ---- editor drafts (sessionStorage, keyed by scene: one scene, one draft in every room;
+  // editor/working-copy.ts keeps the draft's base next to it)
 
-  draft(sceneId: string): StoredScene | undefined {
+  draft<T = StoredScene>(sceneId: string): T | undefined {
     try {
       const raw = storage()?.getItem(`${DRAFT_PREFIX}${sceneId}`);
-      return raw ? (JSON.parse(raw) as StoredScene) : undefined;
+      return raw ? (JSON.parse(raw) as T) : undefined;
     } catch {
       return undefined;
     }
   }
 
-  setDraft(sceneId: string, scene: StoredScene | undefined): void {
+  setDraft(sceneId: string, scene: object | undefined): void {
     const key = `${DRAFT_PREFIX}${sceneId}`;
     try {
       if (scene) storage()?.setItem(key, JSON.stringify(scene));
@@ -243,9 +314,9 @@ export class MlStore {
   }
 
   /**
-   * What the editor opens at /t/<target>/scene/<sceneId>: the draft, else the
-   * stored scene (a preset id opens its edit), else a new edit of the preset for
-   * every room. Undefined for unknown ids.
+   * What the editor opens at /scene/<sceneId>: the draft, else the stored scene (a
+   * preset id opens its edit), else a new edit of the preset for every room, seeded
+   * from the preset. Undefined for unknown ids.
    */
   editableScene(sceneId: string): StoredScene | undefined {
     const draft = this.draft(sceneId);
@@ -259,12 +330,12 @@ export class MlStore {
     return { ...toStored(scene), id: newSceneId(), preset: scene.id };
   }
 
-  /** A new user scene set up in the target, blank or copied from `from`. */
-  newScene(targetId: string, from?: SceneInfo): StoredScene {
+  /** A new user scene, set up in the target when given (layer 1: its rooms), blank or copied from `from`. */
+  newScene(targetId?: string, from?: SceneInfo): StoredScene {
     const base = from ? toStored(from) : undefined;
     return {
       id: newSceneId(),
-      name: this.uniqueName(from ? `${from.name} copy` : "New scene", targetId),
+      name: this.uniqueName(from ? `${from.name} copy` : "New scene"),
       icon: base?.icon ?? null,
       preset: null,
       layers: base?.layers ?? [this._blankLayer(targetId)],
@@ -274,21 +345,17 @@ export class MlStore {
     };
   }
 
-  /** A name no preset and no scene set up in the target has (the backend's rule). */
-  uniqueName(base: string, targetId: string): string {
-    const taken = new Set(
-      this.config.scenes
-        .filter((s) => s.builtin || s.fits.includes(targetId as TargetId))
-        .map((s) => s.name.toLowerCase()),
-    );
+  /** A name no scene has: a scene can later be set up in any room. */
+  uniqueName(base: string): string {
+    const taken = new Set(this.config.scenes.map((s) => s.name.toLowerCase()));
     let name = base;
     for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${base} ${n}`;
     return name;
   }
 
-  private _blankLayer(targetId: string): Layer {
+  private _blankLayer(targetId?: string): Layer {
     const effect = this._effects.get("white") ?? this.config.effects[0];
-    const target = this._targets.get(targetId);
+    const target = targetId ? this._targets.get(targetId) : undefined;
     return {
       lights: target ? wholeTarget(target, (id) => this._targets.get(id)?.lights) : [],
       effect: effect?.key ?? "white",
@@ -358,22 +425,60 @@ export class MlStore {
     );
   }
 
-  /** Shows or hides a scene in the target's menu, keeping the current order. */
-  setSceneVisible(targetId: string, sceneId: string, visible: boolean): Promise<TargetInfo> {
-    return this.saveTargetOptions(targetId, ({ scenes }) => ({
-      visible_scenes: visible
-        ? [...scenes.filter((id) => id !== sceneId), sceneId]
-        : scenes.filter((id) => id !== sceneId),
-    }));
+  /** How long switching scenes takes in every room, in seconds. */
+  setFade(seconds: number): Promise<void> {
+    return this.saveSettings({ transition: seconds });
   }
 
-  /** Moves a scene of the target's menu to `index`. */
-  moveScene(targetId: string, sceneId: string, index: number): Promise<TargetInfo> {
-    return this.saveTargetOptions(targetId, ({ scenes }) => {
-      const next = scenes.filter((id) => id !== sceneId);
-      next.splice(index, 0, sceneId);
-      return { visible_scenes: next };
+  /** Several targets' menus in one write (null: the default menu), built from the latest snapshot. */
+  saveMenus(menus: (latest: MlStore) => Record<string, string[] | null>): Promise<TargetInfo[]> {
+    return this._write((latest) => api.saveMenus(this._hass, menus(latest) as Record<TargetId, string[] | null>));
+  }
+
+  setMenu(targetId: string, ids: string[] | null): Promise<TargetInfo[]> {
+    return this.saveMenus(() => ({ [targetId]: ids }));
+  }
+
+  /** Shows (appends) or hides a scene in the menus of the targets. */
+  setInMenus(sceneId: string, targetIds: readonly string[], shown: boolean): Promise<TargetInfo[]> {
+    return this.saveMenus((latest) =>
+      Object.fromEntries(targetIds.map((id) => [id, withScene(latest._menu(id), sceneId, shown)])),
+    );
+  }
+
+  /** Flips a scene in the menu of each target. */
+  toggleInMenus(sceneId: string, targetIds: readonly string[]): Promise<TargetInfo[]> {
+    return this.saveMenus((latest) =>
+      Object.fromEntries(
+        targetIds.map((id) => {
+          const ids = latest._menu(id);
+          return [id, withScene(ids, sceneId, !ids.includes(sceneId))];
+        }),
+      ),
+    );
+  }
+
+  /** Shows or hides a scene in the target's menu, keeping the current order. */
+  setSceneVisible(targetId: string, sceneId: string, visible: boolean): Promise<TargetInfo[]> {
+    return this.setInMenus(sceneId, [targetId], visible);
+  }
+
+  /** Moves a scene to `index` among the target's runnable menu scenes (`scenes`). */
+  moveScene(targetId: string, sceneId: string, index: number): Promise<TargetInfo[]> {
+    return this.saveMenus((latest) => {
+      const anchor = latest._target(targetId).scenes.filter((id) => id !== sceneId)[index];
+      return { [targetId]: movedBefore(latest._menu(targetId), sceneId, anchor) };
     });
+  }
+
+  private _target(id: string): TargetInfo {
+    const target = this._targets.get(id);
+    if (!target) throw new Error(`Unknown target ${id}`);
+    return target;
+  }
+
+  private _menu(id: string): string[] {
+    return menuIds(this._target(id));
   }
 
   // ---- runtime (no config change)

@@ -643,6 +643,37 @@ class AdaptiveTest(unittest.TestCase):
             {n for n in always if "visible" in fields[n]}, set(), sorted(always)
         )
 
+    def test_layout_hints(self) -> None:
+        fields = {f["name"]: f for f in serialize_schema(Adaptive.schema)}
+        advanced = {n for n, f in fields.items() if f.get("advanced")}
+        self.assertEqual(
+            advanced,
+            {
+                "sunrise_offset",
+                "sunset_offset",
+                "min_sunrise",
+                "max_sunrise",
+                "min_sunset",
+                "max_sunset",
+                "interval",
+                "transition",
+            },
+        )
+        self.assertEqual(
+            fields["min_kelvin"]["pair"],
+            {"max": "max_kelvin", "label": "Warmest ↔ coolest white"},
+        )
+        self.assertEqual(
+            fields["min_brightness"]["row"], fields["max_brightness"]["row"]
+        )
+        for name in ("ramp_dark", "ramp_light"):
+            steps = fields[name]["steps"]
+            # The default is a step, so a fresh scene shows no custom value.
+            self.assertIn(Adaptive.validate({})[name], [s["value"] for s in steps])
+            self.assertEqual(
+                [s["label"].split()[0] for s in steps], ["Short", "Medium", "Long"]
+            )
+
     def test_curve_defaults_match_the_schema(self) -> None:
         self.assertEqual(_curve_params(Adaptive.validate({})), AdaptiveParams())
 

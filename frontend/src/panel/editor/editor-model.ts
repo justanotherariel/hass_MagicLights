@@ -1,5 +1,6 @@
 // Pure logic of the scene editor: which lights a layer sets, the part of a layer one
-// room edits, layer summaries, draft comparison and the checks that gate Try and Save.
+// room edits, layer summaries, room-only layers following shared edits, draft
+// comparison and the checks that gate Try and Save.
 
 import { colorToHex } from "../../shared/color";
 import { getHiddenFields } from "../../shared/conditions";
@@ -196,6 +197,58 @@ export const stableJson = (value: unknown): string =>
       ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
       : v,
   );
+
+/** Whether the editor's scene differs from what it is measured against. */
+export const isDirty = (scene: StoredScene, baseline: StoredScene): boolean =>
+  stableJson(scene) !== stableJson(baseline);
+
+/**
+ * Save needs a change, except for a new scene of your own: an untouched preset would
+ * only store a copy of itself, an unchanged stored scene nothing at all.
+ */
+export const canSave = (scene: StoredScene, baseline: StoredScene, stored: boolean): boolean =>
+  isDirty(scene, baseline) || (!stored && !scene.preset);
+
+export interface Followed {
+  scene: StoredScene;
+  /** Later layers that took over a changed value, for an "Also changed in …" caption. */
+  layers: number[];
+}
+
+/**
+ * A room-only layer follows edits to an earlier layer of the same effect for the
+ * values the two had in common: when layer i's param changes old → new, every later
+ * layer of that effect still holding old gets new. Values that differ stay. Only a
+ * params edit follows; adding, removing or reordering layers changes nothing.
+ */
+export const variantsFollow = (before: StoredScene, after: StoredScene): Followed => {
+  const n = after.layers.length;
+  if (before.layers.length !== n) return { scene: after, layers: [] };
+  const same = (a: unknown, b: unknown) => stableJson(a) === stableJson(b);
+  const layers = after.layers.map((layer) => ({ ...layer, params: { ...layer.params } }));
+  const followed = new Set<number>();
+  before.layers.forEach((old, i) => {
+    const edited = after.layers[i];
+    if (old.effect !== edited.effect || same(old.params, edited.params)) return;
+    const keys = new Set([...Object.keys(old.params), ...Object.keys(edited.params)]);
+    for (const key of keys) {
+      const from = old.params[key];
+      const to = edited.params[key];
+      if (same(from, to)) continue;
+      for (let j = i + 1; j < n; j++) {
+        const later = layers[j];
+        // A layer edited in the same step keeps its own value.
+        if (later.effect !== edited.effect || !same(before.layers[j].params[key], from)) continue;
+        if (!same(after.layers[j].params[key], from)) continue;
+        if (to === undefined) delete later.params[key];
+        else later.params[key] = structuredClone(to);
+        followed.add(j);
+      }
+    }
+  });
+  if (!followed.size) return { scene: after, layers: [] };
+  return { scene: { ...after, layers }, layers: [...followed].sort((a, b) => a - b) };
+};
 
 export interface Problem {
   /** Layer index, or undefined for the scene itself. */

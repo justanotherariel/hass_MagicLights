@@ -40,6 +40,18 @@ def _number(lo: float, hi: float, unit: str) -> selector.NumberSelector:
     )
 
 
+def _steps(short: int, medium: int, long: int) -> list[dict[str, Any]]:
+    return [
+        {"value": short, "label": f"Short {short} min"},
+        {"value": medium, "label": f"Medium {medium} min"},
+        {"value": long, "label": f"Long {_hours(long)}"},
+    ]
+
+
+def _hours(minutes: int) -> str:
+    return f"{minutes // 60} h" if minutes % 60 == 0 else f"{minutes} min"
+
+
 def _time(value: str | time | None) -> time | None:
     return None if value is None else cv.time(value)
 
@@ -91,8 +103,8 @@ class Adaptive(Effect):
                         selector.SelectOptionDict(
                             value="default", label="Dim after sunset"
                         ),
-                        selector.SelectOptionDict(value="linear", label="Linear ramp"),
-                        selector.SelectOptionDict(value="tanh", label="Smooth ramp"),
+                        selector.SelectOptionDict(value="linear", label="Linear"),
+                        selector.SelectOptionDict(value="tanh", label="Smooth"),
                     ]
                 )
             ),
@@ -104,12 +116,12 @@ class Adaptive(Effect):
             vol.Required(
                 "min_brightness",
                 default=40,
-                description={"label": "Night brightness", "visible": _CURVE},
+                description={"label": "Night", "visible": _CURVE, "row": "levels"},
             ): PCT,
             vol.Required(
                 "max_brightness",
                 default=100,
-                description={"label": "Day brightness", "visible": _CURVE},
+                description={"label": "Day", "visible": _CURVE, "row": "levels"},
             ): PCT,
             vol.Required(
                 "ramp_dark",
@@ -118,6 +130,8 @@ class Adaptive(Effect):
                     "label": "Ramp on the dark side",
                     "helper": "Minutes after sunset and before sunrise",
                     "visible": _RAMPS,
+                    "row": "ramps",
+                    "steps": _steps(30, 60, 120),
                 },
             ): _number(5, 240, "min"),
             vol.Required(
@@ -127,39 +141,56 @@ class Adaptive(Effect):
                     "label": "Ramp on the light side",
                     "helper": "Minutes before sunset and after sunrise",
                     "visible": _RAMPS,
+                    "row": "ramps",
+                    "steps": _steps(45, 90, 180),
                 },
             ): _number(5, 240, "min"),
             vol.Required(
-                "min_kelvin", default=2200, description={"label": "Warmest white"}
+                "min_kelvin",
+                default=2200,
+                description={
+                    "label": "Warmest white",
+                    "pair": {"max": "max_kelvin", "label": "Warmest ↔ coolest white"},
+                },
             ): KELVIN(1000, 10000),
             vol.Required(
                 "max_kelvin", default=5000, description={"label": "Coolest white"}
             ): KELVIN(1000, 10000),
             vol.Required(
-                "sunrise_offset", default=0, description={"label": "Sunrise offset"}
+                "sunrise_offset",
+                default=0,
+                description={"label": "Sunrise offset", "advanced": True},
             ): _number(-180, 180, "min"),
             vol.Required(
-                "sunset_offset", default=0, description={"label": "Sunset offset"}
+                "sunset_offset",
+                default=0,
+                description={"label": "Sunset offset", "advanced": True},
             ): _number(-180, 180, "min"),
             vol.Optional(
-                "min_sunrise", description={"label": "Sunrise not before"}
+                "min_sunrise",
+                description={"label": "Sunrise not before", "advanced": True},
             ): selector.TimeSelector(),
             vol.Optional(
-                "max_sunrise", description={"label": "Sunrise not after"}
+                "max_sunrise",
+                description={"label": "Sunrise not after", "advanced": True},
             ): selector.TimeSelector(),
             vol.Optional(
-                "min_sunset", description={"label": "Sunset not before"}
+                "min_sunset",
+                description={"label": "Sunset not before", "advanced": True},
             ): selector.TimeSelector(),
             vol.Optional(
-                "max_sunset", description={"label": "Sunset not after"}
+                "max_sunset",
+                description={"label": "Sunset not after", "advanced": True},
             ): selector.TimeSelector(),
             vol.Required(
-                "interval", default=90, description={"label": "Update every"}
+                "interval",
+                default=90,
+                description={"label": "Update every", "advanced": True},
             ): _number(30, 600, "s"),
             vol.Required(
                 "transition",
                 default=45,
-                description={"label": "Glide between updates"},
+                description={"label": "Glide between updates", "advanced": True},
             ): _number(1, 120, "s"),
         }
     )

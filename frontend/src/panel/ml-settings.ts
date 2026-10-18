@@ -1,10 +1,12 @@
-// Global settings: fade, default scene, native effects, bus pacing and light → bus overrides.
+// Global settings: switching scenes (fade, switch-on scene), native effects, bus pacing
+// and light → bus overrides.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import type { BusInfo, BusLimits, HomeAssistant, Settings } from "../shared/types";
 import { defineElement, plural, saveSwitch, showToast, toastOnError } from "../shared/util";
-import type { MlStore, Update } from "./store";
+import "./components/ml-fade-select";
+import { menuId, type MlStore, type Update } from "./store";
 import { pageStyles } from "./styles";
 
 const NONE = "__none__";
@@ -31,8 +33,6 @@ interface Field {
   whole?: boolean;
 }
 
-const TRANSITION: Field = { label: "Fade", unit: "s", step: 0.1, min: 0, max: 300 };
-
 /** The backend's ranges (BUS_LIMITS_SCHEMA). */
 const LIMITS: [keyof BusLimits, Field][] = [
   ["rate", { label: "Messages per second", unit: "msg/s", step: 0.1, min: 0.1, max: 1000 }],
@@ -54,8 +54,10 @@ class MlSettings extends LitElement {
   protected render() {
     const settings = this.store.config.settings;
     return html`
-      <h2 class="section-title">General</h2>
-      <ha-card>${this._renderGeneral(settings)}</ha-card>
+      <h2 class="section-title">Switching scenes</h2>
+      <ha-card>${this._renderSwitching(settings)}</ha-card>
+      <h2 class="section-title">Lights</h2>
+      <ha-card>${this._renderLights(settings)}</ha-card>
       <h2 class="section-title">Buses</h2>
       <p class="hint">
         Lights on one radio network or bridge share its message budget. Dynamic scenes pace
@@ -69,25 +71,20 @@ class MlSettings extends LitElement {
     `;
   }
 
-  private _renderGeneral(settings: Settings) {
-    const scenes = this.store.globalScenes();
+  private _renderSwitching(settings: Settings) {
     return html`
-      <ha-settings-row>
-        <span slot="heading">Fade</span>
-        <span slot="description">How long switching scenes takes. A scene can set its own.</span>
-        <ha-input
-          type="number"
-          .min=${TRANSITION.min}
-          .max=${TRANSITION.max}
-          .step=${TRANSITION.step}
-          class="number"
-          aria-label=${TRANSITION.label}
-          .value=${String(settings.transition)}
-          @change=${(ev: Event) => this._saveTransition(ev.target as Input)}
-        >
-          <span slot="end">${TRANSITION.unit}</span>
-        </ha-input>
-      </ha-settings-row>
+      <div class="fade">
+        <span class="field-label">Fade <span class="secondary">how long a scene change takes, in every room</span></span>
+        <ml-fade-select
+          .value=${settings.transition}
+          @value-changed=${(ev: CustomEvent<{ value: number | null }>) => {
+            if (ev.detail.value !== null) this._save({ transition: ev.detail.value });
+          }}
+        ></ml-fade-select>
+        <span class="secondary hint-small">
+          A scene can set its own fade in its editor. Adaptive and candle scenes use it for their first step too.
+        </span>
+      </div>
       <ha-settings-row .narrow=${this.narrow}>
         <span slot="heading">When a light is switched on</span>
         <span slot="description">
@@ -97,13 +94,18 @@ class MlSettings extends LitElement {
           .label=${"Scene when a light is switched on"}
           .options=${[
             { value: NONE, label: "Nothing" },
-            ...this.store.sceneOptions(scenes, (scene) => scene.id),
+            ...this.store.sceneOptions(this.store.menuScenes(), menuId),
           ]}
           .value=${settings.default_scene ?? NONE}
           @selected=${(ev: CustomEvent<{ value: string }>) =>
             this._save({ default_scene: ev.detail.value === NONE ? null : ev.detail.value })}
         ></ha-select>
       </ha-settings-row>
+    `;
+  }
+
+  private _renderLights(settings: Settings) {
+    return html`
       <ha-settings-row>
         <span slot="heading">Native effects</span>
         <span slot="description">
@@ -231,13 +233,6 @@ class MlSettings extends LitElement {
     return raw && ok ? value : undefined;
   }
 
-  private _saveTransition(input: Input): void {
-    const revert = () => (input.value = String(this.store.config.settings.transition));
-    const value = this._valid(input.value.trim(), TRANSITION);
-    if (value === undefined) this._reject(TRANSITION, revert);
-    else this._save({ transition: value }, revert);
-  }
-
   /** An empty field drops the override. */
   private _saveLimit(busId: string, key: keyof BusLimits, field: Field, input: Input): void {
     const stored = this.store.config.settings.buses[busId]?.[key];
@@ -287,9 +282,28 @@ class MlSettings extends LitElement {
       ha-select {
         min-width: 200px;
       }
-      ha-input.number {
-        width: 120px;
-        --ha-input-padding-bottom: 0;
+      .fade {
+        display: flex;
+        flex-direction: column;
+        gap: var(--ha-space-2);
+        padding: var(--ha-space-4);
+      }
+      .field-label {
+        font-weight: var(--ha-font-weight-medium);
+      }
+      .field-label .secondary {
+        margin-inline-start: var(--ha-space-2);
+        font-size: var(--ha-font-size-s);
+        font-weight: var(--ha-font-weight-normal);
+      }
+      ml-fade-select {
+        max-width: 560px;
+      }
+      .hint-small {
+        font-size: var(--ha-font-size-s);
+      }
+      .fade + ha-settings-row {
+        border-top: 1px solid var(--divider-color);
       }
       .hint {
         margin: 0 var(--ha-space-1) var(--ha-space-3);

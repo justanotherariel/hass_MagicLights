@@ -57,7 +57,7 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 ## Parameters
 
-The schema maps `vol.Required` / `vol.Optional` names to Home Assistant **selectors**, and nothing else; anything else is rejected at registration, because the editor renders every field with `ha-selector`.
+The schema maps `vol.Required` / `vol.Optional` names to Home Assistant **selectors**, and nothing else; anything else is rejected at registration, because the editor draws every field from its selector.
 
 ```python
 vol.Required("speed", default=0.5, description={
@@ -68,6 +68,11 @@ vol.Required("speed", default=0.5, description={
 ```
 
 - `description` carries the field's `label`, `helper` text and `visible` condition (ha-form's format: `{"field", "value"}`, optionally with `"operator"`: `"eq"`, `"not_eq"`, `"in"`, `"not_in"`, `"exists"` or `"not_exists"`; or `{"condition": "and" | "or" | "not", "conditions": [...]}`). Without a label the key is humanised.
+- The Magic Lights editor draws each field by its selector's shape, the same for every effect: a `number` in `%` is a large bar with the value printed in it, other numbers with a range a slim bar, a `color_temp` a kelvin gradient bar, a `select` with up to 4 options and no custom value a segmented control, a `TimeSelector` hours and minutes. Anything else is a plain `ha-selector`. Four more `description` keys shape the layout; other tools ignore them:
+  - `"advanced": True` puts the field in one collapsed "Advanced" panel under the form, whose header lists what it holds.
+  - `"pair": {"max": "<other key>", "label": "Warmest ↔ coolest white"}` on the lower field of a min/max pair draws both as one range bar with two handles (numbers or colour temperatures of the same range). The two keys stay separate parameters.
+  - `"steps": [{"value": 30, "label": "Short 30 min"}, …]` on a number offers those values as a segmented control; a stored value that is no step shows as an extra "Custom" segment.
+  - `"row": "<name>"` places consecutive fields with the same name side by side when there is room.
 - A hidden field only leaves the form: its value is kept, saved and passed to `render`, so a mode switched off and on again comes back as it was. Read the controlling field in `render` to know whether to use it.
 - `vol.Optional` without a default means the key may be missing from `ctx.params`.
 - `api.py` adds:

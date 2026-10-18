@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { MlStore, menuId } from "../src/panel/store";
+import { MlStore, availabilityIn, menuId, menuIds, movedBefore, withScene } from "../src/panel/store";
 import { isPlayable } from "../src/shared/scene-actions";
 import type { ConfigDto, HomeAssistant, SelectAttributes, Settings, TargetOptions } from "../src/shared/types";
 import { attrs, CONFIG, fakeHass } from "./fixtures";
@@ -77,7 +77,7 @@ test("the editor opens a new edit of a preset, its one stored edit otherwise", a
   assert.equal("builtin" in store.editableScene("s_22222222")!, false);
 });
 
-test("new scenes are set up where they are made, with a name free there", async () => {
+test("new scenes are set up where they are made, with a name no scene has", async () => {
   const { store } = await load();
   const blank = store.newScene("room:living");
   assert.equal(blank.name, "New scene");
@@ -85,11 +85,62 @@ test("new scenes are set up where they are made, with a name free there", async 
     { lights: ["room:living"], effect: "white", params: { kelvin: 2700, brightness: 100 } },
   ]);
   assert.deepEqual(store.newScene("zone:downstairs").layers[0].lights, ["room:living", "room:kitchen"]);
+  assert.deepEqual(store.newScene().layers[0].lights, [], "made outside a room: lights picked later");
   const copy = store.newScene("room:living", store.scene("s_22222222"));
   assert.equal(copy.name, "Movie copy");
-  assert.equal(store.uniqueName("Savanna sunset", "room:kitchen"), "Savanna sunset 2", "presets count everywhere");
-  assert.equal(store.uniqueName("movie", "room:living"), "movie 2");
-  assert.equal(store.uniqueName("Movie", "room:kitchen"), "Movie", "Movie has no lights in the kitchen");
+  assert.equal(store.uniqueName("Savanna sunset"), "Savanna sunset 2");
+  assert.equal(store.uniqueName("movie"), "movie 2", "a scene can be set up in any room later");
+});
+
+test("the editor previews a scene in the first room it fits", async () => {
+  const { store } = await load();
+  assert.equal(store.previewTarget("s_22222222")?.id, "room:living");
+  assert.equal(store.previewTarget("relax")?.id, "room:kitchen");
+  assert.equal(store.previewTarget("nope")?.id, "room:kitchen", "nothing fits: the first room");
+});
+
+test("menu scenes list every scene once, a preset as its edit", async () => {
+  const { store } = await load();
+  assert.deepEqual(store.menuScenes().map((s) => s.id), ["relax", "s_11111111", "s_22222222"]);
+  assert.equal(store.edited("savanna_sunset"), true);
+  assert.equal(store.edited("s_11111111"), true);
+  assert.equal(store.edited("relax"), false);
+  assert.equal(store.edited("s_22222222"), false);
+});
+
+test("availability: shown, fits, needs set-up and the switch-on scene per target", async () => {
+  const { store } = await load();
+  const living = store.target("room:living")!;
+  const kitchen = store.target("room:kitchen")!;
+  const movie = store.scene("s_22222222")!;
+  // Picked into the kitchen, where Movie has no lights.
+  const picked = { ...kitchen, options: { ...kitchen.options, visible_scenes: ["relax", "s_22222222"] } };
+  assert.deepEqual(menuIds(picked), ["relax", "s_22222222"]);
+  assert.deepEqual(menuIds(kitchen), ["relax", "savanna_sunset"], "a default menu is the scenes it runs");
+  const here = availabilityIn(movie, living, null);
+  assert.deepEqual([here.shown, here.fits, here.needsSetUp, here.isDefault], [true, true, false, false]);
+  const there = availabilityIn(movie, picked, "s_22222222");
+  assert.deepEqual([there.shown, there.fits, there.needsSetUp, there.isDefault], [true, false, true, true]);
+  const own = { ...living, options: { ...living.options, default_scene: "relax" } };
+  assert.equal(availabilityIn(movie, own, "s_22222222").isDefault, false, "a room's own choice wins");
+  const zone = store.target("zone:downstairs")!;
+  assert.equal(availabilityIn(movie, zone, "s_22222222").isDefault, false, "zones have no switch-on scene");
+  assert.deepEqual(
+    store.availability("savanna_sunset").map((a) => [a.target.id, a.shown]),
+    [
+      ["room:kitchen", true],
+      ["room:living", true],
+      ["zone:downstairs", true],
+    ],
+  );
+});
+
+test("menu edits append, remove and move ids", () => {
+  assert.deepEqual(withScene(["a", "b"], "c", true), ["a", "b", "c"]);
+  assert.deepEqual(withScene(["a", "b"], "a", true), ["a", "b"], "kept in place");
+  assert.deepEqual(withScene(["a", "b"], "a", false), ["b"]);
+  assert.deepEqual(movedBefore(["a", "b", "c"], "c", "a"), ["c", "a", "b"]);
+  assert.deepEqual(movedBefore(["a", "b", "c"], "a"), ["b", "c", "a"]);
 });
 
 test("refresh hands the host a new immutable store", async () => {
@@ -154,6 +205,18 @@ const slowBackend = () => {
       if (options.visible_scenes) target.scenes = options.visible_scenes;
       return { target };
     }
+    if (message.type === "magic_lights/menus/save") {
+      const menus = message.menus as Record<string, string[] | null>;
+      sent.push(menus);
+      const targets = Object.entries(menus).map(([id, menu]) => {
+        const target = config.targets.find((t) => t.id === id);
+        if (!target) throw new Error(`There is no target '${id}'`);
+        target.options = { ...target.options, visible_scenes: menu };
+        if (menu) target.scenes = menu;
+        return target;
+      });
+      return { targets };
+    }
     if (message.type === "magic_lights/settings/save") {
       const settings = message.settings as Partial<Settings>;
       sent.push(settings);
@@ -186,10 +249,27 @@ test("quick successive edits build on each other, not on the snapshot they start
   assert.deepEqual(latest?.target("room:living")?.scenes, ["savanna_sunset"]);
 });
 
+test("one write sets a scene in several menus, built on the latest menus", async () => {
+  const { config, sent, hass } = slowBackend();
+  const store = await MlStore.load({ hass, storeChanged: () => undefined });
+  await Promise.all([
+    store.toggleInMenus("s_22222222", ["room:kitchen", "room:living"]),
+    store.setInMenus("relax", ["room:kitchen"], false),
+  ]);
+  assert.deepEqual(sent, [
+    { "room:kitchen": ["relax", "savanna_sunset", "s_22222222"], "room:living": ["relax", "savanna_sunset"] },
+    { "room:kitchen": ["savanna_sunset", "s_22222222"] },
+  ]);
+  assert.deepEqual(config.targets.find((t) => t.id === "room:kitchen")!.options.visible_scenes, [
+    "savanna_sunset",
+    "s_22222222",
+  ]);
+});
+
 test("a failed write does not block the next one", async () => {
   const { config, hass } = slowBackend();
   const store = await MlStore.load({ hass, storeChanged: () => undefined });
-  const failed = store.saveTargetOptions("room:nowhere", () => ({ detect_changes: false }));
+  const failed = store.setMenu("room:nowhere", []);
   const next = store.moveScene("room:living", "s_22222222", 0);
   assert.equal(await failed.then(() => "saved", () => "failed"), "failed");
   await next;

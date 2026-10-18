@@ -18,10 +18,11 @@ import {
   plural,
   showToast,
 } from "../../shared/util";
-import { goBack, targetPath } from "../routes";
+import { goBack, homePath } from "../routes";
 import { toStored, type MlStore } from "../store";
 import { pageStyles } from "../styles";
 import {
+  canSave,
   expandLights,
   isWhole,
   layerCaption,
@@ -42,7 +43,8 @@ import "./ml-preview";
 const LIVE_DELAY = 400;
 const STALE_NOTE: Record<NonNullable<WorkingCopy["stale"]>, string> = {
   saved: " The scene was saved since; saving these changes replaces that.",
-  removed: " The scene was removed since; saving these changes brings it back.",
+  deleted: " The scene was deleted since; saving these changes brings it back.",
+  reset: " The preset was reset since; saving these changes edits it again.",
 };
 const MOTION_PREVIEW = { duration: 60, samples: 120 };
 const DAY_PREVIEW = { duration: 86400, samples: 48 };
@@ -67,6 +69,9 @@ class MlSceneEditor extends LitElement {
   @property({ attribute: false }) targetId = "";
 
   @property({ attribute: false }) sceneId = "";
+
+  /** Where Back, Save and Delete lead when there is no in-panel history. */
+  @property({ attribute: false }) parent = homePath("scenes");
 
   @property({ type: Boolean, reflect: true }) narrow = false;
 
@@ -365,7 +370,7 @@ class MlSceneEditor extends LitElement {
   private _leave(route: Route): void {
     this._leaving = true;
     dropWorkingCopy(this.store, route.sceneId);
-    goBack(targetPath(route.targetId));
+    goBack(this.parent);
   }
 
   /** The panel's back arrow asks before unsaved changes are dropped. */
@@ -398,7 +403,7 @@ class MlSceneEditor extends LitElement {
     if (this._missing || !scene) {
       return html`<ha-alert alert-type="warning" title="Scene not found">
         This scene does not exist (any more).
-        <ha-button slot="action" appearance="plain" @click=${() => goBack(targetPath(this.targetId))}>
+        <ha-button slot="action" appearance="plain" @click=${() => goBack(this.parent)}>
           Back
         </ha-button>
       </ha-alert>`;
@@ -732,7 +737,7 @@ class MlSceneEditor extends LitElement {
             </ha-button>`
       }
       <ha-button
-        .disabled=${busy || !valid || (stored && !this._dirty)}
+        .disabled=${busy || !valid || !canSave(scene, this._original, stored)}
         .loading=${this._busy === "save"}
         @click=${this._save}
       >

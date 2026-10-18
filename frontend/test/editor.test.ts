@@ -5,7 +5,9 @@ import type { EffectInfo, HomeAssistant, PaletteInfo, PreviewFrame, StoredScene,
 import { MlStore, toStored } from "../src/panel/store";
 import { hsToRgb, parseColor, rgbToHs, swatchColors, xyToKelvin } from "../src/panel/editor/colors";
 import {
+  canSave,
   expandLights,
+  isDirty,
   frameAt,
   isWhole,
   labelledSelector,
@@ -18,10 +20,11 @@ import {
   sceneProblems,
   setRoomSlice,
   stableJson,
+  variantsFollow,
   wholeTarget,
   withDefaults,
 } from "../src/panel/editor/editor-model";
-import { dropWorkingCopy, openWorkingCopy } from "../src/panel/editor/working-copy";
+import { draftStale, dropWorkingCopy, openWorkingCopy } from "../src/panel/editor/working-copy";
 import { CONFIG, fakeHass } from "./fixtures";
 
 // Schemas as effects/schema.py serialises them (HA 2026.8).
@@ -95,7 +98,7 @@ const ADAPTIVE: EffectInfo = {
           options: [
             { value: "static", label: "None (static)" },
             { value: "default", label: "Dim after sunset" },
-            { value: "tanh", label: "Smooth ramp" },
+            { value: "tanh", label: "Smooth" },
           ],
         },
       },
@@ -189,7 +192,7 @@ test("layer summaries show option labels and skip hidden fields", () => {
   // Values of hidden fields are kept, but not summarised.
   const params = { [MODE]: "default", brightness: 70, min_brightness: 20, ramp_dark: 30 };
   assert.equal(layerSummary(ADAPTIVE, params), "Dim after sunset · 20% · 2200 K");
-  assert.equal(layerSummary(ADAPTIVE, { ...params, [MODE]: "tanh" }), "Smooth ramp · 20% · 30 min");
+  assert.equal(layerSummary(ADAPTIVE, { ...params, [MODE]: "tanh" }), "Smooth · 20% · 30 min");
 });
 
 test("form edits keep the values of fields a mode hides", () => {
@@ -428,7 +431,7 @@ test("a reload keeps the edits of a scene that was never saved unsaved", async (
   assert.equal(edited?.stale, undefined);
 });
 
-test("a draft of a scene removed elsewhere says saving brings it back", async () => {
+test("a draft of a scene deleted or reset elsewhere says saving brings it back", async () => {
   const items = new Map<string, string>();
   const sessionStorage = {
     getItem: (key: string) => items.get(key) ?? null,
@@ -455,11 +458,11 @@ test("a draft of a scene removed elsewhere says saving brings it back", async ()
 
   const sunset = openWorkingCopy(later, "savanna_sunset")!;
   assert.equal(sunset.scene.id, "s_11111111");
-  assert.equal(sunset.stale, "removed");
-  assert.equal(openWorkingCopy(later, "s_22222222")?.stale, "removed");
+  assert.equal(sunset.stale, "reset");
+  assert.equal(openWorkingCopy(later, "s_22222222")?.stale, "deleted");
   assert.equal(openWorkingCopy(later, "relax")?.stale, undefined);
   dropWorkingCopy(later, "savanna_sunset");
-  assert.equal(items.has("magic_lights.draft.savanna_sunset.stored"), false);
+  assert.equal(items.has("magic_lights.draft.savanna_sunset.base"), false);
 });
 
 test("one scene has one draft, whichever room opens it", async () => {
@@ -479,10 +482,84 @@ test("one scene has one draft, whichever room opens it", async () => {
   // A preset draft begun before the preset was edited elsewhere saves over that edit, and says so.
   const preset = { ...toStored(store.scene("savanna_sunset")!), id: "s_99999999", preset: "savanna_sunset" };
   store.setDraft("savanna_sunset", { ...preset, brightness: 40 });
-  store.setDraft("savanna_sunset.base", preset);
+  store.setDraft("savanna_sunset.base", { scene: preset, stored: false });
   const late = openWorkingCopy(store, "savanna_sunset")!;
   assert.equal(late.scene.id, "s_11111111");
   assert.equal(late.scene.brightness, 40);
   assert.equal(late.stale, "saved");
   assert.deepEqual(late.baseline, toStored(store.scene("s_11111111")!));
+});
+
+const adaptiveLayer = (lights: string[], params: Record<string, unknown>) => ({
+  lights,
+  effect: "adaptive",
+  params: { brightness_mode: "tanh", min_brightness: 40, max_brightness: 100, max_kelvin: 5000, ...params },
+});
+
+const hell = (layers: StoredScene["layers"]): StoredScene => ({
+  id: "s_12186051",
+  name: "Hell",
+  icon: null,
+  preset: null,
+  layers,
+  others: "off",
+  brightness: 100,
+  transition: null,
+});
+
+test("room-only layers follow shared edits to the values they had in common", () => {
+  const before = hell([
+    adaptiveLayer(["room:living", "room:kitchen"], {}),
+    adaptiveLayer(["light.shelf"], { min_brightness: 12, max_brightness: 30 }),
+    adaptiveLayer(["room:closet"], { max_kelvin: 2200 }),
+    { lights: ["light.tv"], effect: "white", params: { max_brightness: 100 } },
+  ]);
+  const edited = structuredClone(before);
+  edited.layers[0].params.max_brightness = 80;
+  edited.layers[0].params.max_kelvin = 4000;
+  const { scene, layers } = variantsFollow(before, edited);
+  assert.deepEqual(layers, [1, 2]);
+  assert.equal(scene.layers[1].params.max_kelvin, 4000, "the shelf follows the white");
+  assert.equal(scene.layers[1].params.max_brightness, 30, "and keeps its own brightness");
+  assert.equal(scene.layers[2].params.max_brightness, 80, "the closet follows the brightness");
+  assert.equal(scene.layers[2].params.max_kelvin, 2200, "and keeps its own white");
+  assert.equal(scene.layers[3].params.max_brightness, 100, "another effect does not follow");
+  assert.equal(before.layers[2].params.max_brightness, 100, "inputs stay untouched");
+});
+
+test("only later layers follow, and only a params edit", () => {
+  const before = hell([adaptiveLayer(["light.a"], {}), adaptiveLayer(["light.b"], {})]);
+  const editLater = structuredClone(before);
+  editLater.layers[1].params.min_brightness = 10;
+  assert.deepEqual(variantsFollow(before, editLater).layers, [], "an earlier layer keeps its value");
+  const added = { ...before, layers: [...before.layers, adaptiveLayer(["light.c"], { min_brightness: 5 })] };
+  assert.deepEqual(variantsFollow(before, added), { scene: added, layers: [] });
+  const palette = hell([
+    { lights: ["light.a"], effect: "palette", params: { palette: [{ kelvin: 2000 }] } },
+    { lights: ["light.b"], effect: "palette", params: { palette: [{ kelvin: 2000 }] } },
+  ]);
+  const recoloured = structuredClone(palette);
+  recoloured.layers[0].params.palette = [{ xy: [0.5, 0.4] }];
+  assert.deepEqual(variantsFollow(palette, recoloured).scene.layers[1].params.palette, [{ xy: [0.5, 0.4] }]);
+});
+
+test("save needs a change, except for a new scene of your own", () => {
+  const scene = hell([adaptiveLayer(["light.a"], {})]);
+  assert.equal(isDirty(scene, structuredClone(scene)), false);
+  assert.equal(canSave(scene, scene, true), false, "an unchanged stored scene");
+  assert.equal(canSave({ ...scene, brightness: 50 }, scene, true), true);
+  const preset = { ...scene, preset: "adaptive" };
+  assert.equal(canSave(preset, preset, false), false, "an untouched preset");
+  assert.equal(canSave(scene, scene, false), true, "a new scene saves as it is");
+});
+
+test("a draft's base tells what changed elsewhere since", () => {
+  const scene = hell([adaptiveLayer(["light.a"], {})]);
+  assert.equal(draftStale({ scene, stored: true }, scene), undefined);
+  assert.equal(draftStale({ scene, stored: true }, { ...scene, brightness: 50 }), "saved");
+  assert.equal(draftStale({ scene, stored: true }, undefined), "deleted");
+  assert.equal(draftStale({ scene: { ...scene, preset: "adaptive" }, stored: true }, undefined), "reset");
+  assert.equal(draftStale({ scene, stored: false }, undefined), undefined);
+  assert.equal(draftStale({ scene, stored: false }, scene), "saved");
+  assert.equal(draftStale({ scene, stored: true }, { ...scene, id: "s_99999999" }), undefined, "ids are not compared");
 });

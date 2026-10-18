@@ -47,6 +47,13 @@ export const saveTargetOptions = async (
   (await ws<{ target: TargetInfo }>(hass, "target/options", { target_id: targetId, options }))
     .target;
 
+/** Menus of several targets in one commit; null restores a target's default menu. */
+export const saveMenus = async (
+  hass: HomeAssistant,
+  menus: Partial<Record<TargetId, string[] | null>>,
+): Promise<TargetInfo[]> =>
+  (await ws<{ targets: TargetInfo[] }>(hass, "menus/save", { menus })).targets;
+
 export const saveSettings = (hass: HomeAssistant, settings: Partial<Settings>) =>
   ws<Record<string, never>>(hass, "settings/save", { settings });
 

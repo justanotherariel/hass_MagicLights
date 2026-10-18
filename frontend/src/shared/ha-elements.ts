@@ -1,5 +1,6 @@
-// Waits for the HA elements the panel renders; HA defines most of them lazily.
-// Resolves with the tags still missing.
+// Waits for the HA elements the panel renders; HA defines most of them lazily, as their
+// users load. Triggers those loads (the lovelace panel, the light and lock more-info
+// controls, a tile card, the automation editor) and resolves with the tags still missing.
 
 export const PANEL_TAGS = [
   "ha-top-app-bar-fixed",
@@ -32,6 +33,19 @@ export const PANEL_TAGS = [
   "ha-icon-picker",
   "ha-slider",
   "ha-control-select",
+  "ha-control-slider",
+  "ha-control-button",
+  "ha-control-button-group",
+  "ha-control-switch",
+  "ha-filter-chip",
+  "ha-chip-set",
+  "ha-badge",
+  "ha-bottom-sheet",
+  "ha-tooltip",
+  "ha-tile-container",
+  "ha-tile-icon",
+  "ha-tile-info",
+  "ha-tile-badge",
   "ha-settings-row",
 ] as const;
 
@@ -57,6 +71,28 @@ const loadPanelModule = async (component: string): Promise<void> => {
   await routes?.routes?.__ml?.load?.();
 };
 
+interface CardHelpers {
+  importMoreInfoControl?: (type: string) => Promise<unknown>;
+  createCardElement?: (config: Record<string, unknown>) => HTMLElement;
+}
+
+/**
+ * The control-generation elements (ha-control-slider, -button, -switch, -button-group)
+ * come with the more-info controls of lights and locks, the ha-tile-* parts with the
+ * tile card. Lovelace's card helpers load both; the lovelace module defines them.
+ */
+const loadCardParts = async (): Promise<void> => {
+  await loadPanelModule("lovelace");
+  const helpers = await (window as { loadCardHelpers?: () => Promise<CardHelpers> }).loadCardHelpers?.();
+  if (!helpers) return;
+  try {
+    helpers.createCardElement?.({ type: "tile", entity: "sun.sun" });
+  } catch {
+    // Only the import it starts matters.
+  }
+  await Promise.all(["light", "lock"].map((type) => helpers.importMoreInfoControl?.(type)));
+};
+
 const loadConfigRoute = async (route: string): Promise<void> => {
   await loadPanelModule("config");
   await customElements.whenDefined("ha-panel-config");
@@ -70,9 +106,9 @@ const load = async (tags: readonly string[]): Promise<string[]> => {
   const missing = () => tags.filter((tag) => !customElements.get(tag));
   if (missing().length) {
     const defined = Promise.all(missing().map((tag) => customElements.whenDefined(tag)));
-    // ha-tab-group only comes with the lovelace module; the rest with HA's more-info
+    // ha-tab-group only comes with the lovelace module; many others with HA's more-info
     // preload (~300 elements) right after start.
-    await withTimeout(loadPanelModule("lovelace"), STEP_TIMEOUT);
+    await withTimeout(loadCardParts(), STEP_TIMEOUT);
     await withTimeout(defined, PRELOAD_WAIT);
   }
   // The automation editor brings forms, pickers and dialogs.

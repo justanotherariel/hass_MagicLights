@@ -265,7 +265,10 @@ export interface HaFormGroupCondition {
 
 export type HaFormCondition = HaFormFieldCondition | HaFormGroupCondition;
 
-/** One serialised schema item; `label`/`helper`/`visible` are lifted from the marker description. */
+/**
+ * One serialised schema item. `label`, `helper` and `visible` are lifted from the key's
+ * description, and so are the panel's layout hints (docs/plugins.md).
+ */
 export interface HaFormSchema {
   name: string;
   selector?: Record<string, unknown>;
@@ -277,6 +280,14 @@ export interface HaFormSchema {
   label?: string;
   helper?: string;
   description?: { suffix?: string; suggested_value?: unknown };
+  /** In the collapsed "Advanced" part of the form. */
+  advanced?: boolean;
+  /** The lower key of a min/max pair, drawn with its partner as one range. */
+  pair?: { max: string; label?: string };
+  /** Values offered as a segmented control. */
+  steps?: { value: number; label: string }[];
+  /** Consecutive fields with the same row sit side by side. */
+  row?: string;
 }
 
 // ---- Home Assistant frontend slice (fe-2026.8 src/types.ts)

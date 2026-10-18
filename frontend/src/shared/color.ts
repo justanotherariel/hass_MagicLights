@@ -92,3 +92,11 @@ export const swatchBackground = (swatches: readonly string[]): string => {
   if (swatches.length === 1) return swatches[0];
   return `linear-gradient(90deg, ${swatches.join(", ")})`;
 };
+
+/** A left-to-right CSS gradient over a kelvin range, warm to cool. */
+export const kelvinGradient = (min: number, max: number, stops = 10): string => {
+  const colors = Array.from({ length: stops + 1 }, (_, i) =>
+    rgbToHex(kelvinToRgb(min + ((max - min) * i) / stops)),
+  );
+  return `linear-gradient(90deg, ${colors.join(", ")})`;
+};

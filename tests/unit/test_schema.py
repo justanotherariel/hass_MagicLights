@@ -135,6 +135,37 @@ class SerializeTest(unittest.TestCase):
             with self.subTest(key):
                 self.assertIsInstance(serialize_schema(schema), list)
 
+    def test_layout_hints_are_lifted(self) -> None:
+        steps = [{"value": 30, "label": "Short 30 min"}]
+        low, high = serialize_schema(
+            vol.Schema(
+                {
+                    vol.Required(
+                        "low",
+                        description={
+                            "advanced": True,
+                            "pair": {"max": "high", "label": "Range"},
+                            "row": "r",
+                            "steps": steps,
+                            "other": "dropped",
+                        },
+                    ): PCT,
+                    vol.Required("high"): PCT,
+                }
+            )
+        )
+        self.assertEqual(
+            {k: low[k] for k in ("advanced", "pair", "row", "steps")},
+            {
+                "advanced": True,
+                "pair": {"max": "high", "label": "Range"},
+                "row": "r",
+                "steps": steps,
+            },
+        )
+        self.assertNotIn("other", low)
+        self.assertNotIn("advanced", high)
+
     def test_plain_description_is_dropped(self) -> None:
         (field,) = serialize_schema(
             vol.Schema({vol.Required("a", description="A"): PCT})

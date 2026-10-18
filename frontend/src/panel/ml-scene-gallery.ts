@@ -146,7 +146,7 @@ class MlSceneGallery extends LitElement {
     const draft = this.store.newScene(this.targetId, from);
     this.store.setDraft(draft.id, draft);
     this._picking = false;
-    go(editorPath(this.targetId, draft.id));
+    go(editorPath(draft.id, this.targetId));
   }
 
   private async _action(scene: SceneInfo, action: SceneAction): Promise<void> {
@@ -160,7 +160,7 @@ class MlSceneGallery extends LitElement {
         await toastOnError(this, this.store.toggleMotion(target, id), "Could not change the motion");
         return;
       case "edit":
-        return go(editorPath(target, id));
+        return go(editorPath(id, target));
       case "duplicate":
         return this._create(scene);
       case "hide":

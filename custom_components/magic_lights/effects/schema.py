@@ -99,6 +99,10 @@ def KELVIN(lo: int = 1500, hi: int = 6500) -> selector.ColorTempSelector:  # noq
     )
 
 
+# Lifted from a key's description: ha-form's own keys, then layout hints the panel reads.
+FIELD_KEYS = ("visible", "label", "helper", "advanced", "pair", "steps", "row")
+
+
 def serialize_schema(schema: vol.Schema) -> list[dict[str, Any]] | None:
     """Return ha-form fields, or None when the schema cannot be serialised."""
     try:
@@ -109,7 +113,7 @@ def serialize_schema(schema: vol.Schema) -> list[dict[str, Any]] | None:
     for item in items:
         description = item.pop("description", None)
         if isinstance(description, dict):
-            for key in ("visible", "label", "helper"):
+            for key in FIELD_KEYS:
                 if key in description:
                     item[key] = description[key]
     return items
