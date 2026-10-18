@@ -393,7 +393,7 @@ class ActivateTest(unittest.TestCase):
             st = rig.last(e)
             self.assertEqual(st.color.kelvin, 2237)
             self.assertEqual(st.brightness, 143 / 255)
-            self.assertEqual(st.transition, 1.0)
+            self.assertEqual(st.transition, 0.4)
         self.assertEqual(rig.sent("light.k1"), [])
         a = rig.own(ROOM)
         self.assertEqual(a.lights, set(LIVING_LIGHTS))
@@ -467,7 +467,7 @@ class ActivateTest(unittest.TestCase):
         rig = Rig()
         rig.activate(ROOM, "corner")
         self.assertTrue(rig.last("light.l1").on)
-        self.assertEqual(rig.last("light.l2"), OFF.replace(transition=1.0))
+        self.assertEqual(rig.last("light.l2"), OFF.replace(transition=0.4))
         self.assertEqual(rig.own(ROOM).lights, set(LIVING_LIGHTS))
 
     def test_running_scene_again_reclaims_and_resends(self) -> None:
@@ -557,7 +557,7 @@ class TurnOffReleaseReclaimTest(unittest.TestCase):
         rig = Rig()
         rig.report("light.l1", ha_on())
         rig.c.turn_off(ROOM)
-        self.assertEqual(rig.sent("light.l1"), [OFF.replace(transition=1.0)])
+        self.assertEqual(rig.sent("light.l1"), [OFF.replace(transition=0.4)])
         self.assertEqual(rig.sent("light.l2"), [])
 
     def test_turn_off_a_room_inside_a_running_zone(self) -> None:
@@ -605,7 +605,7 @@ class TurnOffReleaseReclaimTest(unittest.TestCase):
         rig.clear()
         rig.c.reclaim(ROOM, "light.l1")
         self.assertEqual(rig.own(ROOM).manual, {"light.l2"})
-        self.assertEqual(rig.last("light.l1").transition, 0.5)
+        self.assertEqual(rig.last("light.l1").transition, 0.4)
         self.assertEqual(rig.sent("light.l3"), [])
         rig.c.reclaim(ROOM)
         self.assertEqual(rig.own(ROOM).manual, set())
@@ -662,7 +662,7 @@ class AdjustNextReshuffleTest(unittest.TestCase):
         rig.c.adjust_brightness(ROOM, value=40)
         st = rig.last("light.l1")
         # Answers at once, with the frame's colour; the next step stays due.
-        self.assertEqual((st.transition, st.brightness), (1.0, 102 / 255))
+        self.assertEqual((st.transition, st.brightness), (0.4, 102 / 255))
         self.assertEqual(st.color, step.color)
         self.assertEqual(rig.own(ROOM).runs[0].due, due)
 
@@ -835,6 +835,169 @@ class ScenesTest(unittest.TestCase):
         self.assertIs(rig.c.find_scene(ROOM, "party"), zone_only)  # via
 
 
+def explicit(scene_id: str, name: str, *lights: str, **kw: Any) -> Scene:
+    return Scene(scene_id, name, None, (Layer(lights, "white", {}),), **kw)
+
+
+KITCHEN_ONLY = explicit("s_000000f1", "Film", "light.k1", "light.k2")
+
+
+class FitTest(unittest.TestCase):
+    """A scene runs only where it has lights; elsewhere it is refused or skipped."""
+
+    def test_explicit_foreign_lights_are_refused_and_nothing_is_sent(self) -> None:
+        rig = Rig(scenes=[KITCHEN_ONLY])
+        rig.activate(ROOM, "relax")
+        running = rig.own(ROOM)
+        rig.clear()
+        for name in ("Film", "film", KITCHEN_ONLY.id):
+            with (
+                self.subTest(name),
+                self.assertRaises(ServiceValidationError) as err,
+            ):
+                rig.c.find_scene(ROOM, name)
+            self.assertEqual(err.exception.translation_key, "scene_not_adapted")
+            self.assertEqual(
+                err.exception.translation_placeholders,
+                {"scene": "Film", "target": "Living"},
+            )
+        rig.c.activate(ROOM, KITCHEN_ONLY)
+        self.assertIs(rig.own(ROOM), running)
+        self.assertEqual(rig.driver.sent, [])
+        self.assertEqual(rig.events(), [])
+        self.assertIs(rig.c.find_scene(KITCHEN, "Film"), KITCHEN_ONLY)
+
+    def test_a_name_finds_the_scene_that_fits(self) -> None:
+        kitchen = explicit("s_000000f1", "Hell", "light.k1")
+        living = explicit("s_000000f2", "Hell", "light.l1")
+        rig = Rig(scenes=[kitchen, living])
+        self.assertIs(rig.c.find_scene(ROOM, "hell"), living)
+        self.assertIs(rig.c.find_scene(KITCHEN, "Hell"), kitchen)
+        self.assertIs(rig.c.find_scene(ZONE, "Hell"), kitchen)  # both fit: first
+
+    def test_menu_holds_only_scenes_that_fit(self) -> None:
+        rig = Rig(
+            scenes=[KITCHEN_ONLY],
+            living=TargetOptions(visible_scenes=("relax", KITCHEN_ONLY.id, "read")),
+        )
+        self.assertEqual([s.id for s in rig.c.scenes_for(ROOM)], ["relax", "read"])
+        every = {s.id for s in rig.c.scenes_for(ROOM, include_hidden=True)}
+        self.assertNotIn(KITCHEN_ONLY.id, every)
+        kitchen = {s.id for s in rig.c.scenes_for(KITCHEN, include_hidden=True)}
+        self.assertTrue({"corner", "corner_keep"}.isdisjoint(kitchen))
+        self.assertIn(KITCHEN_ONLY.id, kitchen)
+        self.assertEqual(rig.c.scenes_for("room:attic"), [])
+        rig.activate(ROOM, "relax")
+        rig.c.next_scene(ROOM)
+        self.assertEqual(rig.own(ROOM).scene_id, "read")
+
+    def test_a_default_without_lights_here_does_nothing(self) -> None:
+        rig = Rig(settings=Settings(default_scene="corner"))  # light.l1 only
+        rig.report("light.k1", ha_on())
+        self.assertEqual(rig.c.activations, {})
+        self.assertEqual(rig.driver.sent, [])
+        self.assertEqual(rig.events(), [])
+        rig.report("light.l1", ha_on())
+        self.assertEqual(rig.own(ROOM).scene_id, "corner")
+
+    def test_a_default_without_lights_here_leaves_it_to_the_zone(self) -> None:
+        rig = Rig(
+            kitchen=TargetOptions(default_scene="corner"),
+            zone=TargetOptions(default_scene="tokyo"),
+        )
+        rig.report("light.k1", ha_on())
+        self.assertIsNone(rig.own(KITCHEN))
+        self.assertEqual(rig.own(ZONE).scene_id, "tokyo")
+
+    def test_an_edit_that_removes_a_rooms_lights_ends_it_there(self) -> None:
+        both = explicit("s_000000f3", "Both", "light.l1", "light.k1")
+        rig = Rig(scenes=[both])
+        rig.activate(ROOM, both.id)
+        rig.activate(KITCHEN, both.id)
+        rig.echo()
+        kitchen = rig.own(KITCHEN)
+        rig.clear()
+        edited = replace(
+            both, layers=(Layer(("light.k1",), "white", {"kelvin": 4000}),)
+        )
+        rig.c.apply_config(replace(rig.config, scenes={both.id: edited}))
+        self.assertIsNone(rig.own(ROOM))
+        self.assertEqual(
+            rig.events("ended"),
+            [
+                {
+                    "type": "ended",
+                    "target_id": ROOM,
+                    "scene_id": both.id,
+                    "reason": "config",
+                }
+            ],
+        )
+        for e in LIVING_LIGHTS:
+            self.assertEqual(rig.sent(e), [])  # left as they are, not switched off
+        self.assertIs(rig.own(KITCHEN), kitchen)
+        self.assertEqual(rig.last("light.k1").color.kelvin, 4000)
+
+    def test_a_restored_scene_without_lights_here_is_dropped(self) -> None:
+        rt = RuntimeV1((snapshot(ROOM, KITCHEN_ONLY.id, LIVING_LIGHTS),), {})
+        rig = Rig(scenes=[KITCHEN_ONLY], runtime=rt, start=False)
+        self.assertIsNone(rig.own(ROOM))
+
+    def test_try_refuses_a_draft_without_lights_here(self) -> None:
+        rig = Rig()
+        rig.activate(ROOM, "relax")
+        running = rig.own(ROOM)
+        rig.clear()
+        with self.assertRaises(ServiceValidationError) as err:
+            rig.c.try_scene(ROOM, KITCHEN_ONLY, None)
+        self.assertEqual(err.exception.translation_key, "scene_not_adapted")
+        self.assertIs(rig.own(ROOM), running)
+        self.assertEqual(rig.driver.sent, [])
+
+
+class FadeTest(unittest.TestCase):
+    @staticmethod
+    def _reclaim(rig: Rig) -> None:
+        rig.call("turn_on", "light.l1", bare=False)
+        rig.c.reclaim(ROOM, "light.l1")
+
+    @staticmethod
+    def _switched_back_on(rig: Rig) -> None:
+        rig.report("light.l1", HA_OFF)
+        rig.host.advance(60)
+        rig.report("light.l1", ha_on())
+
+    @staticmethod
+    def _back_from_unavailable(rig: Rig) -> None:
+        rig.report("light.l1", HA_GONE)
+        rig.report("light.l1", ha_on(255, kelvin=2700))
+
+    def test_rejoining_lights_fade_at_most_the_scene_fade(self) -> None:
+        for rejoin in (
+            self._reclaim,
+            self._switched_back_on,
+            self._back_from_unavailable,
+        ):
+            for fade, quick in ((0.0, 0.0), (0.4, 0.4), (2.0, 0.5)):
+                with self.subTest(rejoin=rejoin.__name__, fade=fade):
+                    rig = Rig(settings=Settings(transition=fade))
+                    rig.activate(ROOM, "relax")
+                    self.assertEqual(rig.last("light.l1").transition, fade)
+                    rig.echo()
+                    rig.host.advance(10)
+                    rig.clear()
+                    rejoin(rig)
+                    self.assertEqual(rig.last("light.l1").transition, quick)
+
+    def test_a_claimed_light_fades_at_most_the_quick_fade(self) -> None:
+        rig = Rig(settings=Settings(default_scene="relax", transition=2.0))
+        rig.report("light.l1", ha_on())
+        self.assertEqual(rig.last("light.l1").transition, 2.0)
+        rig.echo("light.l1")
+        rig.report("light.l2", ha_on())
+        self.assertEqual(rig.last("light.l2").transition, 0.5)
+
+
 class OnlyOnTest(unittest.TestCase):
     def test_default_scene_adopts_one_light_then_claims_more(self) -> None:
         rig = Rig(settings=Settings(default_scene="relax"))
@@ -850,7 +1013,7 @@ class OnlyOnTest(unittest.TestCase):
         rig.report("light.l2", ha_on())
         self.assertIs(rig.own(ROOM), a)
         self.assertEqual(a.lights, {"light.l1", "light.l2"})
-        self.assertEqual(rig.last("light.l2").transition, 0.5)
+        self.assertEqual(rig.last("light.l2").transition, 0.4)
         self.assertEqual(len(rig.sent("light.l1")), 1)
         rig.call("turn_on", "light.l3")
         self.assertEqual(a.lights, set(LIVING_LIGHTS))
@@ -1055,7 +1218,7 @@ class RestoreTest(unittest.TestCase):
             self.assertEqual(sent, [])
         else:
             self.assertEqual(len(sent), 1)
-            self.assertEqual(sent[0].transition, 45 if scene_id == "adaptive" else 1.0)
+            self.assertEqual(sent[0].transition, 45 if scene_id == "adaptive" else 0.4)
         self.assertEqual(rig.sent("light.l2"), [])
         if dynamic:
             rig.host.advance(Flicker.PERIOD)
@@ -1228,7 +1391,7 @@ class ApplyConfigTest(unittest.TestCase):
         edited = replace(mine, layers=(Layer(("light.l1",), "deal", {}),))
         rig.c.apply_config(replace(rig.config, scenes={mine.id: edited}))
         self.assertIsNot(rig.own(ROOM).runs[0], run)
-        self.assertEqual(rig.last("light.l2"), OFF.replace(transition=1.0))
+        self.assertEqual(rig.last("light.l2"), OFF.replace(transition=0.4))
 
     def test_deleted_scene_ends(self) -> None:
         mine = user_scene("s_00000001", "Mine")

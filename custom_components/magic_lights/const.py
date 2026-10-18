@@ -15,7 +15,7 @@ SIGNAL_EFFECTS: Final = f"{DOMAIN}_effects"
 OPTION_OFF: Final = "Off"
 OPTION_MANUAL: Final = "Manual"
 
-DEFAULT_TRANSITION: Final = 1.0
+DEFAULT_TRANSITION: Final = 0.4
 RUNTIME_SAVE_DELAY: Final = 2.0
 
 # The effect param that switches a layer between static and moving colours

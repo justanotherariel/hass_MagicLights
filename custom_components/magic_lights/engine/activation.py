@@ -33,7 +33,7 @@ _LOGGER = logging.getLogger(__name__)
 
 # Reasons whose frame counts as the first of an activation, rejoin or edit.
 FIRST_REASONS = frozenset({"start", "reclaim", "turn_on", "config", "available"})
-# Reasons with a fixed default transition; others use the activation's.
+# Reasons that fade at most QUICK_TRANSITION; others use the activation's.
 _QUICK_REASONS = frozenset({"reclaim", "turn_on", "available"})
 QUICK_TRANSITION = 0.5
 
@@ -325,7 +325,7 @@ def render(
     if reason == "periodic":
         transition = None
     elif reason in _QUICK_REASONS:
-        transition = QUICK_TRANSITION
+        transition = min(QUICK_TRANSITION, activation.transition)
     else:
         transition = activation.transition
     out: dict[str, LightState] = {}

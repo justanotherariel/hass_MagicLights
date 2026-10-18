@@ -86,13 +86,13 @@ class SelectTest(HarnessCase):
         self.h.events.clear()
         await self.h.select(LIVING, "Relax")
         self.assertEqual(self.state(LIVING), "Relax")
-        relax = {"brightness": 143, "color_temp_kelvin": 2237, "transition": 1.0}
+        relax = {"brightness": 143, "color_temp_kelvin": 2237, "transition": 0.4}
         self.assertEqual(self.data_of("light.living_ceiling"), [relax])
         self.assertEqual(self.data_of("light.living_floor_lamp"), [relax])
         self.assertEqual(self.data_of("light.living_tv_strip"), [relax])
         self.assertEqual(
             self.data_of("light.living_sofa_lamp"),
-            [{"brightness": 143, "transition": 1.0}],
+            [{"brightness": 143, "transition": 0.4}],
         )
         attrs = self.status(LIVING)
         self.assertEqual(attrs["status"], "scene")
@@ -174,6 +174,38 @@ class SelectTest(HarnessCase):
         self.assertEqual(err.exception.translation_key, "unknown_scene")
         with self.assertRaises(ServiceValidationError):
             await h.select(KITCHEN, "Disco")
+
+    async def test_a_scene_without_lights_here_is_refused(self) -> None:
+        h = self.h
+        film = {
+            "id": "s_0000f001",
+            "name": "Film",
+            "layers": [
+                {"lights": ["light.kitchen_island"], "effect": "white", "params": {}}
+            ],
+        }
+        await h.ws({"type": "magic_lights/scene/save", "scene": film})
+        await h.idle()
+        self.assertIn("Film", self.status(KITCHEN)["options"])
+        self.assertNotIn("Film", self.status(LIVING)["options"])
+        self.assertNotIn(
+            "s_0000f001", {s["id"] for s in self.status(LIVING)["hidden_scenes"]}
+        )
+        h.clear_calls()
+        for service in ("activate_scene", "toggle_scene"):
+            with (
+                self.subTest(service),
+                self.assertRaises(ServiceValidationError) as err,
+            ):
+                await h.call(service, LIVING, scene="film")
+            self.assertEqual(err.exception.translation_key, "scene_not_adapted")
+            self.assertEqual(
+                err.exception.translation_placeholders,
+                {"scene": "Film", "target": "Living Room"},
+            )
+        await h.settle()
+        self.assertEqual(h.calls(), [])
+        self.assertEqual(self.state(LIVING), "Manual")
 
     async def test_set_dynamic_leaves_manual_lights_alone(self) -> None:
         h = self.h

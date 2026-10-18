@@ -46,7 +46,7 @@ The repository itself has no built frontend; see [Development](#development) for
 
 1. **Settings → Devices & services → Add integration → Magic Lights.** There is nothing to configure.
 2. Every area with lights now has a select named after it, for example `select.living_room_scene`. Its menu holds the scenes you pick for the room, so it starts with only Off and Manual.
-3. Open **Magic Lights** in the sidebar. The home screen lists your rooms and zones with what is running. Open a room, open **Hidden scenes** and tap **Relax**: the room fades to warm white in a second. **Show in menu** puts a scene in the room's select and cards; **New scene** makes your own. The room's page also lists its lights and settings.
+3. Open **Magic Lights** in the sidebar. The home screen lists your rooms and zones with what is running. Open a room, open **Hidden scenes** and tap **Relax**: the room fades to warm white in under a second. **Show in menu** puts a scene in the room's select and cards; **New scene** makes your own. The room's page also lists its lights and settings.
 4. Add the card to a dashboard: **Edit dashboard → Add card → Magic Lights**.
 
 ## Concepts
@@ -62,6 +62,8 @@ Each light belongs to at most one running scene. Starting a scene on a room take
 ### Scenes
 
 A scene is an ordered list of **layers**. Each layer runs one **effect** on some lights (all of them, chosen lights, or one room of a zone), and later layers win. A scene also has an overall brightness, a fade time (empty: the **Fade** in the panel settings), and what happens to lights no layer covers: they turn off, or they are left alone.
+
+A scene runs only in rooms and zones where its layers reach at least one light. Elsewhere it is not in the menu, and starting it there is refused instead of switching the lights off. A running scene that an edit takes out of a room stops there, and the lights stay as they are.
 
 The effects are:
 

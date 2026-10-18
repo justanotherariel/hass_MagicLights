@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from typing import Any
+from unittest.mock import patch
 
 import voluptuous as vol
 
@@ -182,8 +183,13 @@ class ConfigTest(HarnessCase):
         self.assertEqual(self.status(LIVING)["scene_id"], "relax")
         self.assertEqual(self.status(LIVING)["options"].count("Relax"), 1)
         config = await h.ws({"type": "magic_lights/config"})
-        relax = next(s for s in config["scenes"] if s["id"] == "relax")
+        scenes = {s["id"]: s for s in config["scenes"]}
+        relax = scenes["relax"]
         self.assertEqual(relax["customised_in"], ["room:living_room"])
+        # Each target lists the scene it runs: the copy here, the preset elsewhere.
+        self.assertEqual(scenes["s_0000c001"]["fits"], ["room:living_room"])
+        self.assertIn("room:bedroom", relax["fits"])
+        self.assertNotIn("room:living_room", relax["fits"])
 
         h.clear_calls()
         await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000c001"})
@@ -383,6 +389,138 @@ class ConfigTest(HarnessCase):
             )
         self.assertEqual(err.exception.code, "invalid")
 
+    async def test_menus_are_saved_in_one_commit(self) -> None:
+        h = self.h
+        events: list[Any] = []
+        await h.ws_send({"type": "magic_lights/subscribe"}, events.append)
+        await h.ws({"type": "magic_lights/scene/save", "scene": evening()})
+        await h.idle()
+        events.clear()
+        # What one target's write announces is the most a batch may announce.
+        await h.ws(
+            {
+                "type": "magic_lights/target/options",
+                "target_id": "room:office",
+                "options": {"visible_scenes": ["read"]},
+            }
+        )
+        await h.idle()
+        single = len(events)
+        events.clear()
+        store = h.data().store
+        with patch.object(
+            store, "async_save_config", wraps=store.async_save_config
+        ) as save:
+            reply = await h.ws(
+                {
+                    "type": "magic_lights/menus/save",
+                    "menus": {
+                        "room:living_room": ["tokyo", "s_0000e001", "relax"],
+                        "room:kitchen": ["read"],
+                        "room:bedroom": None,
+                    },
+                }
+            )
+            await h.idle()
+        self.assertEqual(save.call_count, 1)
+        self.assertEqual(len(events), single)
+        self.assertEqual(
+            {t["id"]: t["scenes"] for t in reply["targets"]},
+            {
+                "room:living_room": ["tokyo", "s_0000e001", "relax"],
+                "room:kitchen": ["read"],
+                "room:bedroom": [],
+            },
+        )
+        self.assertEqual(
+            self.status(LIVING)["options"],
+            ["Off", "Tokyo", "Evening", "Relax", "Manual"],
+        )
+        events.clear()
+
+        cases = [
+            ({"room:attic": ["relax"]}, "not_found"),
+            ({"room:kitchen": ["relax", "disco"]}, "unknown_scene"),
+            ({"room:kitchen": ["relax", "relax"]}, "invalid"),
+            ({"room:kitchen": [{}]}, "invalid_format"),
+        ]
+        for menus, code in cases:
+            with self.subTest(code=code), self.assertRaises(WsError) as err:
+                await h.ws(
+                    {
+                        "type": "magic_lights/menus/save",
+                        # A valid entry first: nothing of a refused call is kept.
+                        "menus": {"room:bedroom": ["read"], **menus},
+                    }
+                )
+            self.assertEqual(err.exception.code, code)
+        await h.idle()
+        self.assertEqual(events, [])
+        config = await h.ws({"type": "magic_lights/config"})
+        bedroom = next(t for t in config["targets"] if t["id"] == "room:bedroom")
+        self.assertIsNone(bedroom["options"]["visible_scenes"])
+
+    async def test_deleting_a_scene_forgets_where_it_was_picked(self) -> None:
+        h = self.h
+        copy = evening(id="s_0000c001", name="Relax", preset="relax", scope=[])
+        for scene in (evening(), copy):
+            await h.ws({"type": "magic_lights/scene/save", "scene": scene})
+        await h.ws(
+            {
+                "type": "magic_lights/menus/save",
+                "menus": {
+                    "room:living_room": ["s_0000e001", "relax"],
+                    "room:kitchen": ["relax"],
+                },
+            }
+        )
+        for target_id, default in (
+            ("room:living_room", "s_0000e001"),
+            ("room:kitchen", "relax"),
+        ):
+            await h.ws(
+                {
+                    "type": "magic_lights/target/options",
+                    "target_id": target_id,
+                    "options": {"default_scene": default},
+                }
+            )
+        await h.ws(
+            {
+                "type": "magic_lights/settings/save",
+                "settings": {"default_scene": "s_0000e001"},
+            }
+        )
+
+        async def options() -> tuple[dict[str, Any], str | None]:
+            config = await h.ws({"type": "magic_lights/config"})
+            targets = {t["id"]: t["options"] for t in config["targets"]}
+            return targets, config["settings"]["default_scene"]
+
+        # Resetting a preset keeps the references: they name the preset.
+        await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000c001"})
+        targets, default = await options()
+        self.assertEqual(
+            targets["room:living_room"]["visible_scenes"], ["s_0000e001", "relax"]
+        )
+        self.assertEqual(targets["room:kitchen"]["default_scene"], "relax")
+        self.assertEqual(default, "s_0000e001")
+
+        await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000e001"})
+        targets, default = await options()
+        living = targets["room:living_room"]
+        self.assertEqual(
+            (living["visible_scenes"], living["default_scene"]), (["relax"], None)
+        )
+        self.assertEqual(
+            (
+                targets["room:kitchen"]["visible_scenes"],
+                targets["room:kitchen"]["default_scene"],
+            ),
+            (["relax"], "relax"),
+        )
+        self.assertIsNone(default)
+
     async def test_preview(self) -> None:
         h = self.h
         reply = await h.ws(
@@ -451,6 +589,7 @@ class AdminTest(HarnessCase):
         "zone_id": "upstairs",
         "target_id": "room:living_room",
         "options": {},
+        "menus": {},
         "settings": {},
     }
 

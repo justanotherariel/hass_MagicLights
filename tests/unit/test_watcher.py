@@ -91,7 +91,7 @@ class CallPathTest(unittest.TestCase):
         rig.clear()
         rig.call("turn_on", "light.l1")
         self.assertEqual(rig.own(ROOM).manual, set())
-        self.assertEqual(rig.last("light.l1").transition, 0.5)
+        self.assertEqual(rig.last("light.l1").transition, 0.4)
         self.assertEqual(rig.last("light.l1").color.kelvin, 2237)
         self.assertEqual(rig.events("reclaimed")[0]["entity_id"], "light.l1")
 
@@ -217,7 +217,7 @@ class FlipTest(unittest.TestCase):
         rig.host.advance(60)
         rig.report("light.l1", ha_on())
         self.assertEqual(rig.own(ROOM).manual, set())
-        self.assertEqual(rig.last("light.l1").transition, 0.5)
+        self.assertEqual(rig.last("light.l1").transition, 0.4)
         rig.echo("light.l1")
         rig.host.advance(10)
         self.assertEqual(len(overrides(rig)), 1)
@@ -257,7 +257,7 @@ class FlipTest(unittest.TestCase):
         rig.report("light.l1", HA_GONE)
         rig.report("light.l1", ha_on(255, kelvin=2700))  # power-on default
         self.assertEqual(rig.last("light.l1").color.kelvin, 2237)
-        self.assertEqual(rig.last("light.l1").transition, 0.5)
+        self.assertEqual(rig.last("light.l1").transition, 0.4)
         self.assertEqual(overrides(rig), [])
 
     def test_quick_off_and_on_long_after_our_last_send_rejoins(self) -> None:

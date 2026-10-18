@@ -419,6 +419,12 @@ class ValidateTest(unittest.TestCase):
         self.assertFalse(config.targets["room:living"].detect_changes)
         self.assertEqual(config.settings.buses, {"zigbee:1": {"rate": 4.0}})
         self.assertEqual(config.zones["down"].lights, ())
+        self.assertEqual(config.settings.transition, 0.4)
+
+    def test_a_stored_transition_is_kept(self) -> None:
+        stored = {"settings": {"transition": 1.0}}
+        self.assertEqual(validate(stored, self.registry).settings.transition, 1.0)
+        self.assertEqual(Config.from_dict(stored).settings.transition, 1.0)
 
     def assertCode(self, code: str, data, **kw) -> ConfigError:
         with self.assertRaises(ConfigError) as ctx:

@@ -58,6 +58,7 @@ def async_register_websocket(hass: HomeAssistant) -> None:
         ws_zone_save,
         ws_zone_delete,
         ws_target_options,
+        ws_menus_save,
         ws_settings_save,
         ws_preview,
         ws_try,
@@ -136,6 +137,28 @@ def _with_new_scene(config: Config, scene: Scene) -> Mapping[TargetId, TargetOpt
         )
         for target_id, options in config.targets.items()
     }
+
+
+def _without_refs(config: Config, scene_id: str) -> Config:
+    """Drop a deleted user scene from the menus and defaults that name it."""
+    targets = {
+        target_id: dataclasses.replace(
+            options,
+            visible_scenes=(
+                None
+                if options.visible_scenes is None
+                else tuple(s for s in options.visible_scenes if s != scene_id)
+            ),
+            default_scene=(
+                None if options.default_scene == scene_id else options.default_scene
+            ),
+        )
+        for target_id, options in config.targets.items()
+    }
+    settings = config.settings
+    if settings.default_scene == scene_id:
+        settings = dataclasses.replace(settings, default_scene=None)
+    return dataclasses.replace(config, targets=targets, settings=settings)
 
 
 def _without_target(
@@ -242,8 +265,14 @@ async def ws_scene_delete(
             msg["id"], "not_found", f"There is no saved scene '{scene_id}'"
         )
         return
-    scenes = {k: v for k, v in config.scenes.items() if k != scene_id}
-    await data.async_commit(hass, dataclasses.replace(config, scenes=scenes))
+    deleted = config.scenes[scene_id]
+    config = dataclasses.replace(
+        config, scenes={k: v for k, v in config.scenes.items() if k != scene_id}
+    )
+    # A copy's references name its preset, which stays.
+    if deleted.preset is None:
+        config = _without_refs(config, scene_id)
+    await data.async_commit(hass, config)
     connection.send_result(msg["id"], {})
 
 
@@ -338,6 +367,55 @@ async def ws_target_options(
     target = coordinator.targets[target_id]
     connection.send_result(
         msg["id"], {"target": target_info(hass, coordinator, target)}
+    )
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/menus/save",
+        vol.Required("menus"): {str: vol.Maybe([str])},
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_menus_save(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Set the menus of several targets at once (None: the default menu)."""
+    if (data := _data_or_error(hass, connection, msg)) is None:
+        return
+    coordinator = data.coordinator
+    config = coordinator.config
+    known = {*data.presets, *(s.public_id for s in config.scenes.values())}
+    targets = dict(config.targets)
+    for target_id, menu in msg["menus"].items():
+        if target_id not in coordinator.targets:
+            connection.send_error(
+                msg["id"], "not_found", f"There is no target '{target_id}'"
+            )
+            return
+        if unknown := [s for s in menu or () if s not in known]:
+            connection.send_error(
+                msg["id"], "unknown_scene", f"There is no scene '{unknown[0]}'"
+            )
+            return
+        current = targets.get(target_id, TargetOptions())
+        try:
+            targets[target_id] = TargetOptions.from_dict(
+                OPTIONS_SCHEMA({**current.to_dict(), "visible_scenes": menu})
+            )
+        except vol.Invalid as err:
+            _send_invalid(connection, msg, err)
+            return
+    await data.async_commit(hass, dataclasses.replace(config, targets=targets))
+    connection.send_result(
+        msg["id"],
+        {
+            "targets": [
+                target_info(hass, coordinator, coordinator.targets[target_id])
+                for target_id in msg["menus"]
+            ]
+        },
     )
 
 

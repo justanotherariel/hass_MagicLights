@@ -24,6 +24,9 @@
     "scene_not_available": {
       "message": "The scene \"{scene}\" is not available in {target_id}."
     },
+    "scene_not_adapted": {
+      "message": "\"{scene}\" has no lights in {target} yet. Set it up in Magic Lights."
+    },
     "unknown_target": {
       "message": "There is no room or zone {target_id}."
     },

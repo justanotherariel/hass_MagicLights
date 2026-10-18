@@ -96,6 +96,12 @@ def scene_info(
         "swatches": swatches(scene, effects),
         "dynamic": playable(scene, effects),
         "customised_in": customised_in,
+        "fits": sorted(
+            target.id
+            for target in coordinator.targets.values()
+            if coordinator.resolve_scene(target.id, scene.public_id) is scene
+            and coordinator.fits(scene, target)
+        ),
     }
 
 

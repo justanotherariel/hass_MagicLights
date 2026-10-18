@@ -104,6 +104,7 @@ export interface SceneInfo extends StoredScene {
   swatches: string[];
   dynamic: boolean;
   customised_in: TargetId[];
+  fits: TargetId[]; // targets that run this scene and where it has lights
 }
 
 export type EffectCategory = "white" | "color" | "dynamic" | "adaptive" | "other";

@@ -138,13 +138,32 @@ class Coordinator:
 
     # ---- scenes
 
+    def layers_in(self, scene: Scene, target: Target) -> list[int]:
+        """Indexes of the layers that reach at least one of the target's lights."""
+        return [
+            index
+            for index, layer in enumerate(scene.layers)
+            if self._lights.expand(layer.lights, target)
+        ]
+
+    def fits(self, scene: Scene, target: Target) -> bool:
+        """Whether the scene has lights in the target; it only runs where it does."""
+        return bool(self.layers_in(scene, target))
+
     def scenes_for(
         self, target_id: TargetId, *, include_hidden: bool = False
     ) -> list[Scene]:
-        """Scenes of a target in menu order, customised copies in place."""
-        available = available_scenes(target_id, self.config.scenes, self.presets)
-        target = self.targets.get(target_id)
-        order = target.options.visible_scenes if target is not None else None
+        """Scenes that fit a target, in menu order, customised copies in place."""
+        if (target := self.targets.get(target_id)) is None:
+            return []
+        available = {
+            public_id: scene
+            for public_id, scene in available_scenes(
+                target_id, self.config.scenes, self.presets
+            ).items()
+            if self.fits(scene, target)
+        }
+        order = target.options.visible_scenes
         if order is None:
             # Presets, and the copies that stand in for them, are picked by hand.
             ids = [
@@ -163,25 +182,49 @@ class Coordinator:
         )
 
     def find_scene(self, target_id: TargetId, scene: str) -> Scene:
-        """Find a scene by id or case-insensitive name; raise ServiceValidationError."""
-        candidates = self.scenes_for(target_id, include_hidden=True)
+        """Find a scene by id or case-insensitive name; raise ServiceValidationError.
+
+        Of scenes sharing a name, one with lights in the target wins. A scene
+        without any is refused: running it would only switch the target off.
+        """
+        target = self._target(target_id)
+        candidates = list(
+            available_scenes(target_id, self.config.scenes, self.presets).values()
+        )
         if (via := self._via(target_id)) is not None and not via.draft:
             candidates.append(via.scene)
-        for candidate in candidates:
-            if scene in (candidate.id, candidate.preset):
-                return candidate
+        found = next((c for c in candidates if scene in (c.id, c.preset)), None)
+        if found is None:
+            key = scene.casefold()
+            named = [c for c in candidates if c.name.casefold() == key]
+            found = next(
+                (c for c in named if self.fits(c, target)), named[0] if named else None
+            )
+        if found is None:
+            raise ServiceValidationError(
+                translation_domain=DOMAIN,
+                translation_key=(
+                    "scene_not_available" if self._exists(scene) else "unknown_scene"
+                ),
+                translation_placeholders={"scene": scene, "target_id": target_id},
+            )
+        if not self.fits(found, target):
+            raise self._not_adapted(found, target)
+        return found
+
+    def _exists(self, scene: str) -> bool:
         key = scene.casefold()
-        for candidate in candidates:
-            if candidate.name.casefold() == key:
-                return candidate
-        exists = any(
+        return any(
             scene in (s.id, s.preset) or s.name.casefold() == key
             for s in (*self.presets.values(), *self.config.scenes.values())
         )
-        raise ServiceValidationError(
+
+    @staticmethod
+    def _not_adapted(scene: Scene, target: Target) -> ServiceValidationError:
+        return ServiceValidationError(
             translation_domain=DOMAIN,
-            translation_key="scene_not_available" if exists else "unknown_scene",
-            translation_placeholders={"scene": scene, "target_id": target_id},
+            translation_key="scene_not_adapted",
+            translation_placeholders={"scene": scene.name, "target": target.name},
         )
 
     def _resolve_for(self, target_id: TargetId, scene_id: str) -> Scene | None:
@@ -208,6 +251,8 @@ class Coordinator:
         context: Context | None = None,
     ) -> None:
         target = self._target(target_id)
+        if not self.fits(scene, target):
+            return  # it would only switch the target's lights off
         known = set(target.lights) & self._lights.lights.keys()
         wanted = known if only_on is None else known & set(only_on)
         plans, uncovered = plan_runs(scene, target, wanted, self._lights)
@@ -398,7 +443,10 @@ class Coordinator:
     ) -> None:
         """Run an unsaved scene; stop_try gives back what it took over."""
         adjust = adjust or {}
-        lights = set(self._target(target_id).lights)
+        target = self._target(target_id)
+        if not self.fits(scene, target):
+            raise self._not_adapted(scene, target)
+        lights = set(target.lights)
         previous = self._own(target_id)
         if previous is None:
             replaced: list[ActivationSnapshot] = []
@@ -517,9 +565,10 @@ class Coordinator:
                 scene = saved
             else:
                 scene = self._resolve_for(activation.target_id, activation.scene_id)
-                if scene is None:
-                    self._end(activation, "config")
-                    continue
+            if scene is None or not self.fits(scene, target):
+                # Its lights keep their state: replanning would switch them off.
+                self._end(activation, "config")
+                continue
             activation.transition = self._transition(
                 activation.transition_override, scene
             )
@@ -615,7 +664,8 @@ class Coordinator:
         target = self.targets.get(snapshot.target)
         if target is None or snapshot.target in self.by_target:
             return None
-        if (scene := self._resolve_for(snapshot.target, snapshot.scene_id)) is None:
+        scene = self._resolve_for(snapshot.target, snapshot.scene_id)
+        if scene is None or not self.fits(scene, target):
             return None
         # Never widened, never stolen: an earlier snapshot wins an overlap.
         lights = set(snapshot.lights) & set(target.lights) & self._lights.lights.keys()
@@ -909,6 +959,7 @@ class Coordinator:
                 own is None
                 and (default := self._default_scene(target)) is not None
                 and (scene := self.resolve_scene(target_id, default)) is not None
+                and self.fits(scene, target)
             ):
                 self.activate(target_id, scene, only_on={e})
                 return

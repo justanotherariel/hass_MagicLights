@@ -38,6 +38,7 @@ const scene = (s: Partial<SceneInfo> & Pick<SceneInfo, "id" | "name">): SceneInf
   swatches: ["#ffa757"],
   dynamic: false,
   customised_in: [],
+  fits: ["room:kitchen", "room:living", "zone:downstairs"],
   ...s,
 });
 

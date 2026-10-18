@@ -58,7 +58,7 @@ class OverrideTest(HarnessCase):
         (rejoin,) = self.ours("light.living_floor_lamp")
         self.assertEqual(
             rejoin["data"],
-            {"brightness": 143, "color_temp_kelvin": 2237, "transition": 0.5},
+            {"brightness": 143, "color_temp_kelvin": 2237, "transition": 0.4},
         )
 
     async def test_turn_on_of_a_light_the_scene_keeps_off(self) -> None:
