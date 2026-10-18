@@ -1,5 +1,6 @@
-// Field of the magic_lights_palette selector: an ordered list of colours with
-// drag to reorder, tap to edit, add/remove within min..max, curated palettes and shuffle.
+// Field of the magic_lights_palette selector: an ordered list of colours as large
+// swatches, drag to reorder, tap to edit, add/remove within min..max, curated palettes
+// and shuffle.
 // Fires value-changed with Color[].
 
 import { LitElement, css, html, nothing } from "lit";
@@ -34,9 +35,6 @@ class MlPaletteField extends LitElement {
 
   @property({ attribute: false }) palettes: readonly PaletteInfo[] = [];
 
-  @property() label?: string;
-
-  @property() helper?: string;
 
   /** Index of the colour in the dialog; kept while the dialog animates out. */
   @state() private _editing?: number;
@@ -55,34 +53,31 @@ class MlPaletteField extends LitElement {
     const colors = this._colors;
     const { max } = this._config;
     return html`
-      ${this.label ? html`<div class="label">${this.label}</div>` : nothing}
-      <div class="row">
-        <ha-sortable @item-moved=${this._moved}>
-          <div class="swatches">
-            ${colors.map(
-              (color, i) => html`<button
-                class="swatch"
-                style="background: ${colorToHex(color)}"
-                aria-label=${`Colour ${i + 1}: ${colorToHex(color)}`}
-                title="Tap to edit, drag to reorder"
-                @click=${() => this._edit(i)}
-              ></button>`,
-            )}
-          </div>
-        </ha-sortable>
-        ${
-          colors.length < max
-            ? html`<ha-icon-button .label=${"Add colour"} @click=${this._add}>
-                <ha-icon icon="mdi:plus"></ha-icon>
-              </ha-icon-button>`
-            : nothing
-        }
-      </div>
+      <ha-sortable @item-moved=${this._moved} draggable-selector=".swatch">
+        <div class="swatches">
+          ${colors.map(
+            (color, i) => html`<button
+              class="swatch"
+              style="background: ${colorToHex(color)}"
+              aria-label=${`Colour ${i + 1}: ${colorToHex(color)}`}
+              title="Tap to change, drag to reorder"
+              @click=${() => this._edit(i)}
+            ></button>`,
+          )}
+          ${
+            colors.length < max
+              ? html`<button class="add" aria-label="Add colour" title="Add colour" @click=${this._add}>
+                  <ha-icon icon="mdi:plus"></ha-icon>
+                </button>`
+              : nothing
+          }
+        </div>
+      </ha-sortable>
       <div class="actions">
         ${
           this.palettes.length
             ? html`<ha-dropdown placement="bottom-start" @wa-select=${this._load}>
-                <ha-button slot="trigger" appearance="plain" size="s">
+                <ha-button slot="trigger" appearance="outlined" size="s">
                   <ha-icon slot="start" icon="mdi:palette-swatch-outline"></ha-icon>
                   Load palette…
                 </ha-button>
@@ -100,7 +95,7 @@ class MlPaletteField extends LitElement {
             : nothing
         }
         <ha-button
-          appearance="plain"
+          appearance="outlined"
           size="s"
           .disabled=${colors.length < 2}
           @click=${() => this._emit(shuffled(colors))}
@@ -109,7 +104,6 @@ class MlPaletteField extends LitElement {
           Shuffle
         </ha-button>
       </div>
-      ${this.helper ? html`<div class="helper">${this.helper}</div>` : nothing}
       ${this._renderDialog()}
     `;
   }
@@ -197,34 +191,34 @@ class MlPaletteField extends LitElement {
       flex-direction: column;
       gap: var(--ha-space-2);
     }
-    .label {
-      color: var(--primary-text-color);
-    }
-    .helper {
-      font-size: var(--ha-font-size-s);
-      color: var(--secondary-text-color);
-    }
-    .row {
-      display: flex;
-      align-items: center;
-      gap: var(--ha-space-2);
-      flex-wrap: wrap;
-    }
     .swatches {
       display: flex;
       flex-wrap: wrap;
       gap: var(--ha-space-2);
     }
-    .swatch {
-      width: 40px;
-      height: 40px;
+    .swatch,
+    .add {
+      width: 56px;
+      height: 56px;
       padding: 0;
+      border-radius: var(--ha-border-radius-lg, 12px);
+    }
+    .swatch {
       border: none;
-      border-radius: var(--ha-border-radius-md);
       box-shadow: inset 0 0 0 1px var(--divider-color);
       cursor: grab;
     }
-    .swatch:focus-visible {
+    .add {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1px dashed var(--secondary-text-color);
+      background: none;
+      color: var(--secondary-text-color);
+      cursor: pointer;
+    }
+    .swatch:focus-visible,
+    .add:focus-visible {
       outline: 2px solid var(--ha-color-focus, var(--primary-color));
       outline-offset: 2px;
     }

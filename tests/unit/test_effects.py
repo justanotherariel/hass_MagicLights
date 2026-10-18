@@ -666,6 +666,12 @@ class AdaptiveTest(unittest.TestCase):
         self.assertEqual(
             fields["min_brightness"]["row"], fields["max_brightness"]["row"]
         )
+        curve = fields["brightness_mode"]
+        # Every curve explains itself, so the text never contradicts the choice.
+        self.assertEqual(
+            set(curve["hints"]),
+            {o["value"] for o in curve["selector"]["select"]["options"]},
+        )
         for name in ("ramp_dark", "ramp_light"):
             steps = fields[name]["steps"]
             # The default is a step, so a fresh scene shows no custom value.

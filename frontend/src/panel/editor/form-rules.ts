@@ -33,10 +33,14 @@ export interface NumberBounds {
 
 export type Control =
   | (Base & { kind: "color" | "palette" })
-  /** A control slider; `big` for a percentage (a brightness), with its value printed in the bar. */
-  | (Base & { kind: "bar"; big: boolean } & NumberBounds)
-  /** A kelvin gradient with a cursor and the value printed. */
-  | (Base & { kind: "kelvin"; min: number; max: number })
+  /**
+   * A control slider; `big` for a percentage (a brightness). The value is printed in the
+   * bar only with a unit (`readout`): a bare "0.6" tells nothing, so such a scale gets
+   * `ends` under it instead, the field's own or its bounds.
+   */
+  | (Base & { kind: "bar"; big: boolean; readout: boolean; ends: string[] } & NumberBounds)
+  /** A kelvin gradient with a cursor and the value printed; `wrapped`: stored as a colour, {kelvin}. */
+  | (Base & { kind: "kelvin"; min: number; max: number; wrapped: boolean })
   /** One bar for a min/max pair: `item` is the lower key, `high` the upper. */
   | (Base & { kind: "range"; high: HaFormSchema; kelvin: boolean } & NumberBounds)
   | (Base & { kind: "steps"; steps: Step[]; unit: string })
@@ -88,6 +92,15 @@ const choices = (item: HaFormSchema): Choice[] | undefined => {
   );
 };
 
+const validEnds = (item: HaFormSchema): string[] | undefined => {
+  const ends = item.ends;
+  return Array.isArray(ends) && ends.length >= 2 && ends.every((e) => typeof e === "string") ? ends : undefined;
+};
+
+/** What the ends of a bar without a readout say: the field's words, else its bounds. */
+const endsOf = (item: HaFormSchema, bounds: NumberBounds): string[] =>
+  bounds.unit ? [] : validEnds(item) ?? [String(bounds.min), String(bounds.max)];
+
 const validSteps = (item: HaFormSchema): Step[] | undefined => {
   const steps = item.steps;
   if (!Array.isArray(steps) || !steps.length) return undefined;
@@ -98,7 +111,12 @@ const validSteps = (item: HaFormSchema): Step[] | undefined => {
 export const controlFor = (item: HaFormSchema, schema: readonly HaFormSchema[] = []): Control => {
   const label = labelOf(item);
   const type = selectorType(item);
-  if (type === "magic_lights_color") return { kind: "color", item, label };
+  if (type === "magic_lights_color") {
+    // A colour that may only be a white is a colour temperature.
+    const c = config(item);
+    if (c.allow_color !== false) return { kind: "color", item, label };
+    return { kind: "kelvin", item, label, min: num(c.min_kelvin) ?? 1000, max: num(c.max_kelvin) ?? 10000, wrapped: true };
+  }
   if (type === "magic_lights_palette") return { kind: "palette", item, label };
   const high = item.pair ? schema.find((other) => other.name === item.pair?.max) : undefined;
   if (high && selectorType(high) === type) {
@@ -117,9 +135,12 @@ export const controlFor = (item: HaFormSchema, schema: readonly HaFormSchema[] =
   const steps = validSteps(item);
   const bounds = numberBounds(item);
   if (steps && type === "number") return { kind: "steps", item, label, steps, unit: bounds?.unit ?? "" };
-  if (bounds) return { kind: "bar", item, label, big: bounds.unit === "%", ...bounds };
+  if (bounds) {
+    const ends = endsOf(item, bounds);
+    return { kind: "bar", item, label, big: bounds.unit === "%", readout: !!bounds.unit, ends, ...bounds };
+  }
   const kelvin = kelvinBounds(item);
-  if (kelvin) return { kind: "kelvin", item, label, ...kelvin };
+  if (kelvin) return { kind: "kelvin", item, label, ...kelvin, wrapped: false };
   const options = choices(item);
   if (options) return { kind: "segments", item, label, options };
   if (type === "time") {
@@ -146,14 +167,40 @@ export const formLayout = (schema: readonly HaFormSchema[], values: Record<strin
   return layout;
 };
 
+/** Rough widths in px, to keep segment labels on one line. */
+const FIELD_MIN = 200;
+const CHAR = 8;
+const SEGMENT_PAD = 16;
+
+/** The width a control needs: its segments' longest label on one line, each, else a plain field. */
+export const minWidth = (control: Control): number => {
+  const labels =
+    control.kind === "steps" ? control.steps.map((s) => s.label)
+    : control.kind === "segments" ? control.options.map((o) => o.label)
+    : undefined;
+  if (!labels) return FIELD_MIN;
+  const longest = Math.max(...labels.map((l) => l.length));
+  return Math.max(FIELD_MIN, labels.length * (longest * CHAR + SEGMENT_PAD));
+};
+
+/** Fields of a row sit side by side only while each gets the width it needs. */
+export const rowMinWidth = (row: readonly Control[]): number => Math.max(...row.map(minWidth));
+
+/** A narrow segment wraps its label before the value, never inside it: "Medium" / "60 min". */
+const keepWhole = (label: string): string => label.replace(/ (\d[\d.,]*) (\S+)$/, " $1\u00a0$2");
+
 /** Segments of a steps control; a value that is no step shows as one more, selected. */
 export const stepChoices = (steps: readonly Step[], value: unknown, unit: string): Choice[] => {
-  const options = steps.map((s) => ({ value: String(s.value), label: s.label }));
+  const options = steps.map((s) => ({ value: String(s.value), label: keepWhole(s.label) }));
   if (typeof value === "number" && !steps.some((s) => s.value === value)) {
-    options.push({ value: String(value), label: `Custom ${value}${unit ? ` ${unit}` : ""}` });
+    options.push({ value: String(value), label: keepWhole(`Custom ${value}${unit ? ` ${unit}` : ""}`) });
   }
   return options;
 };
+
+/** The text under a field: the hint for its current value, else its helper. */
+export const helperOf = (item: HaFormSchema, value: unknown): string | undefined =>
+  (item.hints && value !== undefined && item.hints[String(value)]) || item.helper;
 
 /** "Sunrise offset · Update every": what a collapsed advanced part holds. */
 export const advancedSummary = (rows: readonly Control[][]): string =>

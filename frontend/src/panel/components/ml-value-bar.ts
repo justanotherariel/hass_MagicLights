@@ -32,6 +32,9 @@ class MlValueBar extends LitElement {
 
   @property({ type: Boolean, attribute: "show-label" }) showLabel = false;
 
+  /** No value printed, for a scale without a unit. */
+  @property({ type: Boolean, attribute: "hide-value" }) hideValue = false;
+
   @property() icon?: string;
 
   @property({ reflect: true }) size: BarSize = "big";
@@ -60,7 +63,7 @@ class MlValueBar extends LitElement {
     const content = html`${this.icon ? html`<ha-icon .icon=${this.icon}></ha-icon>` : nothing}
       ${this.showLabel ? html`<span class="label">${this.label}</span>` : nothing}
       <span class="spacer"></span>
-      <span class="value">${text}</span>`;
+      ${this.hideValue ? nothing : html`<span class="value">${text}</span>`}`;
     return html`<div
       class="bar ${cursor ? "cursor" : ""} ${p > 0.5 ? "high" : ""}"
       style=${styleMap({ "--p": String(p), ...(this.color ? { "--ml-bar-color": this.color } : {}) })}

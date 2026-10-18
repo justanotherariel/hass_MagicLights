@@ -147,6 +147,8 @@ class SerializeTest(unittest.TestCase):
                             "pair": {"max": "high", "label": "Range"},
                             "row": "r",
                             "steps": steps,
+                            "ends": ["Dim", "Bright"],
+                            "hints": {"1": "Dim"},
                             "other": "dropped",
                         },
                     ): PCT,
@@ -155,12 +157,14 @@ class SerializeTest(unittest.TestCase):
             )
         )
         self.assertEqual(
-            {k: low[k] for k in ("advanced", "pair", "row", "steps")},
+            {k: low[k] for k in ("advanced", "pair", "row", "steps", "ends", "hints")},
             {
                 "advanced": True,
                 "pair": {"max": "high", "label": "Range"},
                 "row": "r",
                 "steps": steps,
+                "ends": ["Dim", "Bright"],
+                "hints": {"1": "Dim"},
             },
         )
         self.assertNotIn("other", low)

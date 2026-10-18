@@ -68,9 +68,6 @@ export const confirmRemoveScene = (
         },
   );
 
-/** `checked` of the ha-switch (or checkbox) that fired a change event. */
-export const checkedOf = (ev: Event): boolean => (ev.target as HTMLInputElement).checked;
-
 export const debounce = <A extends unknown[]>(fn: (...args: A) => void, wait: number) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
   const debounced = (...args: A) => {

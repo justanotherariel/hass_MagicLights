@@ -1,71 +1,63 @@
-// Scene editor: name, icon, brightness, transition and other lights; the layer list
-// and the selected layer, edited for this room; a live preview; Try / Stop trying, Save,
-// Reset to preset and Delete. A scene is the same in every room. The working copy lives
-// in sessionStorage under the route until it is saved or discarded, so leaving the
-// editor loses nothing.
+// Scene editor. A scene is one look shared by every room that shows it: the look card
+// edits it, the room card sets which of the preview room's lights each part sets, the
+// options card its fade, brightness and menus. Try runs the draft in the preview room;
+// Save stores it for every room. The working copy lives in sessionStorage under the
+// scene id until it is saved or discarded, so leaving the editor or switching the
+// preview room loses nothing.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
-import { swatchBackground } from "../../shared/color";
-import type { HomeAssistant, Layer, PreviewFrame, StoredScene, TargetId, TargetInfo } from "../../shared/types";
-import {
-  confirmAction,
-  confirmRemoveScene,
-  debounce,
-  defineElement,
-  errorMessage,
-  fire,
-  plural,
-  showToast,
-} from "../../shared/util";
-import { goBack, homePath } from "../routes";
-import { toStored, type MlStore } from "../store";
+import type { HomeAssistant, PreviewFrame, StoredScene, TargetId, TargetInfo } from "../../shared/types";
+import { confirmAction, confirmRemoveScene, debounce, defineElement, errorMessage, fire, plural, showToast } from "../../shared/util";
+import { editorPath, goBack, homePath, replaceWith } from "../routes";
+import { menuId, menuIds, toStored, type MlStore } from "../store";
+import { lookLine } from "../scene-facts";
 import { pageStyles } from "../styles";
+import type { PartSelect, RoomSelect, SceneEdit, TimeSelect } from "./editor-events";
 import {
   canSave,
-  expandLights,
-  isWhole,
-  layerCaption,
+  frameAt,
+  isSharedLayer,
   layerOwners,
-  layerSummary,
-  layerSwatches,
-  roomSlice,
   sceneProblems,
   stableJson,
+  variantsFollow,
   type Problem,
 } from "./editor-model";
-import type { LayerChanged } from "./ml-layer-card";
-import type { BulbClick } from "./ml-preview";
+import type { EditorTitle } from "./ml-editor-bar";
+import type { PresetNote } from "./ml-look-card";
+import { partLabel, partsIn, switcherParts } from "./parts";
 import { dropWorkingCopy, openWorkingCopy, type WorkingCopy } from "./working-copy";
-import "./ml-layer-card";
-import "./ml-preview";
+import "./ml-look-card";
+import "./ml-room-card";
+import "./ml-scene-options";
 
 const LIVE_DELAY = 400;
 const STALE_NOTE: Record<NonNullable<WorkingCopy["stale"]>, string> = {
-  saved: " The scene was saved since; saving these changes replaces that.",
-  deleted: " The scene was deleted since; saving these changes brings it back.",
-  reset: " The preset was reset since; saving these changes edits it again.",
+  saved: "The scene was saved elsewhere since; saving these changes replaces that.",
+  deleted: "The scene was deleted since; saving these changes brings it back.",
+  reset: "The preset was reset since; saving these changes edits it again.",
 };
 const MOTION_PREVIEW = { duration: 60, samples: 120 };
-const DAY_PREVIEW = { duration: 86400, samples: 48 };
+const DAY_PREVIEW = { duration: 86400, samples: 96 };
+/** How often a moving preview advances, in ms. */
+const PLAY_STEP = 500;
 
 type Busy = "save" | "try" | "delete";
 
-interface Route {
-  targetId: string;
-  sceneId: string;
-}
+const reducedMotion = (): boolean => matchMedia("(prefers-reduced-motion: reduce)").matches;
 
-export interface EditorTitle {
-  sceneId: string;
-  title: string;
-}
+const secondsToday = (): number => {
+  const now = new Date();
+  return now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
+};
 
 class MlSceneEditor extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
 
   @property({ attribute: false }) store!: MlStore;
 
+  /** The room the editor previews and tries in. */
   @property({ attribute: false }) targetId = "";
 
   @property({ attribute: false }) sceneId = "";
@@ -83,11 +75,11 @@ class MlSceneEditor extends LitElement {
 
   @state() private _frames?: PreviewFrame[];
 
-  @state() private _frameStart = 0;
+  /** The frames span a day from midnight (adaptive), else a minute of motion. */
+  @state() private _day = false;
 
-  @state() private _previewLoading = false;
-
-  @state() private _previewError?: string;
+  /** Seconds into the frames the bulbs show. */
+  @state() private _t = 0;
 
   @state() private _trying = false;
 
@@ -101,8 +93,14 @@ class MlSceneEditor extends LitElement {
   /** The restored changes are older than the scene's last save. */
   @state() private _stale: WorkingCopy["stale"];
 
-  /** The route the working copy belongs to. */
-  private _route?: Route;
+  /** Parts that followed the last edit of the look. */
+  @state() private _followed: string[] = [];
+
+  /** The scene the working copy belongs to. */
+  private _openScene?: string;
+
+  /** The room the preview and Try are for. */
+  private _room?: string;
 
   private _baseline = "";
 
@@ -117,7 +115,9 @@ class MlSceneEditor extends LitElement {
   /** A stop on leaving is on its way; the status may still show the draft. */
   private _stopping = false;
 
-  private _title?: string;
+  private _player?: ReturnType<typeof setInterval>;
+
+  private _barKey?: string;
 
   private _live = debounce(() => {
     this._refreshPreview();
@@ -139,56 +139,79 @@ class MlSceneEditor extends LitElement {
     this._close();
   }
 
-  /** The panel's top bar shows the name being edited. */
-  protected updated(): void {
-    const title = this._scene?.name.trim() ?? "";
-    if (title === this._title) return;
-    this._title = title;
-    fire<EditorTitle>(this, "ml-editor-title", { sceneId: this.sceneId, title });
+  protected willUpdate(): void {
+    if (!this.store || !this.sceneId || !this.targetId) return;
+    if (this._openScene !== this.sceneId) {
+      this._close();
+      this._open();
+    } else if (this._room !== this.targetId) {
+      this._roomChanged();
+    }
   }
 
-  protected willUpdate(): void {
-    if (!this.store || !this.targetId || !this.sceneId) return;
-    const route = this._route;
-    if (route?.targetId === this.targetId && route.sceneId === this.sceneId) return;
-    this._close();
-    this._open({ targetId: this.targetId, sceneId: this.sceneId });
+  /** The panel's top bar shows the name, what kind of scene it is, Try and Save. */
+  protected updated(): void {
+    this._play();
+    const bar = this._bar();
+    if (!bar) return;
+    const key = JSON.stringify(bar);
+    if (key === this._barKey) return;
+    this._barKey = key;
+    fire<EditorTitle>(this, "ml-editor-title", bar);
   }
 
   // ---- working copy
 
-  private _open(route: Route): void {
-    const copy = openWorkingCopy(this.store, route.sceneId);
+  private _open(): void {
+    const copy = openWorkingCopy(this.store, this.sceneId);
+    this._openScene = this.sceneId;
+    this._room = this.targetId;
     this._frames = undefined;
-    this._previewError = undefined;
     this._error = undefined;
+    this._followed = [];
     this._selected = 0;
     this._leaving = false;
     this._missing = !copy;
     this._scene = copy?.scene;
     if (!copy) return;
-    this._route = route;
     this._baseline = stableJson(copy.baseline);
     this._restored = copy.restored && this._dirty;
     this._stale = this._restored ? copy.stale : undefined;
     // A draft running here is this editor's from before a reload.
-    this._trying = !this._stopping && this._draftRunning(route.targetId);
+    this._trying = !this._stopping && this._draftRunning(this.targetId);
     this._refreshPreview();
   }
 
   private _close(): void {
-    const route = this._route;
-    if (!route) return;
+    const sceneId = this._openScene;
+    if (!sceneId) return;
     this._live.cancel();
-    if (this._trying) {
-      this._trying = false;
-      this._stopping = true;
-      this._queueTry(() => this.store.stopTry(route.targetId))
-        .catch(() => undefined)
-        .finally(() => (this._stopping = false));
+    this._stopTrying();
+    if (!this._dirty) dropWorkingCopy(this.store, sceneId);
+    this._openScene = undefined;
+    this._room = undefined;
+  }
+
+  /** Try belongs to the room it ran in; the preview follows the new one. */
+  private _roomChanged(): void {
+    this._stopTrying();
+    this._room = this.targetId;
+    const scene = this._scene;
+    const target = this.store.target(this.targetId);
+    if (scene && target && !switcherParts(scene.layers, target, this._roomLights).includes(this._selected)) {
+      this._selected = 0;
     }
-    if (!this._dirty) dropWorkingCopy(this.store, route.sceneId);
-    this._route = undefined;
+    this._refreshPreview();
+  }
+
+  private _stopTrying(): void {
+    const room = this._room;
+    if (!this._trying || !room) return;
+    this._trying = false;
+    this._stopping = true;
+    this._queueTry(() => this.store.stopTry(room))
+      .catch(() => undefined)
+      .finally(() => (this._stopping = false));
   }
 
   /** The config's copy of the scene being edited (a user scene or an edited preset). */
@@ -210,22 +233,40 @@ class MlSceneEditor extends LitElement {
     return this._scene ? sceneProblems(this._scene, (key) => this.store.effect(key)) : [];
   }
 
+  private _roomLights = (id: string) => this.store.target(id)?.lights;
+
+  private _partName(scene: StoredScene, index: number): string {
+    return partLabel(scene.layers[index], index, {
+      light: (e) => this.store.lightName(e),
+      room: (ref) => this.store.targetName(ref),
+    });
+  }
+
   private _update(scene: StoredScene): void {
     this._scene = scene;
     this._restored &&= this._dirty;
     if (!this._restored) this._stale = undefined;
-    if (this._route) this.store.setDraft(this._route.sceneId, scene);
+    if (this._openScene) this.store.setDraft(this._openScene, scene);
     this._live();
   }
 
-  private _setField<K extends keyof StoredScene>(key: K, value: StoredScene[K]): void {
-    if (this._scene && this._scene[key] !== value) this._update({ ...this._scene, [key]: value });
-  }
-
-  private _setLayers(layers: Layer[], selected = this._selected): void {
-    if (!this._scene) return;
-    this._selected = Math.max(0, Math.min(selected, layers.length - 1));
-    this._update({ ...this._scene, layers });
+  private _onEdit(ev: CustomEvent<SceneEdit>): void {
+    ev.stopPropagation();
+    const before = this._scene;
+    if (!before) return;
+    let scene = ev.detail.scene;
+    this._followed = [];
+    if (ev.detail.follow) {
+      const rooms = this.store.targets.filter((t) => t.kind === "room");
+      const followed = variantsFollow(before, scene, (i) =>
+        isSharedLayer(before.layers[i].lights, i, rooms, this._roomLights),
+      );
+      scene = followed.scene;
+      this._followed = followed.layers.map((i) => this._partName(scene, i));
+    }
+    if (ev.detail.select !== undefined) this._selected = ev.detail.select;
+    this._selected = Math.min(this._selected, scene.layers.length - 1);
+    this._update(scene);
   }
 
   private _payload(scene: StoredScene): StoredScene {
@@ -246,27 +287,40 @@ class MlSceneEditor extends LitElement {
 
   private async _refreshPreview(): Promise<void> {
     const scene = this._scene;
-    const route = this._route;
-    if (!scene || !route || this._problems.length) return;
+    const room = this._room;
+    if (!scene || !room || this._problems.length) return;
     const seq = ++this._previewSeq;
     const day = this._isDay(scene);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
-    this._previewLoading = true;
     try {
       const frames = await this.store.preview({
-        target_id: route.targetId as TargetId,
+        target_id: room as TargetId,
         scene: this._payload(scene),
         ...(day ? { ...DAY_PREVIEW, start: start.toISOString() } : MOTION_PREVIEW),
       });
       if (seq !== this._previewSeq) return;
+      // A day opens at the time of day, motion at its start.
+      if (day !== this._day || !this._frames) this._t = day ? secondsToday() : 0;
+      this._day = day;
       this._frames = frames;
-      this._frameStart = start.getTime();
-      this._previewError = undefined;
     } catch (err) {
-      if (seq === this._previewSeq) this._previewError = errorMessage(err);
-    } finally {
-      if (seq === this._previewSeq) this._previewLoading = false;
+      if (seq === this._previewSeq) this._frames = undefined;
+      console.warn("[magic-lights] preview failed:", errorMessage(err));
+    }
+  }
+
+  /** Motion previews play unless the user prefers less motion; a day is scrubbed by hand. */
+  private _play(): void {
+    const moving = !this._day && (this._frames?.length ?? 0) > 1 && !reducedMotion();
+    if (moving && !this._player) {
+      this._player = setInterval(() => {
+        const end = this._frames?.at(-1)?.t ?? 0;
+        this._t = end > 0 ? (this._t + PLAY_STEP / 1000) % end : 0;
+      }, PLAY_STEP);
+    } else if (!moving && this._player) {
+      clearInterval(this._player);
+      this._player = undefined;
     }
   }
 
@@ -278,11 +332,11 @@ class MlSceneEditor extends LitElement {
 
   /** While trying, the room follows the edits. */
   private _refreshTry(): void {
-    const route = this._route;
-    if (!route || !this._trying) return;
+    const room = this._room;
+    if (!room || !this._trying) return;
     this._queueTry(async () => {
       if (!this._trying || !this._scene || this._problems.length) return;
-      await this.store.tryScene(route.targetId, this._payload(this._scene));
+      await this.store.tryScene(room, this._payload(this._scene));
     }).catch((err) => (this._error = `Could not update the lights: ${errorMessage(err)}`));
   }
 
@@ -294,40 +348,39 @@ class MlSceneEditor extends LitElement {
 
   // ---- actions
 
-  private async _try(): Promise<void> {
+  private _try = async (): Promise<void> => {
     const scene = this._scene;
-    const route = this._route;
-    if (!scene || !route) return;
+    const room = this._room;
+    if (!scene || !room) return;
     this._busy = "try";
     this._error = undefined;
     try {
-      await this._queueTry(() => this.store.tryScene(route.targetId, this._payload(scene)));
+      await this._queueTry(() => this.store.tryScene(room, this._payload(scene)));
       this._trying = true;
     } catch (err) {
       this._error = `Could not try the scene: ${errorMessage(err)}`;
     } finally {
       this._busy = undefined;
     }
-  }
+  };
 
-  private async _stopTry(): Promise<void> {
-    const route = this._route;
-    if (!route) return;
+  private _stopTry = async (): Promise<void> => {
+    const room = this._room;
+    if (!room) return;
     this._busy = "try";
     this._trying = false;
     try {
-      await this._queueTry(() => this.store.stopTry(route.targetId));
+      await this._queueTry(() => this.store.stopTry(room));
     } catch (err) {
       this._error = `Could not stop trying: ${errorMessage(err)}`;
     } finally {
       this._busy = undefined;
     }
-  }
+  };
 
-  private async _save(): Promise<void> {
+  private _save = async (): Promise<void> => {
     const scene = this._scene;
-    const route = this._route;
-    if (!scene || !route) return;
+    if (!scene) return;
     this._busy = "save";
     this._error = undefined;
     try {
@@ -342,20 +395,20 @@ class MlSceneEditor extends LitElement {
     this._trying = false;
     this._busy = undefined;
     showToast(this, `Saved ${scene.name.trim()}`);
-    this._leave(route);
-  }
+    this._leave();
+  };
 
   private async _delete(reset: boolean): Promise<void> {
     const scene = this._scene;
-    const route = this._route;
-    if (!scene || !route) return;
+    if (!scene) return;
     if (!(await confirmRemoveScene(this, scene, reset))) return;
     this._busy = "delete";
     this._error = undefined;
     try {
-      if (this._trying) {
+      const room = this._room;
+      if (this._trying && room) {
         this._trying = false;
-        await this._queueTry(() => this.store.stopTry(route.targetId));
+        await this._queueTry(() => this.store.stopTry(room));
       }
       await this.store.deleteScene(scene.id);
     } catch (err) {
@@ -364,19 +417,19 @@ class MlSceneEditor extends LitElement {
       return;
     }
     this._busy = undefined;
-    this._leave(route);
+    this._leave();
   }
 
-  private _leave(route: Route): void {
+  private _leave(): void {
     this._leaving = true;
-    dropWorkingCopy(this.store, route.sceneId);
+    if (this._openScene) dropWorkingCopy(this.store, this._openScene);
     goBack(this.parent);
   }
 
   /** The panel's back arrow asks before unsaved changes are dropped. */
   private _guardBack = async (ev: MouseEvent): Promise<void> => {
-    const route = this._route;
-    if (!route || this._leaving || !this._dirty) return;
+    const sceneId = this._openScene;
+    if (!sceneId || this._leaving || !this._dirty) return;
     if (!ev.composedPath().some((el) => (el as Element).localName === "ha-icon-button-arrow-prev")) return;
     ev.stopPropagation();
     ev.preventDefault();
@@ -387,12 +440,64 @@ class MlSceneEditor extends LitElement {
       confirmText: "Discard",
       destructive: true,
     });
-    if (discard && this._route === route) this._leave(route);
+    if (discard && this._openScene === sceneId) this._leave();
   };
 
   private _beforeUnload = (ev: BeforeUnloadEvent): void => {
     if (this._dirty && !this._leaving) ev.preventDefault();
   };
+
+  // ---- what the scene is
+
+  /** Rooms (and zones) whose menu shows the scene. */
+  private _shownIn(scene: StoredScene): TargetInfo[] {
+    const id = menuId(scene);
+    return this.store.targets.filter((t) => menuIds(t).includes(id));
+  }
+
+  private _badge(scene: StoredScene): string {
+    if (scene.preset) return this._storedScene(scene) ? "Preset · Edited" : "Preset";
+    if (!this._storedScene(scene)) return "New scene";
+    const rooms = this._shownIn(scene).filter((t) => t.kind === "room").length;
+    return `Your scene · ${plural(rooms, "room")}`;
+  }
+
+  private _setUpIn(scene: StoredScene, target: TargetInfo): boolean {
+    return partsIn(scene.layers, target, this._roomLights).length > 0;
+  }
+
+  private _bar(): EditorTitle | undefined {
+    const scene = this._scene;
+    const target = this.store?.target(this.targetId);
+    if (!scene || !target) return undefined;
+    const stored = !!this._storedScene(scene);
+    const valid = this._problems.length === 0;
+    return {
+      sceneId: this.sceneId,
+      title: scene.name.trim(),
+      badge: this._badge(scene),
+      edited: !!scene.preset && stored,
+      room: target.name,
+      trying: this._trying,
+      canTry: valid && this._setUpIn(scene, target),
+      canSave: valid && canSave(scene, this._original, stored),
+      busy: this._busy,
+      onTry: this._try,
+      onStopTry: this._stopTry,
+      onSave: this._save,
+    };
+  }
+
+  private _presetNote(scene: StoredScene): PresetNote | undefined {
+    const preset = scene.preset ? this.store.scene(scene.preset) : undefined;
+    if (!preset) return undefined;
+    const first = preset.layers[0];
+    return {
+      edited: !!this._storedScene(scene),
+      rooms: this._shownIn(scene).map((t) => t.name),
+      original: first ? lookLine(this.store.effect(first.effect), first) : "",
+    };
+  }
 
   // ---- rendering
 
@@ -403,87 +508,104 @@ class MlSceneEditor extends LitElement {
     if (this._missing || !scene) {
       return html`<ha-alert alert-type="warning" title="Scene not found">
         This scene does not exist (any more).
-        <ha-button slot="action" appearance="plain" @click=${() => goBack(this.parent)}>
-          Back
-        </ha-button>
+        <ha-button slot="action" appearance="plain" @click=${() => goBack(this.parent)}>Back</ha-button>
       </ha-alert>`;
     }
-    const problems = this._problems;
-    const roomLights = (id: string) => this.store.target(id)?.lights;
-    const owners = layerOwners(scene.layers, target, roomLights);
     const selected = Math.min(this._selected, scene.layers.length - 1);
-    // With one layer every light would be marked.
-    const highlight =
-      scene.layers.length > 1 ? [...owners].filter(([, i]) => i === selected).map(([e]) => e) : [];
+    const parts = switcherParts(scene.layers, target, this._roomLights);
+    if (!parts.includes(selected)) parts.push(selected);
+    const preset = scene.preset ? this.store.scene(scene.preset) : undefined;
+    const original = preset ? toStored(preset) : undefined;
+    const frame = this._frames ? frameAt(this._frames, this._t) : undefined;
+    const owners = layerOwners(scene.layers, target, this._roomLights);
+    const partLights = target.lights.filter((e) => owners.get(e) === selected);
     return html`
-      <div class="preview-bar">
-        <ml-preview
-          .hass=${this.hass}
-          .store=${this.store}
-          .target=${target}
-          .frames=${this._frames}
-          .loading=${this._previewLoading}
-          .error=${problems.length ? `Preview paused: ${problems[0].message}` : this._previewError}
-          .highlight=${highlight}
-          .day=${this._isDay(scene)}
-          .start=${this._frameStart}
-          .narrow=${this.narrow}
-          @ml-bulb-click=${(ev: CustomEvent<BulbClick>) => {
-            const owner = owners.get(ev.detail.entityId);
-            if (owner !== undefined) this._selected = owner;
-          }}
-        ></ml-preview>
-      </div>
-      ${this._renderAlerts(target)}
+      ${this._renderNotes(scene, target)}
       <div class="body">
         <div class="columns">
-          <div>
-            <h2 class="section-title">Scene</h2>
-            ${this._renderScene(scene, problems)}
-            <h2 class="section-title">Layers</h2>
-            ${this._renderLayers(target, scene, owners, problems, selected)}
-          </div>
-          <div>
-            <h2 class="section-title">Layer ${selected + 1}</h2>
-            <ml-layer-card
+          <ml-look-card
+            .hass=${this.hass}
+            .store=${this.store}
+            .scene=${scene}
+            .selected=${selected}
+            .parts=${parts.map((index) => ({ index, label: this._partName(scene, index) }))}
+            .original=${original}
+            .preset=${this._presetNote(scene)}
+            .caption=${this.narrow ? this._badge(scene) : "Tap the name or the swatch to change them"}
+            .problems=${this._problems}
+            .followed=${this._followed}
+            .day=${this._day && this._frames ? { frames: this._frames, t: this._t, lights: partLights, room: target.name } : undefined}
+            .narrow=${this.narrow}
+            @ml-scene-edit=${this._onEdit}
+            @ml-part-select=${this._onPart}
+            @ml-time=${(ev: CustomEvent<TimeSelect>) => (this._t = ev.detail.t)}
+            @ml-reset=${() => this._delete(true)}
+          ></ml-look-card>
+          <div class="side">
+            <ml-room-card
               .hass=${this.hass}
               .store=${this.store}
+              .scene=${scene}
               .target=${target}
-              .layer=${scene.layers[selected]}
-              .overridden=${expandLights(scene.layers[selected].lights, target, roomLights).filter(
-                (e) => owners.get(e) !== selected,
-              )}
-              .problems=${problems.filter((p) => p.layer === selected).map((p) => p.message)}
-              @ml-layer-changed=${(ev: CustomEvent<LayerChanged>) =>
-                this._setLayers(scene.layers.map((l, i) => (i === selected ? ev.detail.layer : l)))}
-            ></ml-layer-card>
+              .selected=${selected}
+              .frame=${frame}
+              .narrow=${this.narrow}
+              @ml-scene-edit=${this._onEdit}
+              @ml-part-select=${this._onPart}
+              @ml-room-select=${(ev: CustomEvent<RoomSelect>) =>
+                replaceWith(editorPath(this.sceneId, ev.detail.targetId))}
+            ></ml-room-card>
+            <ml-scene-options
+              .store=${this.store}
+              .scene=${scene}
+              .stored=${!!this._storedScene(scene)}
+              .original=${original}
+              .narrow=${this.narrow}
+              @ml-scene-edit=${this._onEdit}
+            ></ml-scene-options>
           </div>
         </div>
       </div>
-      ${this._renderFooter(scene, problems)}
+      ${this._renderFooter(scene)}
     `;
   }
 
-  private _renderAlerts(target: TargetInfo) {
+  private _onPart(ev: CustomEvent<PartSelect>): void {
+    ev.stopPropagation();
+    this._selected = ev.detail.index;
+    this._followed = [];
+  }
+
+  private _renderNotes(scene: StoredScene, target: TargetInfo) {
+    const rooms = this._shownIn(scene).filter((t) => t.kind === "room").length;
+    const name = scene.name.trim() || "this scene";
     return html`
       ${
+        scene.preset
+          ? nothing
+          : html`<ha-alert alert-type="info">
+              ${
+                rooms > 1
+                  ? html`The look is shared: what you change here changes <b>all ${rooms} rooms that show ${name}</b>.`
+                  : html`The look is the same in every room that shows ${name}.`
+              }
+              Which lights do what is set per room.
+            </ha-alert>`
+      }
+      ${
         this._error
-          ? html`<ha-alert
-              alert-type="error"
-              dismissable
-              @alert-dismissed-clicked=${() => (this._error = undefined)}
-            >
+          ? html`<ha-alert alert-type="error" dismissable @alert-dismissed-clicked=${() => (this._error = undefined)}>
               ${this._error}
             </ha-alert>`
           : nothing
       }
       ${
         this._restored
-          ? html`<ha-alert alert-type="info" title="Unsaved changes">
-              These changes are from an earlier visit and have not been saved yet.${
-                this._stale ? STALE_NOTE[this._stale] : ""
-              }
-              <ha-button slot="action" appearance="plain" @click=${this._discard}>Discard</ha-button>
+          ? html`<ha-alert alert-type="warning" title="Unsaved changes">
+              These changes are from an earlier visit.${this._stale ? html` ${STALE_NOTE[this._stale]}` : nothing}
+              <ha-button slot="action" appearance="plain" @click=${this._discard}>
+                ${this._stale ? "Load the saved scene" : "Discard"}
+              </ha-button>
             </ha-alert>`
           : nothing
       }
@@ -497,250 +619,37 @@ class MlSceneEditor extends LitElement {
     `;
   }
 
-  private _renderScene(scene: StoredScene, problems: Problem[]) {
-    const defaultTransition = this.store.config.settings.transition;
-    const nameProblems = problems.filter((p) => p.layer === undefined);
-    return html`<ha-card>
-      <div class="card-content form">
-        <div class="name-row">
-          <ha-input
-            label="Name"
-            required
-            .readonly=${!!scene.preset}
-            .hint=${scene.preset ? "An edited preset keeps its name." : ""}
-            .value=${scene.name}
-            @input=${(ev: Event) => this._setField("name", (ev.target as HTMLInputElement).value ?? "")}
-          ></ha-input>
-          <ha-icon-picker
-            .label=${"Icon"}
-            .value=${scene.icon ?? undefined}
-            @value-changed=${(ev: CustomEvent<{ value?: string }>) =>
-              this._setField("icon", ev.detail.value || null)}
-          ></ha-icon-picker>
-        </div>
-        ${nameProblems.map((p) => html`<p class="problem">${p.message}</p>`)}
-        ${
-          scene.preset
-            ? html`<p class="hint">Changes to this preset apply in every room and zone.</p>`
-            : nothing
-        }
-        <ha-selector
-          .hass=${this.hass}
-          .selector=${{ number: { min: 1, max: 100, step: 1, mode: "slider", unit_of_measurement: "%" } }}
-          .value=${scene.brightness}
-          .label=${"Brightness"}
-          .helper=${"Scales the brightness of every layer."}
-          .required=${false}
-          @value-changed=${(ev: CustomEvent<{ value?: number }>) => {
-            ev.stopPropagation();
-            const value = ev.detail.value;
-            if (typeof value === "number") this._setField("brightness", Math.round(value));
-          }}
-        ></ha-selector>
-        <ha-selector
-          .hass=${this.hass}
-          .selector=${{ number: { min: 0, max: 300, step: 0.1, mode: "box", unit_of_measurement: "s" } }}
-          .value=${scene.transition ?? undefined}
-          .placeholder=${defaultTransition}
-          .label=${"Fade"}
-          .helper=${`How long switching to this scene takes. Empty: the default (${defaultTransition} s).`}
-          .required=${false}
-          @value-changed=${(ev: CustomEvent<{ value?: number }>) => {
-            ev.stopPropagation();
-            this._setField("transition", typeof ev.detail.value === "number" ? ev.detail.value : null);
-          }}
-        ></ha-selector>
-        <div class="field">
-          <span class="field-label">Lights without a layer</span>
-          <ha-control-select
-            .options=${[
-              { value: "off", label: "Turn off" },
-              { value: "keep", label: "Leave as they are" },
-            ]}
-            .value=${scene.others}
-            .label=${"Lights without a layer"}
-            @value-changed=${(ev: CustomEvent<{ value: StoredScene["others"] }>) => {
-              ev.stopPropagation();
-              this._setField("others", ev.detail.value);
-            }}
-          ></ha-control-select>
-        </div>
-      </div>
-    </ha-card>`;
-  }
-
-  private _renderLayers(
-    target: TargetInfo,
-    scene: StoredScene,
-    owners: Map<string, number>,
-    problems: Problem[],
-    selected: number,
-  ) {
-    const several = scene.layers.length > 1;
-    return html`<ha-card>
-      ${
-        several
-          ? html`<p class="hint">Later layers win where they share lights. Drag to reorder.</p>`
-          : nothing
-      }
-      <ha-sortable handle-selector=".handle" .disabled=${!several} @item-moved=${this._layerMoved}>
-        <div class="layer-list">
-          ${scene.layers.map((layer, i) =>
-            this._renderLayerRow(target, layer, i, i === selected, owners, problems, several),
-          )}
-        </div>
-      </ha-sortable>
-      <div class="card-actions">
-        <ha-button appearance="plain" @click=${this._addLayer}>
-          <ha-icon slot="start" icon="mdi:plus"></ha-icon>
-          Add layer
-        </ha-button>
-      </div>
-    </ha-card>`;
-  }
-
-  private _renderLayerRow(
-    target: TargetInfo,
-    layer: Layer,
-    index: number,
-    selected: boolean,
-    owners: Map<string, number>,
-    problems: Problem[],
-    several: boolean,
-  ) {
-    const effect = this.store.effect(layer.effect);
-    const summary = layerSummary(effect, layer.params);
-    const swatches = layerSwatches(effect, layer.params);
-    const effective = [...owners.values()].filter((i) => i === index).length;
-    const broken = problems.some((p) => p.layer === index);
-    return html`<div class="layer ${selected ? "selected" : ""}">
-      ${several ? html`<ha-icon class="handle" icon="mdi:drag"></ha-icon>` : nothing}
-      <button class="layer-main" aria-pressed=${selected} @click=${() => (this._selected = index)}>
-        <span class="layer-art" style="background: ${swatchBackground(swatches)}">
-          <ha-icon .icon=${effect?.icon ?? "mdi:help-circle-outline"}></ha-icon>
-        </span>
-        <span class="layer-text">
-          <span class="layer-title">
-            ${this._lightsLabel(target, layer)} · ${effect?.name ?? layer.effect}
-          </span>
-          <span class="layer-summary">
-            ${summary}${
-              layer.lights !== "all" || several
-                ? html`${summary ? " · " : ""}sets ${plural(effective, "light")}`
-                : nothing
-            }
-          </span>
-        </span>
-        ${broken ? html`<ha-icon class="warn" icon="mdi:alert-circle-outline"></ha-icon>` : nothing}
-      </button>
-      <ha-icon-button
-        .label=${"Remove layer"}
-        .disabled=${!several}
-        @click=${() => this._removeLayer(index)}
-      >
-        <ha-icon icon="mdi:delete-outline"></ha-icon>
-      </ha-icon-button>
-    </div>`;
-  }
-
-  /** This room's part of the layer, and the rooms it also reaches. */
-  private _lightsLabel(target: TargetInfo, layer: Layer): string {
-    const roomLights = (id: string) => this.store.target(id)?.lights;
-    const rooms = this.store.targets.filter((t) => t.kind === "room");
-    const caption = layerCaption(layer.lights, target, rooms, roomLights);
-    let here: string;
-    if (isWhole(layer.lights, target, roomLights)) here = "All lights";
-    else {
-      const slice = roomSlice(layer.lights, target, roomLights);
-      const refs = slice
-        .filter((l) => l.startsWith("room:"))
-        .map((l) => this.hass.areas?.[l.slice(5)]?.name ?? this.store.targetName(l));
-      const entities = slice.filter((l) => !l.startsWith("room:"));
-      const parts = [...refs];
-      if (entities.length === 1 && !refs.length) parts.push(this.store.lightName(entities[0]));
-      else if (entities.length) parts.push(plural(entities.length, "light"));
-      here = parts.join(" + ");
-    }
-    if (!here) return caption ?? "No lights";
-    return caption ? `${here} (${caption})` : here;
-  }
-
-  private _addLayer(): void {
-    const scene = this._scene;
-    if (!scene) return;
-    const last = scene.layers[scene.layers.length - 1];
-    const layer: Layer = { lights: [], effect: last.effect, params: structuredClone(last.params) };
-    this._setLayers([...scene.layers, layer], scene.layers.length);
-  }
-
-  private _removeLayer(index: number): void {
-    const scene = this._scene;
-    if (!scene || scene.layers.length < 2) return;
-    const selected = this._selected > index ? this._selected - 1 : this._selected;
-    this._setLayers(
-      scene.layers.filter((_, i) => i !== index),
-      selected,
-    );
-  }
-
-  private _layerMoved(ev: CustomEvent<{ oldIndex: number; newIndex: number }>): void {
-    ev.stopPropagation();
-    const scene = this._scene;
-    if (!scene) return;
-    const { oldIndex, newIndex } = ev.detail;
-    const layers = [...scene.layers];
-    layers.splice(newIndex, 0, ...layers.splice(oldIndex, 1));
-    const ids = scene.layers.map((_, i) => i);
-    ids.splice(newIndex, 0, ...ids.splice(oldIndex, 1));
-    this._setLayers(layers, ids.indexOf(this._selected));
-  }
-
-  private _renderFooter(scene: StoredScene, problems: Problem[]) {
+  private _renderFooter(scene: StoredScene) {
     const stored = !!this._storedScene(scene);
     const busy = this._busy !== undefined;
-    const valid = problems.length === 0;
+    const remove = stored
+      ? html`<ha-button
+          appearance="plain"
+          variant="danger"
+          .disabled=${busy}
+          .loading=${this._busy === "delete"}
+          @click=${() => this._delete(!!scene.preset)}
+        >
+          <ha-icon slot="start" .icon=${scene.preset ? "mdi:restore" : "mdi:delete-outline"}></ha-icon>
+          ${scene.preset ? "Reset to original" : "Delete scene"}
+        </ha-button>`
+      : nothing;
+    if (this.narrow) return stored ? html`<div class="end">${remove}</div>` : nothing;
+    const bar = this._bar();
+    if (!bar) return nothing;
     return html`<div class="footer">
-      ${
-        stored
-          ? html`<ha-button
-              appearance="plain"
-              variant="danger"
-              .disabled=${busy}
-              .loading=${this._busy === "delete"}
-              @click=${() => this._delete(!!scene.preset)}
-            >
-              <ha-icon slot="start" .icon=${scene.preset ? "mdi:restore" : "mdi:delete-outline"}></ha-icon>
-              ${scene.preset ? "Reset to preset" : "Delete"}
-            </ha-button>`
-          : nothing
-      }
+      ${remove}
       <span class="spacer"></span>
-      ${
-        this._trying
-          ? html`<ha-button
-              appearance="plain"
-              .disabled=${busy}
-              .loading=${this._busy === "try"}
-              @click=${this._stopTry}
-            >
-              <ha-icon slot="start" icon="mdi:stop"></ha-icon>
-              Stop trying
-            </ha-button>`
-          : html`<ha-button
-              appearance="plain"
-              .disabled=${busy || !valid}
-              .loading=${this._busy === "try"}
-              @click=${this._try}
-            >
-              <ha-icon slot="start" icon="mdi:play-circle-outline"></ha-icon>
-              Try
-            </ha-button>`
-      }
       <ha-button
-        .disabled=${busy || !valid || !canSave(scene, this._original, stored)}
-        .loading=${this._busy === "save"}
-        @click=${this._save}
+        appearance="plain"
+        .disabled=${busy || (!bar.trying && !bar.canTry)}
+        .loading=${this._busy === "try"}
+        @click=${bar.trying ? this._stopTry : this._try}
       >
+        <ha-icon slot="start" .icon=${bar.trying ? "mdi:stop" : "mdi:play"}></ha-icon>
+        ${bar.trying ? "Stop trying" : "Try"}
+      </ha-button>
+      <ha-button .disabled=${busy || !bar.canSave} .loading=${this._busy === "save"} @click=${this._save}>
         Save
       </ha-button>
     </div>`;
@@ -749,16 +658,8 @@ class MlSceneEditor extends LitElement {
   static styles = [
     pageStyles,
     css`
-      .preview-bar {
-        position: sticky;
-        top: 0;
-        z-index: 3;
-        margin: calc(-1 * var(--ha-space-4)) calc(-1 * var(--ha-space-1)) 0;
-        padding: var(--ha-space-4) var(--ha-space-1) var(--ha-space-3);
-        background: var(--primary-background-color);
-      }
       ha-alert {
-        margin: var(--ha-space-2) 0 0;
+        margin: 0 0 var(--ha-space-3);
       }
       .body {
         container-type: inline-size;
@@ -766,150 +667,36 @@ class MlSceneEditor extends LitElement {
       .columns {
         display: grid;
         grid-template-columns: minmax(0, 1fr);
-        column-gap: var(--ha-space-6);
-      }
-      .columns > div:last-child .section-title {
-        margin-top: var(--ha-space-6);
-      }
-      @container (min-width: 820px) {
-        .columns {
-          grid-template-columns: minmax(0, 5fr) minmax(0, 6fr);
-          align-items: start;
-        }
-        .columns > div:last-child .section-title {
-          margin-top: var(--ha-space-2);
-        }
-      }
-      .form {
-        display: flex;
-        flex-direction: column;
-        gap: var(--ha-space-5);
-      }
-      .name-row {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(0, 1fr);
-        gap: var(--ha-space-3);
+        gap: var(--ha-space-4);
         align-items: start;
       }
-      :host([narrow]) .name-row {
-        grid-template-columns: minmax(0, 1fr);
-      }
-      ha-input {
-        --ha-input-padding-bottom: 0;
-      }
-      .field {
+      .side {
         display: flex;
         flex-direction: column;
-        gap: var(--ha-space-2);
+        gap: var(--ha-space-4);
       }
-      .field-label {
-        color: var(--primary-text-color);
-      }
-      .problem {
-        margin: calc(-1 * var(--ha-space-3)) 0 0;
-        font-size: var(--ha-font-size-s);
-        color: var(--error-color);
-      }
-      .hint {
-        margin: 0;
-        padding: var(--ha-space-3) var(--ha-space-4) 0;
-        font-size: var(--ha-font-size-s);
-        color: var(--secondary-text-color);
-      }
-      .layer-list {
-        display: flex;
-        flex-direction: column;
-        padding: var(--ha-space-2) 0;
-      }
-      .layer {
-        display: flex;
-        align-items: center;
-        gap: var(--ha-space-1);
-        padding: 0 var(--ha-space-2) 0 var(--ha-space-3);
-        background: var(--card-background-color);
-        border-inline-start: 3px solid transparent;
-      }
-      .layer.selected {
-        border-inline-start-color: var(--primary-color);
-        background: rgba(var(--rgb-primary-color), 0.08);
-      }
-      .handle {
-        flex: none;
-        color: var(--secondary-text-color);
-        cursor: grab;
-      }
-      .layer-main {
-        flex: 1;
-        min-width: 0;
-        display: flex;
-        align-items: center;
-        gap: var(--ha-space-3);
-        padding: var(--ha-space-2) 0;
-        border: none;
-        background: none;
-        color: inherit;
-        font: inherit;
-        text-align: start;
-        cursor: pointer;
-        border-radius: var(--ha-border-radius-md);
-      }
-      .layer-main:focus-visible {
-        outline: 2px solid var(--ha-color-focus, var(--primary-color));
-      }
-      .layer-art {
-        flex: none;
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        width: 40px;
-        height: 40px;
-        border-radius: var(--ha-border-radius-md);
-        box-shadow: inset 0 0 0 1px var(--divider-color);
-        --mdc-icon-size: 20px;
-        color: #fff;
-      }
-      .layer-art ha-icon {
-        filter: drop-shadow(0 0 2px rgba(0, 0, 0, 0.6));
-      }
-      .layer-text {
-        display: flex;
-        flex-direction: column;
-        min-width: 0;
-      }
-      .layer-title,
-      .layer-summary {
-        overflow: hidden;
-        text-overflow: ellipsis;
-        white-space: nowrap;
-      }
-      .layer-summary {
-        font-size: var(--ha-font-size-s);
-        color: var(--secondary-text-color);
-      }
-      .warn {
-        flex: none;
-        color: var(--warning-color);
-      }
-      .card-actions {
-        display: flex;
-        padding: var(--ha-space-2);
-        border-top: 1px solid var(--divider-color);
+      @container (min-width: 900px) {
+        .columns {
+          grid-template-columns: minmax(0, 11fr) minmax(0, 8fr);
+        }
       }
       .footer {
         position: sticky;
         bottom: 0;
         z-index: 3;
         display: flex;
-        flex-wrap: wrap;
         align-items: center;
         gap: var(--ha-space-2);
-        margin: var(--ha-space-6) calc(-1 * var(--ha-space-1)) 0;
-        padding: var(--ha-space-3) var(--ha-space-1);
+        margin: var(--ha-space-6) calc(-1 * var(--ha-space-4)) 0;
+        padding: var(--ha-space-3) var(--ha-space-4);
         background: var(--primary-background-color);
         border-top: 1px solid var(--divider-color);
       }
       .spacer {
         flex: 1;
+      }
+      .end {
+        margin-top: var(--ha-space-4);
       }
     `,
   ];

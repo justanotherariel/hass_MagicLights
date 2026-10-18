@@ -279,6 +279,8 @@ export interface HaFormSchema {
   visible?: boolean | HaFormCondition | HaFormCondition[];
   label?: string;
   helper?: string;
+  /** Helper text per value of the field, shown for the current one in place of `helper`. */
+  hints?: Record<string, string>;
   description?: { suffix?: string; suggested_value?: unknown };
   /** In the collapsed "Advanced" part of the form. */
   advanced?: boolean;
@@ -286,6 +288,8 @@ export interface HaFormSchema {
   pair?: { max: string; label?: string };
   /** Values offered as a segmented control. */
   steps?: { value: number; label: string }[];
+  /** Words under a unitless scale, low end first: ["Slow", "Lively"]. */
+  ends?: string[];
   /** Consecutive fields with the same row sit side by side. */
   row?: string;
 }

@@ -100,7 +100,17 @@ def KELVIN(lo: int = 1500, hi: int = 6500) -> selector.ColorTempSelector:  # noq
 
 
 # Lifted from a key's description: ha-form's own keys, then layout hints the panel reads.
-FIELD_KEYS = ("visible", "label", "helper", "advanced", "pair", "steps", "row")
+FIELD_KEYS = (
+    "visible",
+    "label",
+    "helper",
+    "hints",
+    "advanced",
+    "pair",
+    "steps",
+    "ends",
+    "row",
+)
 
 
 def serialize_schema(schema: vol.Schema) -> list[dict[str, Any]] | None:

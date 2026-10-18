@@ -29,9 +29,6 @@ class MlColorField extends LitElement {
 
   @property({ attribute: false }) palettes: readonly PaletteInfo[] = [];
 
-  @property() label?: string;
-
-  @property() helper?: string;
 
   private get _config(): ColorSelectorConfig {
     return { ...DEFAULT_CONFIG, ...this.config };
@@ -66,7 +63,6 @@ class MlColorField extends LitElement {
     const config = this._config;
     const mode = this._mode;
     return html`
-      ${this.label ? html`<div class="label">${this.label}</div>` : nothing}
       ${
         config.allow_white && config.allow_color
           ? html`<ha-control-select
@@ -75,13 +71,12 @@ class MlColorField extends LitElement {
                 { value: "color", label: "Colour" },
               ]}
               .value=${mode}
-              .label=${this.label ?? "Colour"}
+              .label=${"Colour"}
               @value-changed=${this._modeChanged}
             ></ha-control-select>`
           : nothing
       }
       ${mode === "white" ? this._renderWhite(config) : this._renderColor()}
-      ${this.helper ? html`<div class="helper">${this.helper}</div>` : nothing}
     `;
   }
 
@@ -173,13 +168,6 @@ class MlColorField extends LitElement {
       display: flex;
       flex-direction: column;
       gap: var(--ha-space-3);
-    }
-    .label {
-      color: var(--primary-text-color);
-    }
-    .helper {
-      font-size: var(--ha-font-size-s);
-      color: var(--secondary-text-color);
     }
     .swatches {
       display: flex;

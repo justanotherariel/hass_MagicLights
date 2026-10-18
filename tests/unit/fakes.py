@@ -376,12 +376,17 @@ PARAM_TABLE: dict[str, vol.Schema] = {
             vol.Required(
                 "palette", default=[{"xy": [0.5019, 0.4152]}]
             ): PaletteSelector({"min": 1, "max": 9}),
+            vol.Required("motion", default="static"): _select(
+                [
+                    {"value": "static", "label": "Still"},
+                    {"value": "dynamic", "label": "Animate"},
+                ]
+            ),
+            vol.Required("speed", default=0.6): _number(0.05, 1, 0.05),
             vol.Required("brightness", default=60): PCT,
             vol.Required("white", default={"kelvin": 2700}): ColorSelector(
                 {"allow_color": False}
             ),
-            vol.Required("motion", default="static"): _select(["static", "dynamic"]),
-            vol.Required("speed", default=0.6): _number(0.05, 1, 0.05),
             vol.Required("gradients", default=True): selector.BooleanSelector(),
         }
     ),

@@ -31,7 +31,7 @@ export const fadeLabel = (seconds: number): string => stepOf(seconds)?.label ?? 
 export const fadeValue = (seconds: number | null): string =>
   seconds === null ? FADE_DEFAULT : String(stepOf(seconds)?.seconds ?? seconds);
 
-/** Segments for `seconds`; with `fallback` (the setting) a scene's "Default" comes first. */
+/** Segments for `seconds`; with `fallback` (the setting) a scene's "Default 1 s" comes first. */
 export const fadeChoices = (seconds: number | null, fallback?: number): (Choice & { icon?: string })[] => {
   const choices: (Choice & { icon?: string })[] = FADE_STEPS.map((step) => ({
     value: String(step.seconds),

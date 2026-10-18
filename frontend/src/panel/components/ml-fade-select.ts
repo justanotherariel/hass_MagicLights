@@ -7,6 +7,9 @@ import { property } from "lit/decorators.js";
 import { defineElement, fire } from "../../shared/util";
 import { fadeChoices, fadeSeconds, fadeValue } from "../fade";
 
+/** Wrapping keeps a value whole: "Quick" / "0.4 s", "Default" / "1 s". */
+const keepWhole = (label: string): string => label.replace(/ (\S+) s$/, " $1\u00a0s");
+
 class MlFadeSelect extends LitElement {
   /** Seconds; null follows the setting. */
   @property({ attribute: false }) value: number | null = null;
@@ -21,7 +24,7 @@ class MlFadeSelect extends LitElement {
   protected render() {
     const options = fadeChoices(this.value, this.fallback).map((choice) => ({
       value: choice.value,
-      label: choice.label,
+      label: keepWhole(choice.label),
       icon: choice.icon ? html`<ha-icon .icon=${choice.icon}></ha-icon>` : undefined,
     }));
     return html`<ha-control-select
@@ -41,7 +44,8 @@ class MlFadeSelect extends LitElement {
       display: block;
     }
     ha-control-select {
-      --control-select-thickness: 52px;
+      font-size: var(--ha-font-size-s);
+      --control-select-thickness: 56px;
       --control-select-border-radius: var(--ha-border-radius-lg, 12px);
       --mdc-icon-size: 18px;
     }

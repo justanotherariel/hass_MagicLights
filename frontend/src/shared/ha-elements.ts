@@ -4,13 +4,11 @@
 
 export const PANEL_TAGS = [
   "ha-top-app-bar-fixed",
-  "ha-menu-button",
   "ha-card",
   "ha-button",
   "ha-icon-button",
   "ha-icon-button-arrow-prev",
   "ha-icon",
-  "ha-svg-icon",
   "ha-tab-group",
   "ha-tab-group-tab",
   "ha-assist-chip",
@@ -36,14 +34,10 @@ export const PANEL_TAGS = [
   "ha-control-slider",
   "ha-control-button",
   "ha-control-button-group",
-  "ha-control-switch",
   "ha-filter-chip",
   "ha-chip-set",
   "ha-badge",
-  "ha-bottom-sheet",
-  "ha-tooltip",
   "ha-tile-container",
-  "ha-tile-icon",
   "ha-tile-info",
   "ha-tile-badge",
   "ha-settings-row",
@@ -77,7 +71,7 @@ interface CardHelpers {
 }
 
 /**
- * The control-generation elements (ha-control-slider, -button, -switch, -button-group)
+ * The control-generation elements (ha-control-slider, -button, -button-group)
  * come with the more-info controls of lights and locks, the ha-tile-* parts with the
  * tile card. Lovelace's card helpers load both; the lovelace module defines them.
  */

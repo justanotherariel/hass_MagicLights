@@ -44,21 +44,14 @@ class Palette(Effect):
                 description={"label": "Colours"},
             ): PaletteSelector({"min": 1, "max": 9}),
             vol.Required(
-                "brightness", default=60, description={"label": "Brightness"}
-            ): PCT,
-            vol.Required(
-                "white",
-                default={"kelvin": 2700},
-                description={
-                    "label": "White",
-                    "helper": "For lights that only do white",
-                },
-            ): ColorSelector({"allow_color": False}),
-            vol.Required(
                 "motion", default="static", description={"label": "Motion"}
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
-                    options=["static", "dynamic"], mode="list"
+                    options=[
+                        selector.SelectOptionDict(value="static", label="Still"),
+                        selector.SelectOptionDict(value="dynamic", label="Animate"),
+                    ],
+                    mode="list",
                 )
             ),
             vol.Required(
@@ -66,17 +59,28 @@ class Palette(Effect):
                 default=0.6,
                 description={
                     "label": "Speed",
-                    "helper": "How fast the colours drift when they move, also when ▶ plays a static scene",
+                    "helper": "How fast the colours drift, also when ▶ plays a still scene",
+                    "ends": ["Slow", "Lively"],
+                    "visible": {"field": "motion", "value": "dynamic"},
                 },
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=0.05, max=1, step=0.05, mode="slider")
             ),
+            vol.Required(
+                "brightness", default=60, description={"label": "Brightness"}
+            ): PCT,
+            vol.Required(
+                "white",
+                default={"kelvin": 2700},
+                description={"label": "Lights that only do white", "row": "white"},
+            ): ColorSelector({"allow_color": False}),
             vol.Required(
                 "gradients",
                 default=True,
                 description={
                     "label": "Gradients",
                     "helper": "Spread the palette over gradient lights",
+                    "row": "white",
                 },
             ): selector.BooleanSelector(),
         }

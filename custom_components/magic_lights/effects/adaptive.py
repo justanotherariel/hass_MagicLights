@@ -91,8 +91,15 @@ class Adaptive(Effect):
                 default="static",
                 description={
                     "label": "Brightness curve",
-                    "helper": "Dim after sunset: down until midnight, back up by"
-                    " sunrise. The ramps change around sunrise and sunset",
+                    "hints": {
+                        "static": "One brightness all day",
+                        "default": "Day level until sunset, down to Night by"
+                        " midnight, back up by sunrise",
+                        "linear": "Even ramps between Night and Day around"
+                        " sunrise and sunset",
+                        "tanh": "Gentle ramps between Night and Day around"
+                        " sunrise and sunset",
+                    },
                 },
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(

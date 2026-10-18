@@ -1,5 +1,5 @@
 // Pure logic of the scene editor: which lights a layer sets, the part of a layer one
-// room edits, layer summaries, room-only layers following shared edits, draft
+// room edits, room-only layers following shared edits, draft
 // comparison and the checks that gate Try and Save.
 
 import { colorToHex } from "../../shared/color";
@@ -13,7 +13,7 @@ import type {
   StoredScene,
   TargetInfo,
 } from "../../shared/types";
-import { humanise, plural, withUnit } from "../../shared/util";
+import { humanise, plural } from "../../shared/util";
 import { parseColor } from "./colors";
 
 /** The lights of a room target ("room:<area_id>"), as the backend's LightIndex.expand reads them. */
@@ -44,12 +44,6 @@ const inTarget = (entry: string, target: TargetInfo): boolean =>
 /** The entries of a layer the target edits; "all" counts as the whole target. */
 export const roomSlice = (lights: LayerLights, target: TargetInfo, roomLights: RoomLights): string[] =>
   lights === "all" ? wholeTarget(target, roomLights) : lights.filter((e) => inTarget(e, target));
-
-/** Whether the target's slice covers all of it. */
-export const isWhole = (lights: LayerLights, target: TargetInfo, roomLights: RoomLights): boolean => {
-  const slice = roomSlice(lights, target, roomLights);
-  return wholeTarget(target, roomLights).every((e) => slice.includes(e));
-};
 
 /**
  * A layer's lights with the target's slice replaced and every other room's entries kept.
@@ -166,30 +160,6 @@ export const layerSwatches = (effect: EffectInfo | undefined, params: Record<str
   return colours.slice(0, 5).map(colorToHex);
 };
 
-const optionLabel = (item: HaFormSchema, value: string): string => {
-  const select = labelledSelector(item.selector ?? {}).select as { options?: { value?: unknown; label?: string }[] };
-  return select.options?.find((option) => option.value === value)?.label ?? humanise(value);
-};
-
-const formatNumber = (value: number): string =>
-  Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
-
-/** "2700 K · 60%": numbers with a unit and choices, the first three visible params. */
-export const layerSummary = (effect: EffectInfo | undefined, params: Record<string, unknown>): string => {
-  const values = withDefaults(effect?.defaults, params);
-  const parts: string[] = [];
-  for (const item of visibleItems(effect, values)) {
-    const value = values[item.name];
-    const type = selectorType(item);
-    const config = (item.selector?.[type] ?? {}) as { unit_of_measurement?: string };
-    if (type === "color_temp" && typeof value === "number") parts.push(`${Math.round(value)} K`);
-    else if (type === "number" && typeof value === "number" && config.unit_of_measurement) {
-      parts.push(withUnit(formatNumber(value), config.unit_of_measurement));
-    } else if (type === "select" && typeof value === "string" && value) parts.push(optionLabel(item, value));
-  }
-  return parts.slice(0, 3).join(" · ");
-};
-
 /** JSON with sorted keys and without undefined values, so equal scenes compare equal. */
 export const stableJson = (value: unknown): string =>
   JSON.stringify(value, (_key, v: unknown) =>
@@ -215,13 +185,29 @@ export interface Followed {
   layers: number[];
 }
 
+/** Whether a layer is shared: the first, "all", or one reaching more than one room. */
+export const isSharedLayer = (
+  lights: LayerLights,
+  index: number,
+  rooms: readonly TargetInfo[],
+  roomLights: RoomLights,
+): boolean =>
+  index === 0 ||
+  lights === "all" ||
+  rooms.filter((room) => expandLights(lights, room, roomLights).length > 0).length > 1;
+
 /**
- * A room-only layer follows edits to an earlier layer of the same effect for the
+ * A room-only layer follows edits to an earlier shared layer of the same effect for the
  * values the two had in common: when layer i's param changes old → new, every later
  * layer of that effect still holding old gets new. Values that differ stay. Only a
- * params edit follows; adding, removing or reordering layers changes nothing.
+ * params edit of a `shared` layer follows, so one room's variant never reaches another
+ * room's; adding, removing or reordering layers changes nothing.
  */
-export const variantsFollow = (before: StoredScene, after: StoredScene): Followed => {
+export const variantsFollow = (
+  before: StoredScene,
+  after: StoredScene,
+  shared: (index: number) => boolean,
+): Followed => {
   const n = after.layers.length;
   if (before.layers.length !== n) return { scene: after, layers: [] };
   const same = (a: unknown, b: unknown) => stableJson(a) === stableJson(b);
@@ -229,7 +215,7 @@ export const variantsFollow = (before: StoredScene, after: StoredScene): Followe
   const followed = new Set<number>();
   before.layers.forEach((old, i) => {
     const edited = after.layers[i];
-    if (old.effect !== edited.effect || same(old.params, edited.params)) return;
+    if (!shared(i) || old.effect !== edited.effect || same(old.params, edited.params)) return;
     const keys = new Set([...Object.keys(old.params), ...Object.keys(edited.params)]);
     for (const key of keys) {
       const from = old.params[key];
@@ -290,4 +276,53 @@ export const frameAt = (frames: readonly PreviewFrame[], t: number): PreviewFram
     else hi = mid - 1;
   }
   return frames[lo];
+};
+
+/**
+ * The params of a layer that differ from the same layer of the original (an edited
+ * preset's preset), defaults filled on both sides. Another effect counts as all changed.
+ */
+export const changedParams = (
+  effect: EffectInfo | undefined,
+  layer: { effect: string; params: Record<string, unknown> },
+  original: { effect: string; params: Record<string, unknown> } | undefined,
+): Set<string> => {
+  if (!original) return new Set();
+  const now = withDefaults(effect?.defaults, layer.params);
+  if (original.effect !== layer.effect) return new Set(Object.keys(now));
+  const before = withDefaults(effect?.defaults, original.params);
+  const keys = new Set([...Object.keys(now), ...Object.keys(before)]);
+  return new Set([...keys].filter((key) => stableJson(now[key]) !== stableJson(before[key])));
+};
+
+/** The effect switch's order: the catalogue's, effects without settings (Off) last. */
+export const effectOrder = (effects: readonly EffectInfo[]): EffectInfo[] => [
+  ...effects.filter((e) => e.schema === null || e.schema.length > 0),
+  ...effects.filter((e) => e.schema !== null && e.schema.length === 0),
+];
+
+export interface CurvePoint {
+  t: number;
+  /** Mean brightness of the lights, 0..1; a light that is off counts as 0. */
+  level: number;
+  /** The first lit light's colour. */
+  color?: string;
+}
+
+/** One point per frame for `lights`, or for every light of the frame when none of them is in it. */
+export const curvePoints = (frames: readonly PreviewFrame[], lights: readonly string[]): CurvePoint[] =>
+  frames.map((frame) => {
+    const own = lights.filter((e) => e in frame.lights);
+    const ids = own.length ? own : Object.keys(frame.lights);
+    const states = ids.map((e) => frame.lights[e]);
+    const level = states.length
+      ? states.reduce((sum, s) => sum + (s.on ? s.brightness : 0), 0) / states.length
+      : 0;
+    return { t: frame.t, level, color: states.find((s) => s.on)?.rgb };
+  });
+
+/** The lowest and highest level, in percent. */
+export const curveRange = (points: readonly CurvePoint[]): [number, number] => {
+  const levels = points.map((p) => Math.round(p.level * 100));
+  return [Math.min(...levels), Math.max(...levels)];
 };

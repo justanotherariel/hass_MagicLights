@@ -8,12 +8,11 @@ import {
   canSave,
   expandLights,
   isDirty,
+  isSharedLayer,
   frameAt,
-  isWhole,
   labelledSelector,
   layerCaption,
   layerOwners,
-  layerSummary,
   layerSwatches,
   nextParams,
   roomSlice,
@@ -179,22 +178,6 @@ test("defaults fill missing keys but not cleared ones", () => {
   assert.notEqual(withDefaults(defaults, {}).palette, defaults.palette);
 });
 
-test("layer summaries rebuild describe() from the schema", () => {
-  assert.equal(layerSummary(WHITE, { kelvin: 2700, brightness: 60 }), "2700 K · 60%");
-  assert.equal(layerSummary(PALETTE, {}), "60% · Static");
-  assert.equal(layerSummary(PALETTE, { motion: "dynamic" }), "60% · Dynamic");
-  assert.equal(layerSummary(LIGHT_EFFECT, { effect: "fireplace", brightness: 45 }), "Fireplace · 45%");
-  assert.equal(layerSummary(undefined, { kelvin: 2700 }), "");
-});
-
-test("layer summaries show option labels and skip hidden fields", () => {
-  assert.equal(layerSummary(ADAPTIVE, {}), "None (static) · 100% · 2200 K");
-  // Values of hidden fields are kept, but not summarised.
-  const params = { [MODE]: "default", brightness: 70, min_brightness: 20, ramp_dark: 30 };
-  assert.equal(layerSummary(ADAPTIVE, params), "Dim after sunset · 20% · 2200 K");
-  assert.equal(layerSummary(ADAPTIVE, { ...params, [MODE]: "tanh" }), "Smooth · 20% · 30 min");
-});
-
 test("form edits keep the values of fields a mode hides", () => {
   const custom = { [MODE]: "tanh", min_brightness: 20, ramp_dark: 30, min_sunrise: "06:30:00" };
   const hidden = nextParams(ADAPTIVE.defaults, custom, MODE, "static");
@@ -344,9 +327,6 @@ test("a room edits only its own part of a layer", () => {
   assert.deepEqual(roomSlice(shared, LIVING, houseLights), ["light.ceiling", "light.lamp"]);
   assert.deepEqual(roomSlice(shared, KITCHEN, houseLights), ["room:kitchen"]);
   assert.deepEqual(roomSlice("all", LIVING, houseLights), ["room:living"]);
-  assert.equal(isWhole(shared, KITCHEN, houseLights), true);
-  assert.equal(isWhole(shared, LIVING, houseLights), false, "by its lights, not as a whole");
-  assert.equal(isWhole("all", CLOSET, houseLights), true);
 
   // "All lights" on: the room as a whole instead of its lights.
   assert.deepEqual(setRoomSlice(shared, LIVING, wholeTarget(LIVING, houseLights), EVERY_ROOM), [
@@ -517,7 +497,7 @@ test("room-only layers follow shared edits to the values they had in common", ()
   const edited = structuredClone(before);
   edited.layers[0].params.max_brightness = 80;
   edited.layers[0].params.max_kelvin = 4000;
-  const { scene, layers } = variantsFollow(before, edited);
+  const { scene, layers } = variantsFollow(before, edited, (i) => i === 0);
   assert.deepEqual(layers, [1, 2]);
   assert.equal(scene.layers[1].params.max_kelvin, 4000, "the shelf follows the white");
   assert.equal(scene.layers[1].params.max_brightness, 30, "and keeps its own brightness");
@@ -531,16 +511,41 @@ test("only later layers follow, and only a params edit", () => {
   const before = hell([adaptiveLayer(["light.a"], {}), adaptiveLayer(["light.b"], {})]);
   const editLater = structuredClone(before);
   editLater.layers[1].params.min_brightness = 10;
-  assert.deepEqual(variantsFollow(before, editLater).layers, [], "an earlier layer keeps its value");
+  assert.deepEqual(variantsFollow(before, editLater, () => true).layers, [], "an earlier layer keeps its value");
   const added = { ...before, layers: [...before.layers, adaptiveLayer(["light.c"], { min_brightness: 5 })] };
-  assert.deepEqual(variantsFollow(before, added), { scene: added, layers: [] });
+  assert.deepEqual(variantsFollow(before, added, () => true), { scene: added, layers: [] });
   const palette = hell([
     { lights: ["light.a"], effect: "palette", params: { palette: [{ kelvin: 2000 }] } },
     { lights: ["light.b"], effect: "palette", params: { palette: [{ kelvin: 2000 }] } },
   ]);
   const recoloured = structuredClone(palette);
   recoloured.layers[0].params.palette = [{ xy: [0.5, 0.4] }];
-  assert.deepEqual(variantsFollow(palette, recoloured).scene.layers[1].params.palette, [{ xy: [0.5, 0.4] }]);
+  assert.deepEqual(
+    variantsFollow(palette, recoloured, (i) => i === 0).scene.layers[1].params.palette,
+    [{ xy: [0.5, 0.4] }],
+  );
+});
+
+test("a room-only layer's edit stays in its room", () => {
+  // Main, the living room's sofa lamp, the closet's own layer: all on the same white.
+  const before = hell([
+    adaptiveLayer(["room:living", "room:kitchen", "room:closet"], {}),
+    adaptiveLayer(["light.lamp"], { min_kelvin: 2200 }),
+    adaptiveLayer(["room:closet"], { min_kelvin: 2200 }),
+  ]);
+  const shared = (i: number) => isSharedLayer(before.layers[i].lights, i, HOUSE, houseLights);
+  assert.deepEqual([0, 1, 2].map(shared), [true, false, false]);
+  const edited = structuredClone(before);
+  edited.layers[1].params.min_kelvin = 2700;
+  assert.deepEqual(variantsFollow(before, edited, shared), { scene: edited, layers: [] });
+
+  assert.equal(isSharedLayer("all", 3, HOUSE, houseLights), true);
+  assert.equal(isSharedLayer(["light.lamp", "room:closet"], 1, HOUSE, houseLights), true, "two rooms share it");
+  const twoRooms = hell([...before.layers.slice(0, 1), adaptiveLayer(["light.lamp", "room:closet"], {}), before.layers[2]]);
+  const warmer = structuredClone(twoRooms);
+  warmer.layers[1].params.max_kelvin = 4000;
+  const sharedTwo = (i: number) => isSharedLayer(twoRooms.layers[i].lights, i, HOUSE, houseLights);
+  assert.deepEqual(variantsFollow(twoRooms, warmer, sharedTwo).layers, [2], "a part of two rooms leads later ones");
 });
 
 test("save needs a change, except for a new scene of your own", () => {

@@ -94,7 +94,8 @@ class LightEffect(Effect):
                 default=0.5,
                 description={
                     "label": "Speed",
-                    "helper": "sunrise/sunset: 1.0 ≈ 1 min … 0.2 ≈ 2 h",
+                    "helper": "For sunrise and sunset: from about 2 h at Slow to 1 min at Fast",
+                    "ends": ["Slow", "Fast"],
                 },
             ): selector.NumberSelector(
                 selector.NumberSelectorConfig(min=0, max=1, step=0.05, mode="slider")

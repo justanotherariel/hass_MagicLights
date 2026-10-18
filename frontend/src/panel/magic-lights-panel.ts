@@ -8,7 +8,7 @@ import { subscribeChanges } from "../shared/api";
 import { ensureHaElements } from "../shared/ha-elements";
 import type { HomeAssistant, PanelInfo, Route, Unsubscribe, Zone } from "../shared/types";
 import { debounce, defineElement, errorMessage, navigate, type ConfirmRequest } from "../shared/util";
-import type { EditorTitle } from "./editor/ml-scene-editor";
+import { renderEditorBar, type EditorTitle } from "./editor/ml-editor-bar";
 import {
   type HomeTab,
   type Page,
@@ -325,13 +325,14 @@ class MagicLightsPanel extends LitElement implements StoreHost {
 
   private _editorBar(page: PageOf<"editor"> | PageOf<"new_scene">) {
     const store = this._store;
-    let title = "New scene";
+    let title = page.name === "new_scene" ? "New scene" : "Scene";
+    let bar: EditorTitle | undefined;
     if (page.name === "editor") {
       const { sceneId } = page;
-      if (this._editorTitle?.sceneId === sceneId) title = this._editorTitle.title || title;
+      if (this._editorTitle?.sceneId === sceneId) bar = this._editorTitle;
       else title = (store?.draft(sceneId) ?? store?.resolveScene(sceneId))?.name || title;
     }
-    return html`<div slot="title">${title}</div>`;
+    return renderEditorBar(bar, title, this.narrow);
   }
 
   private _editorBody(store: MlStore, page: PageOf<"editor">) {
