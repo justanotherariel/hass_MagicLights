@@ -16,8 +16,6 @@ from .adaptive_curve import AdaptiveParams, adaptive_values
 from .base import Effect, RenderContext
 from .schema import KELVIN, PCT
 
-_FIRST_TRANSITION = 1.0
-
 # Offsets or clamps can put the sun's events out of order; then use the plain sun.
 _UNSHIFTED = {
     "sunrise_offset": timedelta(),
@@ -138,16 +136,22 @@ class Adaptive(Effect):
                 "interval", default=90, description={"label": "Update every"}
             ): _number(30, 600, "s"),
             vol.Required(
-                "transition", default=45, description={"label": "Fade over"}
+                "transition",
+                default=45,
+                description={"label": "Glide between updates"},
             ): _number(1, 120, "s"),
         }
     )
 
     def render(self, ctx: RenderContext) -> Frame:
         p = ctx.params
-        transition = _FIRST_TRANSITION if ctx.first else float(p["transition"])
-        # Aim at the end of the fade, so the light is on the curve when it lands.
-        when = ctx.now + timedelta(seconds=transition)
+        # Magic Lights picks a first frame's fade: the scene's on a switch.
+        transition: float | None = None
+        when = ctx.now
+        if not ctx.first:
+            transition = float(p["transition"])
+            # Aim at the end of the glide, so the light is on the curve when it lands.
+            when += timedelta(seconds=transition)
         curve = _curve_params(p)
         try:
             brightness, kelvin = adaptive_values(when, ctx.sun, curve)

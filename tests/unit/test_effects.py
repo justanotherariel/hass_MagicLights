@@ -425,7 +425,7 @@ class LightEffectTest(unittest.TestCase):
         flame = frame.states["light.colour"]
         self.assertIn(flame.color.xy, FLAMES["candle"])
         self.assertIsNone(flame.effect)
-        self.assertEqual(flame.transition, frame.next_update)
+        self.assertIsNone(flame.transition)  # the scene's fade applies
         jitter = 0.15 + 0.35 * 0.5
         self.assertTrue(0.4 * (1 - jitter) <= flame.brightness <= 0.4 * (1 + jitter))
         self.assertEqual(frame.states["light.white"].color, Color(kelvin=2000))
@@ -444,14 +444,18 @@ class LightEffectTest(unittest.TestCase):
         run = Run(LightEffect, self.members(), {"effect": "candle", "speed": 0.5})
         frames = run.play(300)
         self.assertLess(len(frames), 300 / 1.5 + 1)
+        self.assertIsNone(frames[0][1].states["light.colour"].transition)
         for _, frame in frames:
             self.assertTrue(1.5 <= frame.next_update <= 3.0, frame.next_update)
+        for _, frame in frames[1:]:
             self.assertEqual(frame.states["light.colour"].transition, frame.next_update)
 
     def test_emulation_respects_min_period(self) -> None:
         run = Run(LightEffect, self.members(), {"speed": 1.0}, min_period=3.0)
-        for _, frame in run.play(60):
+        frames = run.play(60)
+        for _, frame in frames:
             self.assertGreaterEqual(frame.next_update, 3.0)
+        for _, frame in frames[1:]:
             self.assertEqual(frame.states["light.colour"].transition, 3.0)
 
     def test_static_fallback(self) -> None:
@@ -599,12 +603,11 @@ class AdaptiveTest(unittest.TestCase):
         run = Run(Adaptive, lights(2), {}, sun=BERLIN)
         curve = AdaptiveParams()  # the schema's defaults
         first = run.render(0)
-        bri, kelvin = adaptive_values(START + timedelta(seconds=1), BERLIN, curve)
+        # Aimed at now: Magic Lights fades it in with the scene's transition.
+        bri, kelvin = adaptive_values(START, BERLIN, curve)
         self.assertEqual(
             first.states["light.l0"],
-            LightState(
-                brightness=bri / 100, color=Color(kelvin=kelvin), transition=1.0
-            ),
+            LightState(brightness=bri / 100, color=Color(kelvin=kelvin)),
         )
         self.assertEqual(first.next_update, 90.0)
         evening = START.replace(hour=18, minute=30)

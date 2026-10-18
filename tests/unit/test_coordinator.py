@@ -11,6 +11,7 @@ import unittest
 import voluptuous as vol
 
 from custom_components.magic_lights.context import is_ours
+from custom_components.magic_lights.effects import adaptive, light_effect
 from custom_components.magic_lights.effects.base import Effect, RenderContext
 from custom_components.magic_lights.engine import build_coordinator
 from custom_components.magic_lights.engine.activation import seeded_rng
@@ -84,8 +85,8 @@ class Adaptive(Effect):
     schema = PARAM_TABLE["adaptive"]
 
     def render(self, ctx: RenderContext) -> Frame:
-        transition = 1.0 if ctx.first else float(ctx.params["transition"])
-        at = ctx.now + timedelta(seconds=transition)
+        transition = None if ctx.first else float(ctx.params["transition"])
+        at = ctx.now + timedelta(seconds=transition or 0)
         kelvin = 2200 + 200 * at.minute
         state = LightState(
             brightness=0.8, color=Color(kelvin=kelvin), transition=transition
@@ -420,6 +421,24 @@ class ActivateTest(unittest.TestCase):
         rig.c.activate(ROOM, replace(PRESETS["read"], transition=4.0))
         self.assertEqual(rig.last("light.l1").transition, 4.0)
         self.assertEqual(rig.c.status(ROOM).brightness, 100)
+
+    def test_stepping_effects_switch_with_the_scene_fade(self) -> None:
+        sun = user_scene("s_0000000f", "Sun", "adaptive")
+        slow_sun = user_scene("s_00000010", "Slow sun", "adaptive", transition=2.5)
+        fire = user_scene("s_00000011", "Fire", "light_effect", {"effect": "fireplace"})
+        rig = Rig(scenes=[sun, slow_sun, fire], settings=Settings(transition=0.3))
+        rig.registry.add(adaptive.Adaptive())
+        rig.registry.add(light_effect.LightEffect())
+        rig.activate(ROOM, "relax")
+        for scene, fade in ((sun, 0.3), (slow_sun, 2.5), (fire, 0.3)):
+            with self.subTest(scene.name):
+                rig.activate(ROOM, scene.id)
+                self.assertEqual(rig.last("light.l1").transition, fade)
+        rig.activate(ROOM, sun.id)
+        rig.echo()
+        rig.host.advance(90)
+        step = rig.own(ROOM).runs[0].prev["light.l1"]
+        self.assertEqual(step.transition, 45)  # later steps glide on their own
 
     def test_steals_exactly_the_claimed_lights(self) -> None:
         rig = Rig()

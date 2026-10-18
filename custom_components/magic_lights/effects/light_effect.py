@@ -150,7 +150,8 @@ class LightEffect(Effect):
                 states[e] = LightState(
                     brightness=min(1.0, max(0.02, brightness)),
                     color=flame,
-                    transition=step,
+                    # Magic Lights picks a first frame's fade.
+                    transition=None if ctx.first else step,
                 )
             else:
                 states[e] = LightState(brightness=base, color=color)

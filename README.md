@@ -61,7 +61,7 @@ Each light belongs to at most one running scene. Starting a scene on a room take
 
 ### Scenes
 
-A scene is an ordered list of **layers**. Each layer runs one **effect** on some lights (all of them, chosen lights, or one room of a zone), and later layers win. A scene also has an overall brightness, a fade time, and what happens to lights no layer covers: they turn off, or they are left alone.
+A scene is an ordered list of **layers**. Each layer runs one **effect** on some lights (all of them, chosen lights, or one room of a zone), and later layers win. A scene also has an overall brightness, a fade time (empty: the **Fade** in the panel settings), and what happens to lights no layer covers: they turn off, or they are left alone.
 
 The effects are:
 
@@ -93,7 +93,7 @@ Magic Lights tells its own commands apart from yours by what it last sent, not b
 
 ### Adaptive
 
-The **Adaptive** scenes follow the sun like [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting): bright and cool at noon, dim and warm in the evening, with optional sunrise and sunset clamps. They update every 90 seconds with a 45-second fade, at low priority.
+The **Adaptive** scenes follow the sun like [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting): bright and cool at noon, dim and warm in the evening, with optional sunrise and sunset clamps. They update every 90 seconds and glide 45 seconds between updates, at low priority. Switching to one fades like any other scene.
 
 To get adaptive light without touching anything, set **When a light is switched on** in the panel settings to Adaptive. A light switched on in a room that is off then gets Adaptive. Only that light: the others join as they are switched on. Each room can override this or turn it off.
 

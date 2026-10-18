@@ -1,4 +1,4 @@
-// Global settings: transition, default scene, native effects, bus pacing and light → bus overrides.
+// Global settings: fade, default scene, native effects, bus pacing and light → bus overrides.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
@@ -31,7 +31,7 @@ interface Field {
   whole?: boolean;
 }
 
-const TRANSITION: Field = { label: "Transition", unit: "s", step: 0.1, min: 0, max: 300 };
+const TRANSITION: Field = { label: "Fade", unit: "s", step: 0.1, min: 0, max: 300 };
 
 /** The backend's ranges (BUS_LIMITS_SCHEMA). */
 const LIMITS: [keyof BusLimits, Field][] = [
@@ -73,8 +73,8 @@ class MlSettings extends LitElement {
     const scenes = this.store.globalScenes();
     return html`
       <ha-settings-row>
-        <span slot="heading">Transition</span>
-        <span slot="description">Fade time of scene changes unless a scene sets its own.</span>
+        <span slot="heading">Fade</span>
+        <span slot="description">How long switching scenes takes. A scene can set its own.</span>
         <ha-input
           type="number"
           .min=${TRANSITION.min}
