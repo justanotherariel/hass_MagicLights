@@ -39,8 +39,8 @@ class RestartTest(IsolatedAsyncioTestCase):
         await first.start()
         try:
             await first.setup_integration()
-            await first.select(LIVING, "Relax")
-            await first.select(KITCHEN, "Savanna sunset")
+            await first.call("activate_scene", LIVING, scene="Relax")
+            await first.call("activate_scene", KITCHEN, scene="Savanna sunset")
             first.entity("light.living_floor_lamp").physical_change(on=False)
             await first.idle()
             lights = lights_as_left(first)
@@ -78,7 +78,7 @@ class RestartTest(IsolatedAsyncioTestCase):
 class ReloadTest(HarnessCase):
     async def test_reload_keeps_the_scenes_and_sends_nothing(self) -> None:
         h = self.h
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         await self.light_call("turn_on", "light.living_ceiling", brightness=30)
         h.clear_calls()
         (entry,) = h.hass.config_entries.async_entries(DOMAIN)
@@ -88,7 +88,7 @@ class ReloadTest(HarnessCase):
         self.assertEqual(self.state(LIVING), "Relax")
         self.assertEqual(self.status(LIVING)["manual"], ["light.living_ceiling"])
         self.assertTrue(async_panel_exists(h.hass, DOMAIN))
-        await h.select(KITCHEN, "Read")
+        await h.call("activate_scene", KITCHEN, scene="Read")
         self.assertEqual(len(h.calls()), 3)
 
 
@@ -102,7 +102,7 @@ class RemoveTest(HarnessCase):
                 "zone": {"id": "", "name": "Upstairs", "rooms": ["bedroom"]},
             }
         )
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         (entry,) = hass.config_entries.async_entries(DOMAIN)
         await hass.config_entries.async_remove(entry.entry_id)
         await hass.services.async_call(

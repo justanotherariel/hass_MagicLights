@@ -35,7 +35,6 @@ const scene = (s: Partial<SceneInfo> & Pick<SceneInfo, "id" | "name">): SceneInf
   transition: null,
   builtin: false,
   category: "custom",
-  default_visible: true,
   swatches: ["#ffa757"],
   dynamic: false,
   customised_in: [],

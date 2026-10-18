@@ -217,7 +217,7 @@ class PresetCatalogueTest(unittest.TestCase):
             )
         )
 
-    def test_categories_and_defaults(self) -> None:
+    def test_categories(self) -> None:
         by_category: dict[str, list[str]] = {}
         for scene in self.presets.values():
             by_category.setdefault(scene.category, []).append(scene.id)
@@ -225,13 +225,6 @@ class PresetCatalogueTest(unittest.TestCase):
             {k: len(v) for k, v in by_category.items()},
             {"white": 8, "adaptive": 3, "color": 35, "dynamic": 2},
         )
-        visible = [s.id for s in self.presets.values() if s.default_visible]
-        self.assertEqual(
-            visible,
-            ["energize", "concentrate", "read", "bright", "relax", "dimmed", "nightlight", "adaptive",
-             "savanna_sunset", "tropical_twilight", "arctic_aurora", "spring_blossom", "tokyo",
-             "blue_lagoon", "cozy_candle", "fireplace"],
-        )  # fmt: skip
 
     def test_names_and_icons(self) -> None:
         names = [s.name.casefold() for s in self.presets.values()]

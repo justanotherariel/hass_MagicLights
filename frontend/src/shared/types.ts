@@ -101,7 +101,6 @@ export type SceneCategory = "white" | "color" | "dynamic" | "adaptive" | "custom
 export interface SceneInfo extends StoredScene {
   builtin: boolean;
   category: SceneCategory;
-  default_visible: boolean;
   swatches: string[];
   dynamic: boolean;
   customised_in: TargetId[];

@@ -37,7 +37,7 @@ class BusTest(HarnessCase):
         self.assertEqual(bus["defaults"]["min_interval"], 0.5)
 
         # The emulated candle wants a frame every 0.3-0.9 s.
-        await h.select(KITCHEN, "Cozy candle")
+        await h.call("activate_scene", KITCHEN, scene="Cozy candle")
         await h.settle(4.2)
         for spot in SPOTS:
             times = [call["t"] for call in self.ours(spot)]

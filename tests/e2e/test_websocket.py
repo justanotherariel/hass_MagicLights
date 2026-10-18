@@ -82,7 +82,8 @@ class ConfigTest(HarnessCase):
         self.assertEqual(living["select_entity_id"], LIVING)
         self.assertEqual(living["kind"], "room")
         self.assertEqual(len(living["lights"]), 4)
-        self.assertEqual(len(living["scenes"]) + len(living["hidden"]), 48)
+        # Presets wait in "hidden" until picked.
+        self.assertEqual((living["scenes"], len(living["hidden"])), ([], 48))
         relax = next(s for s in config["scenes"] if s["id"] == "relax")
         self.assertEqual(
             {
@@ -90,7 +91,6 @@ class ConfigTest(HarnessCase):
                 for k in (
                     "builtin",
                     "category",
-                    "default_visible",
                     "dynamic",
                     "customised_in",
                 )
@@ -98,7 +98,6 @@ class ConfigTest(HarnessCase):
             {
                 "builtin": True,
                 "category": "white",
-                "default_visible": True,
                 "dynamic": False,
                 "customised_in": [],
             },
@@ -162,7 +161,7 @@ class ConfigTest(HarnessCase):
 
     async def test_customise_and_reset_a_preset(self) -> None:
         h = self.h
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         copy = evening(
             id="s_0000c001",
             name="Relax",
@@ -500,7 +499,7 @@ class AdminTest(HarnessCase):
 class TryTest(HarnessCase):
     async def test_try_and_stop_bring_back_what_ran(self) -> None:
         h = self.h
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         h.clear_calls()
         await h.ws(
             {
@@ -544,7 +543,7 @@ class TryTest(HarnessCase):
 
     async def test_closing_the_editor_stops_trying(self) -> None:
         h = self.h
-        await h.select(LIVING, "Read")
+        await h.call("activate_scene", LIVING, scene="Read")
         await h.ws(
             {
                 "type": "magic_lights/try",

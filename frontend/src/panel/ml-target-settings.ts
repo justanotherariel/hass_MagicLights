@@ -128,7 +128,7 @@ class MlTargetSettings extends LitElement {
             .disabled=${target.options.visible_scenes === null}
             @click=${() => this._save({ visible_scenes: null })}
           >
-            Reset to defaults
+            Reset to your scenes
           </ha-button>
         </div>
       </ha-card>`;

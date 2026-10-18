@@ -69,7 +69,6 @@ PRESET_SCHEMA = SCENE_SCHEMA.extend(
     {
         vol.Required("id"): _ID,
         vol.Required("category"): vol.In(["white", "color", "dynamic", "adaptive"]),
-        vol.Required("default_visible"): bool,
     }
 )
 

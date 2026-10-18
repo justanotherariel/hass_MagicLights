@@ -38,11 +38,15 @@ class MlTargetTile extends LitElement {
           ${this._renderMotion(visuals)} ${this._renderMenu(visuals)}
         </div>
         ${renderStrip(visuals)}
-        <div class="chips">
-          ${chips
-            .slice(0, CHIPS)
-            .map((scene) => this._renderChip(scene, menuId(scene) === visuals.active, visuals.available))}
-        </div>
+        ${
+          chips.length
+            ? html`<div class="chips">
+                ${chips
+                  .slice(0, CHIPS)
+                  .map((scene) => this._renderChip(scene, menuId(scene) === visuals.active, visuals.available))}
+              </div>`
+            : nothing
+        }
       </ha-card>
     `;
   }
@@ -169,9 +173,6 @@ class MlTargetTile extends LitElement {
         flex-wrap: wrap;
         gap: var(--ha-space-2);
         margin-inline-end: var(--ha-space-2);
-      }
-      .chips:empty {
-        display: none;
       }
       .dot {
         width: 14px;

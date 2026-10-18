@@ -149,7 +149,8 @@ export const cardSize = (config: CardConfig, view: TargetStatusView | undefined)
   if (reclaimable(view).length) size += 1;
   if (config.show_scenes && view?.attrs) {
     const { scenes, missing } = cardScenes(view.attrs, config.scenes);
-    size += Math.ceil(scenes.length / config.columns) + (missing.length ? 1 : 0);
+    // An empty menu still takes a row for its hint.
+    size += Math.ceil(scenes.length / config.columns) + (missing.length ? 1 : 0) || 1;
   }
   if (config.show_lights) size += 1;
   if (config.show_controls) size += 1;

@@ -9,8 +9,8 @@
 
 Scenes for whole rooms, the way the Hue app does them, for every light in Home Assistant.
 
-- Every area with lights becomes a room with a scene select: Off, curated whites and colours, candle, fireplace, adaptive, and Manual.
-- Zones combine rooms; 48 built-in scenes can be customised per room, or build your own from layers.
+- Every area with lights becomes a room with a scene select: Off, the scenes you pick for the room, and Manual.
+- Zones combine rooms; pick from 48 built-in scenes (whites, colours, candle, fireplace, adaptive) and customise them, or build your own from layers.
 - Lamps you change by hand or switch off at the wall become manual and are left alone until you reclaim them.
 - Adaptive lighting that follows the sun, optionally started when a light is switched on in a room that is off.
 - Dynamic colour palettes paced to your Zigbee network; native candle, fireplace and gradients for Hue lights on Zigbee2MQTT.

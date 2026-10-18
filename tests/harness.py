@@ -22,7 +22,7 @@ from unittest import mock
 
 from homeassistant import block_async_io, bootstrap
 from homeassistant.components.websocket_api import ActiveConnection
-from homeassistant.core import Event, HomeAssistant
+from homeassistant.core import Event, HomeAssistant, callback
 from homeassistant.helpers import area_registry as ar, entity_registry as er
 from homeassistant.runner import RuntimeConfig
 
@@ -193,6 +193,7 @@ class Harness:
             await self.stop()
             raise
 
+    @callback
     def _on_event(self, event: Event) -> None:
         self.events.append(dict(event.data))
 

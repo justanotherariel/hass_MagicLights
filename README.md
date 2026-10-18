@@ -9,9 +9,9 @@
 
 Scenes for whole rooms, the way the Hue app does them, for every light in Home Assistant.
 
-- **Every area with lights is a room.** It gets a scene select (`select.living_room_scene`) on its area page, with Off, curated white, colour, candle and adaptive scenes, and Manual.
+- **Every area with lights is a room.** It gets a scene select (`select.living_room_scene`) on its area page, with Off, the scenes you pick for the room, and Manual.
 - **Zones** combine rooms ("Downstairs" = living room + kitchen), and each zone gets a select too.
-- **48 built-in scenes**: Energize, Read, Relax, Nightlight, Savanna sunset, Tokyo, Cozy candle, Fireplace, Adaptive and more. Customise one for one room, or build your own from layers.
+- **48 built-in scenes**: Energize, Read, Relax, Nightlight, Savanna sunset, Tokyo, Cozy candle, Fireplace, Adaptive and more. Pick the ones a room needs, customise one, or build your own from layers.
 - **Hands off when you take over.** A lamp you dim in another app or switch off at the wall becomes *manual*: the scene stops sending to it until you reclaim it.
 - **Adaptive lighting**: colour temperature (and, if you like, brightness) follows the sun, and a room can start it when a light is switched on.
 - **Dynamic colours**: palette scenes can drift through their colours, paced so your Zigbee network keeps up. Hue lights on Zigbee2MQTT run candle, fireplace and sunrise in firmware, and gradient strips show the whole palette.
@@ -45,8 +45,8 @@ The repository itself has no built frontend; see [Development](#development) for
 ## Quick start
 
 1. **Settings → Devices & services → Add integration → Magic Lights.** There is nothing to configure.
-2. Every area with lights now has a select named after it, for example `select.living_room_scene`. Pick **Relax**: the room fades to warm white in a second.
-3. Open **Magic Lights** in the sidebar. The home screen lists your rooms and zones with what is running. Open a room to pick scenes, see its lights, and change its settings.
+2. Every area with lights now has a select named after it, for example `select.living_room_scene`. Its menu holds the scenes you pick for the room, so it starts with only Off and Manual.
+3. Open **Magic Lights** in the sidebar. The home screen lists your rooms and zones with what is running. Open a room, open **Hidden scenes** and tap **Relax**: the room fades to warm white in a second. **Show in menu** puts a scene in the room's select and cards; **New scene** makes your own. The room's page also lists its lights and settings.
 4. Add the card to a dashboard: **Edit dashboard → Add card → Magic Lights**.
 
 ## Concepts
@@ -74,7 +74,7 @@ The effects are:
 | Light effect | A firmware effect (Hue: candle, fireplace, sunrise, …); candle and fireplace are emulated on other lights |
 | Adaptive | Colour temperature follows the sun; brightness holds one level or follows it too |
 
-The **built-in scenes** cover whites, 35 colour palettes, two candle scenes and three adaptive ones. A room's menu shows a curated subset; the rest are one switch away in the room's settings, where you can also reorder the menu.
+The **built-in scenes** cover whites, 35 colour palettes, two candle scenes and three adaptive ones. A room's menu starts with your own scenes only: the built-in ones wait under **Hidden scenes** until you show them, and the room's settings switch them on and reorder the menu. Hidden scenes still run by name or id through the services and in a card's `scenes:` list.
 
 **Customise** a built-in scene in the editor and save it for this room or everywhere. The copy replaces the original under the same name and id, so automations keep working. **Reset** deletes the copy. **New scene** starts from scratch or from a copy. The editor previews the scene and can **Try** it on the room; **Stop trying** brings back what ran before.
 

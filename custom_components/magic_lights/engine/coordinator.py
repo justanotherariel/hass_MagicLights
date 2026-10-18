@@ -146,11 +146,9 @@ class Coordinator:
         target = self.targets.get(target_id)
         order = target.options.visible_scenes if target is not None else None
         if order is None:
+            # Presets, and the copies that stand in for them, are picked by hand.
             ids = [
-                public_id
-                for public_id, scene in available.items()
-                # A copy is shown where its preset would be.
-                if self.presets.get(public_id, scene).default_visible
+                public_id for public_id in available if public_id not in self.presets
             ]
         else:
             ids = [public_id for public_id in order if public_id in available]

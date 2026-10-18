@@ -10,7 +10,7 @@ from . import BEDROOM, KITCHEN, LIVING, HarnessCase
 class OverrideTest(HarnessCase):
     async def test_turn_on_with_and_without_attributes(self) -> None:
         h = self.h
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         h.clear_calls()
         h.events.clear()
 
@@ -46,7 +46,7 @@ class OverrideTest(HarnessCase):
 
     async def test_switched_off_lamp_rejoins_on_bare_turn_on(self) -> None:
         h = self.h
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         h.entity("light.living_floor_lamp").physical_change(on=False)
         await h.settle()
         self.assertEqual(self.status(LIVING)["manual"], ["light.living_floor_lamp"])
@@ -92,7 +92,7 @@ class OverrideTest(HarnessCase):
 
     async def test_wall_switch_off_during_a_dynamic_scene_stays_off(self) -> None:
         h = self.h
-        await h.select(KITCHEN, "Cozy candle")
+        await h.call("activate_scene", KITCHEN, scene="Cozy candle")
         spot = "light.kitchen_spot_1"
         # Emulated flicker: a new step every 1.5 to 3 s.
         for _ in range(40):
@@ -176,7 +176,7 @@ class DriftTest(HarnessCase):
         h = self.h
         office = "select.office_scene"
         # The desk reports late and with a little brightness noise.
-        await h.select(office, "Read")
+        await h.call("activate_scene", office, scene="Read")
         await h.settle(1.6)
         self.assertEqual(self.status(office)["manual"], [])
         h.entity("light.office_desk").physical_change(kelvin=2890, brightness=245)

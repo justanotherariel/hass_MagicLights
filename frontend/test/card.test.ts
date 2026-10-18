@@ -238,6 +238,7 @@ test("masonry size follows the shown parts", () => {
   assert.equal(cardSize({ ...config, columns: 1, show_lights: true }, view({})), 6);
   assert.equal(cardSize({ ...config, scenes: ["relax", "honolulu"] }, view({})), 4, "a row for the warning");
   assert.equal(cardSize({ ...config, show_scenes: false, show_controls: false }, undefined), 1);
+  assert.equal(cardSize(config, view({ scenes: [] })), 3, "a row for the empty menu's hint");
 });
 
 test("icon tint skips colours that vanish on the theme", () => {

@@ -93,7 +93,6 @@ def scene_info(
         "builtin": scene.builtin,
         # A copy is filed and shown where its preset is.
         "category": origin.category,
-        "default_visible": origin.default_visible,
         "swatches": swatches(scene, effects),
         "dynamic": playable(scene, effects),
         "customised_in": customised_in,

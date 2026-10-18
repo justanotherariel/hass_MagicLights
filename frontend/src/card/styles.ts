@@ -349,6 +349,11 @@ export const cardStyles = css`
       color-mix(in srgb, var(--warning-color) 15%, transparent)
     );
   }
+  .none {
+    padding: 8px 12px;
+    color: var(--secondary-text-color);
+    font-size: var(--ha-font-size-s, 12px);
+  }
   .warning.missing {
     padding: 8px 12px;
     border-radius: var(--ml-radius);

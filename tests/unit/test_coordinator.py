@@ -191,7 +191,6 @@ def preset(
     params: Mapping[str, Any] | None = None,
     *,
     lights: Any = "all",
-    visible: bool = True,
     **kw: Any,
 ) -> Scene:
     return Scene(
@@ -200,7 +199,6 @@ def preset(
         None,
         (Layer(lights, effect, params or {}),),
         builtin=True,
-        default_visible=visible,
         **kw,
     )
 
@@ -214,23 +212,21 @@ PRESETS = {
         preset("candle", "flicker"),
         preset("adaptive", "adaptive"),
         preset("glow", "native"),
-        preset("dark", "off", visible=False),
+        preset("dark", "off"),
         preset(
             "corner",
             "white",
             {"kelvin": 2700},
             lights=("light.l1",),
-            visible=False,
         ),
         preset(
             "corner_keep",
             "white",
             {"kelvin": 2700},
             lights=("light.l1",),
-            visible=False,
             others="keep",
         ),
-        preset("dealt", "deal", visible=False),
+        preset("dealt", "deal"),
     )
 }
 
@@ -383,6 +379,7 @@ class Rig:
 ROOM = "room:living"
 KITCHEN = "room:kitchen"
 ZONE = "zone:downstairs"
+MENU = ("relax", "read", "tokyo", "candle", "adaptive", "glow")
 
 
 # ---- tests
@@ -748,9 +745,8 @@ class AdjustNextReshuffleTest(unittest.TestCase):
         self.assertEqual(rig.sent("light.l2"), [])
 
     def test_next_and_previous(self) -> None:
-        rig = Rig()
-        menu = [s.id for s in rig.c.scenes_for(ROOM)]
-        self.assertEqual(menu, ["relax", "read", "tokyo", "candle", "adaptive", "glow"])
+        rig = Rig(living=TargetOptions(visible_scenes=MENU))
+        self.assertEqual([s.id for s in rig.c.scenes_for(ROOM)], list(MENU))
         rig.c.next_scene(ROOM)
         self.assertEqual(rig.own(ROOM).scene_id, "relax")
         rig.c.next_scene(ROOM)
@@ -768,7 +764,7 @@ class AdjustNextReshuffleTest(unittest.TestCase):
         self.assertEqual(rig.own(ROOM).scene_id, "relax")
 
     def test_next_from_a_zone_scene_steps_from_it(self) -> None:
-        rig = Rig()
+        rig = Rig(living=TargetOptions(visible_scenes=MENU))
         rig.activate(ZONE, "read")
         rig.c.next_scene(ROOM)
         self.assertEqual(rig.own(ROOM).scene_id, "tokyo")
@@ -788,6 +784,22 @@ class AdjustNextReshuffleTest(unittest.TestCase):
 
 
 class ScenesTest(unittest.TestCase):
+    def test_default_menu_holds_the_user_scenes_in_scope(self) -> None:
+        copy = user_scene("s_00000001", "Relax", preset="relax", scope=(ROOM,))
+        mine = user_scene("s_00000002", "Mine", scope=(ROOM,))
+        anywhere = user_scene("s_00000003", "Anywhere")
+        rig = Rig(scenes=[copy, mine, anywhere])
+        self.assertEqual(
+            [s.id for s in rig.c.scenes_for(ROOM)], ["s_00000002", "s_00000003"]
+        )
+        self.assertEqual([s.id for s in rig.c.scenes_for(KITCHEN)], ["s_00000003"])
+        # Hidden presets and copies still run.
+        every = [s.id for s in rig.c.scenes_for(ROOM, include_hidden=True)]
+        self.assertEqual(len(every), len(PRESETS) + 2)
+        self.assertIn("s_00000001", every)
+        self.assertIs(rig.c.find_scene(ROOM, "relax"), copy)
+        self.assertEqual(rig.c.find_scene(KITCHEN, "Tokyo").id, "tokyo")
+
     def test_visibility_order_and_copies(self) -> None:
         copy = user_scene("s_00000001", "Relax", preset="relax", scope=(ROOM,))
         mine = user_scene("s_00000002", "Mine", scope=(ROOM,))

@@ -619,14 +619,10 @@ class ValidateTest(unittest.TestCase):
                 validate_scene(data, self.registry, stored, presets=PRESETS)
 
     def test_validate_preset(self) -> None:
-        data = {
-            **scene_dict("cozy", "Cozy"),
-            "category": "white",
-            "default_visible": False,
-        }
+        data = {**scene_dict("cozy", "Cozy"), "category": "white"}
         scene = validate_preset(data, self.registry)
         self.assertTrue(scene.builtin)
-        self.assertEqual((scene.category, scene.default_visible), ("white", False))
+        self.assertEqual(scene.category, "white")
         with self.assertRaises(ConfigError):
             validate_preset(scene_dict("cozy", "Cozy"), self.registry)
 

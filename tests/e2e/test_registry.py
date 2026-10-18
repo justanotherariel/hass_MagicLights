@@ -65,7 +65,7 @@ class RenameTest(HarnessCase):
                 "settings": {"light_buses": {"light.hallway": "zigbee:test"}},
             }
         )
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         h.clear_calls()
 
         registry = er.async_get(h.hass)
@@ -95,7 +95,7 @@ class RenameTest(HarnessCase):
 
     async def test_a_renamed_manual_lamp_stays_off(self) -> None:
         h = self.h
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         await h.settle(3.0)
         await self.light_call("turn_off", "light.living_floor_lamp")
         await h.settle(3.0)

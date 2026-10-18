@@ -303,7 +303,6 @@ class Scene:
     transition: float | None = None
     category: SceneCategory = "custom"
     builtin: bool = False
-    default_visible: bool = True
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> Scene:
@@ -320,7 +319,6 @@ class Scene:
                 "brightness",
                 "transition",
                 "category",
-                "default_visible",
             ),
         )
 

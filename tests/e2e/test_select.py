@@ -22,29 +22,22 @@ DOWNSTAIRS = {
     "lights": [],
 }
 
-DEFAULT_MENU = [
-    "Off",
-    "Energize",
-    "Concentrate",
-    "Read",
-    "Bright",
-    "Relax",
-    "Dimmed",
-    "Nightlight",
-    "Adaptive",
-    "Savanna sunset",
-    "Tropical twilight",
-    "Arctic aurora",
-    "Spring blossom",
-    "Tokyo",
-    "Blue lagoon",
-    "Cozy candle",
-    "Fireplace",
-    "Manual",
-]
+# Presets are hidden until picked; the demo home has no scenes of its own.
+DEFAULT_MENU = ["Off", "Manual"]
 
 
 class SelectTest(HarnessCase):
+    async def show(self, target_id: str, *scene_ids: str) -> None:
+        """Put scenes in a target's menu, as the panel does."""
+        await self.h.ws(
+            {
+                "type": "magic_lights/target/options",
+                "target_id": target_id,
+                "options": {"visible_scenes": list(scene_ids)},
+            }
+        )
+        await self.h.idle()
+
     async def test_one_select_per_room_on_a_service_device(self) -> None:
         hass = self.h.hass
         selects = sorted(hass.states.async_entity_ids("select"))
@@ -59,6 +52,7 @@ class SelectTest(HarnessCase):
             ],
         )
         self.assertEqual(self.status(LIVING)["options"], DEFAULT_MENU)
+        self.assertEqual(len(self.status(LIVING)["hidden_scenes"]), 48)
         # The ceiling was on before Magic Lights: nobody's scene, so manual.
         self.assertEqual(self.state(LIVING), "Manual")
         self.assertEqual(self.state(BEDROOM), "Off")
@@ -86,6 +80,10 @@ class SelectTest(HarnessCase):
         self.assertIsNone(devices.async_get(device_id).area_id)
 
     async def test_activate_sends_each_light_what_it_can_do(self) -> None:
+        await self.show("room:living_room", "relax")
+        self.assertEqual(self.status(LIVING)["options"], ["Off", "Relax", "Manual"])
+        self.h.clear_calls()
+        self.h.events.clear()
         await self.h.select(LIVING, "Relax")
         self.assertEqual(self.state(LIVING), "Relax")
         relax = {"brightness": 143, "color_temp_kelvin": 2237, "transition": 1.0}
@@ -135,6 +133,7 @@ class SelectTest(HarnessCase):
 
     async def test_services(self) -> None:
         h = self.h
+        await self.show("room:kitchen", "energize", "read")
         await h.call("next_scene", KITCHEN)
         self.assertEqual(self.state(KITCHEN), "Energize")
         await h.call("previous_scene", KITCHEN)
@@ -178,7 +177,7 @@ class SelectTest(HarnessCase):
 
     async def test_set_dynamic_leaves_manual_lights_alone(self) -> None:
         h = self.h
-        await h.select(LIVING, "Tokyo")
+        await h.call("activate_scene", LIVING, scene="Tokyo")
         self.assertFalse(self.status(LIVING)["dynamic"])
         h.entity("light.living_floor_lamp").physical_change(on=False)
         await h.settle()
@@ -199,7 +198,7 @@ class SelectTest(HarnessCase):
     ) -> None:
         h = self.h
         await h.ws({"type": "magic_lights/zone/save", "zone": DOWNSTAIRS})
-        await h.select(LIVING, "Tokyo")
+        await h.call("activate_scene", LIVING, scene="Tokyo")
         zone = "select.downstairs_scene"
         self.assertEqual(self.status(zone)["via"], "room:living_room")
         await h.call("set_dynamic", zone, dynamic=True)
@@ -209,7 +208,9 @@ class SelectTest(HarnessCase):
 
     async def test_light_changes_are_attributed_to_the_caller(self) -> None:
         h = self.h
+        # Alice must be the first user, so the owner: show() signs in an admin.
         user = await h.hass.auth.async_create_user("Alice")
+        await self.show("room:bedroom", "read")
         call = Context(user_id=user.id)
         await h.hass.services.async_call(
             "select",
@@ -225,7 +226,7 @@ class SelectTest(HarnessCase):
 
     async def test_reclaim_one_light(self) -> None:
         h = self.h
-        await h.select(BEDROOM, "Read")
+        await h.call("activate_scene", BEDROOM, scene="Read")
         for light in ("light.bedroom_ceiling", "light.bedroom_nightstand"):
             await h.hass.services.async_call(
                 "light",
@@ -257,13 +258,13 @@ class OverlapTest(HarnessCase):
         zone = "select.downstairs_scene"
         self.assertEqual(self.state(zone), "Manual")  # the living ceiling is on
 
-        await h.select(zone, "Savanna sunset")
+        await h.call("activate_scene", zone, scene="Savanna sunset")
         for select in (LIVING, KITCHEN, zone):
             self.assertEqual(self.state(select), "Savanna sunset")
         self.assertEqual(self.status(LIVING)["via"], "zone:downstairs")
         self.assertIsNone(self.status(zone)["via"])
 
-        await h.select(LIVING, "Relax")
+        await h.call("activate_scene", LIVING, scene="Relax")
         self.assertEqual(self.state(LIVING), "Relax")
         self.assertEqual(self.state(KITCHEN), "Savanna sunset")
         attrs = self.status(zone)
@@ -282,7 +283,7 @@ class OverlapTest(HarnessCase):
         )
         self.assertTrue(attrs["partial"])
 
-        await h.select(zone, "Relax")
+        await h.call("activate_scene", zone, scene="Relax")
         for select in (LIVING, KITCHEN):
             self.assertEqual(self.state(select), "Relax")
             self.assertEqual(self.status(select)["via"], "zone:downstairs")

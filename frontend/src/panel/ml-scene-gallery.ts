@@ -37,6 +37,14 @@ class MlSceneGallery extends LitElement {
         const scenes = visible.filter((scene) => this.store.groupOf(scene) === category);
         if (!scenes.length && category !== "custom") return nothing;
         return html`<h2 class="section-title">${title}</h2>
+          ${
+            category === "custom" && !visible.length
+              ? html`<p class="hint">
+                  No scenes in the menu yet. Create one with New scene, or show built-in ones from
+                  Hidden scenes below.
+                </p>`
+              : nothing
+          }
           <div class="grid">
             ${scenes.map((scene) => this._renderCard(scene, true, view?.attrs))}
             ${category === "custom" ? this._renderNewCard() : nothing}
@@ -186,6 +194,10 @@ class MlSceneGallery extends LitElement {
       .grid {
         grid-template-columns: repeat(auto-fill, minmax(min(100%, 160px), 1fr));
         gap: var(--ha-space-3);
+      }
+      .hint {
+        margin: 0 var(--ha-space-1) var(--ha-space-3);
+        color: var(--secondary-text-color);
       }
       .grid.hidden {
         padding: var(--ha-space-2) 0 var(--ha-space-2);

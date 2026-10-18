@@ -154,7 +154,9 @@ export class MagicLightsCard extends LitElement {
           ? html`<div class="scenes" style=${styleMap({ "--columns": String(config.columns) })}>
               ${scenes.map((scene) => this._renderScene(attrs, scene))}
             </div>`
-          : nothing
+          : missing.length
+            ? nothing
+            : html`<div class="none">No scenes in the menu yet. Add them in the Magic Lights panel.</div>`
       }
     `;
   }
