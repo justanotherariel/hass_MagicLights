@@ -1,229 +1,172 @@
-// One scene in the gallery: colour art, name, ▶ for palette motion and the scene menu.
+// One scene of a room as a tile card: the body runs it, the swatch (its own button) edits
+// it. A scene in the menu without lights here is a ghost whose whole tile opens set-up.
+// Fires ml-scene-action with "activate" or "edit".
 
 import { LitElement, css, html, nothing } from "lit";
 import { property } from "lit/decorators.js";
-import { styleMap } from "lit/directives/style-map.js";
-import { luminance, swatchBackground } from "../shared/color";
+import { classMap } from "lit/directives/class-map.js";
 import type { SceneInfo } from "../shared/types";
 import { defineElement, fire } from "../shared/util";
-import { tileStyles } from "./styles";
+import "./components/ml-swatch";
 
-export type SceneAction =
-  | "activate"
-  | "play"
-  | "edit"
-  | "duplicate"
-  | "hide"
-  | "show"
-  | "reset"
-  | "delete";
-
-export type SceneKind = "preset" | "edited" | "user";
-
-export const sceneKind = (scene: SceneInfo): SceneKind =>
-  scene.builtin ? "preset" : scene.preset ? "edited" : "user";
+export type SceneAction = "activate" | "edit";
 
 class MlSceneCard extends LitElement {
   @property({ attribute: false }) scene!: SceneInfo;
 
-  @property({ type: Boolean, reflect: true }) active = false;
+  /** Colours of the layers that reach this room. */
+  @property({ attribute: false }) swatches: readonly string[] = [];
 
-  /** Running with motion. */
-  @property({ type: Boolean }) playing = false;
+  /** "Adaptive · 100%": what it is, in one line. */
+  @property() line = "";
 
-  @property({ type: Boolean }) playable = false;
+  /** Running here. */
+  @property({ type: Boolean }) active = false;
 
-  /** Shown in the target's menu (visible scenes). */
-  @property({ type: Boolean }) listed = true;
+  /** Its colours can move. */
+  @property({ type: Boolean }) animated = false;
 
-  /** The target cannot run scenes now (its select is unavailable); the menu still works. */
+  /** In the menu, but without lights here. */
+  @property({ type: Boolean }) ghost = false;
+
+  /** The room cannot run scenes now (its select is unavailable); editing still works. */
   @property({ type: Boolean }) disabled = false;
 
   protected render() {
-    const scene = this.scene;
-    const kind = sceneKind(scene);
-    const dark = !!scene.swatches[0] && luminance(scene.swatches[0]) < 0.35;
-    return html`
-      <ha-card>
-        <button
-          class="plain main"
-          aria-pressed=${this.active}
-          .disabled=${this.disabled}
-          @click=${() => this._fire("activate")}
-        >
-          <span
-            class="art ${this.playing ? "moving" : ""} ${dark ? "dark" : ""}"
-            style=${styleMap({ "--art": swatchBackground(scene.swatches) })}
-          >
-            ${scene.icon ? html`<ha-icon .icon=${scene.icon}></ha-icon>` : nothing}
-            <span class="tags">
-              ${
-                this.active
-                  ? html`<span class="tag on">${this.playing ? "Playing" : "Active"}</span>`
-                  : nothing
-              }
-              ${kind === "edited" ? html`<span class="tag">Edited</span>` : nothing}
-            </span>
-          </span>
-          <span class="label ${this.playable ? "two-tools" : ""}">
-            <span class="scene-name">${scene.name}</span>
-          </span>
+    const { scene, ghost } = this;
+    const badge = this._renderBadge();
+    return html`<ha-card class=${classMap({ active: this.active, ghost, badged: badge !== nothing })}>
+      <ha-tile-container
+        .interactive=${ghost || !this.disabled}
+        @action=${() => this._fire(ghost ? "edit" : "activate")}
+      >
+        <button slot="icon" class="swatch" aria-label=${`Edit ${scene.name}`} @click=${() => this._fire("edit")}>
+          <ml-swatch size="32" .swatches=${this.swatches} .icon=${scene.icon ?? undefined} ?ghost=${ghost}></ml-swatch>
+          <span class="pencil" aria-hidden="true"><ha-icon icon="mdi:pencil"></ha-icon></span>
         </button>
-        <div class="tools">
-          ${
-            this.playable
-              ? html`<ha-icon-button
-                  .label=${this.playing ? `Hold colours of ${scene.name}` : `Play ${scene.name}`}
-                  .disabled=${this.disabled}
-                  @click=${() => this._fire("play")}
-                >
-                  <ha-icon .icon=${this.playing ? "mdi:pause" : "mdi:play"}></ha-icon>
-                </ha-icon-button>`
-              : nothing
-          }
-          ${this._renderMenu(kind)}
-        </div>
-      </ha-card>
-    `;
+        <ha-tile-info slot="info">
+          <span slot="primary">${scene.name}</span>
+          <span slot="secondary">${ghost ? "Needs set-up · choose lights" : this.line}</span>
+        </ha-tile-info>
+      </ha-tile-container>
+      ${badge}
+    </ha-card>`;
   }
 
-  private _renderMenu(kind: SceneKind) {
-    const item = (action: SceneAction, icon: string, label: string, danger = false) =>
-      html`<ha-dropdown-item value=${action} variant=${danger ? "danger" : "default"}>
-        <ha-icon slot="icon" .icon=${icon}></ha-icon>
-        ${label}
-      </ha-dropdown-item>`;
-    return html`<ha-dropdown
-      placement="bottom-end"
-      @wa-select=${(ev: CustomEvent<{ item: { value: SceneAction } }>) => this._fire(ev.detail.item.value)}
-    >
-      <ha-icon-button slot="trigger" .label=${`Options for ${this.scene.name}`}>
-        <ha-icon icon="mdi:dots-vertical"></ha-icon>
-      </ha-icon-button>
-      ${item("edit", "mdi:pencil-outline", "Edit")}
-      ${item("duplicate", "mdi:content-copy", "Duplicate")}
-      ${
-        this.listed
-          ? item("hide", "mdi:eye-off-outline", "Hide")
-          : item("show", "mdi:eye-outline", "Show in menu")
-      }
-      ${kind === "edited" ? item("reset", "mdi:restore", "Reset to preset", true) : nothing}
-      ${kind === "user" ? item("delete", "mdi:delete-outline", "Delete", true) : nothing}
-    </ha-dropdown>`;
+  private _renderBadge() {
+    const [kind, icon, label] = this.ghost
+      ? ["warn", "mdi:alert", "Needs set-up"]
+      : this.active
+        ? ["on", "mdi:check", "Running"]
+        : this.animated
+          ? ["play", "mdi:play", "Animated"]
+          : [];
+    if (!kind) return nothing;
+    return html`<ha-tile-badge class=${kind} title=${label}>
+      <ha-icon .icon=${icon}></ha-icon>
+    </ha-tile-badge>`;
   }
 
   private _fire(action: SceneAction): void {
     fire(this, "ml-scene-action", { action });
   }
 
-  static styles = [
-    tileStyles,
-    css`
-      :host {
-        display: block;
+  static styles = css`
+    :host {
+      display: block;
+    }
+    ha-card {
+      position: relative;
+      height: 100%;
+      --tile-color: var(--primary-color);
+      transition:
+        border-color var(--ha-animation-duration-fast, 150ms) ease,
+        box-shadow var(--ha-animation-duration-fast, 150ms) ease;
+    }
+    ha-card.active {
+      border-color: var(--primary-color);
+      box-shadow: 0 0 0 1px var(--primary-color);
+    }
+    ha-card.ghost {
+      border-style: dashed;
+      background: none;
+      --ha-tile-info-primary-color: var(--secondary-text-color);
+    }
+    ha-tile-container {
+      --row-height: 60px;
+    }
+    ha-tile-info {
+      --ha-tile-info-secondary-color: var(--secondary-text-color);
+    }
+    /* The name ellipsizes before the corner badge (16 px at 6 px in). */
+    ha-card.badged ha-tile-info {
+      padding-inline-end: var(--ha-space-4, 16px);
+    }
+    /* A visibly separate button: a 44 px target that shows a pencil on hover and focus. */
+    .swatch {
+      position: relative;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      flex: none;
+      width: 44px;
+      height: 44px;
+      margin: 0 -4px 0 -6px;
+      padding: 0;
+      border: none;
+      border-radius: 50%;
+      background: none;
+      cursor: pointer;
+      pointer-events: auto;
+      transition: background-color var(--ha-animation-duration-fast, 150ms) ease;
+    }
+    .swatch:hover,
+    .swatch:focus-visible {
+      background: var(--ha-color-fill-neutral-quiet-hover, rgba(127, 127, 127, 0.16));
+    }
+    .swatch:focus-visible {
+      outline: 2px solid var(--ha-color-focus, var(--primary-color));
+    }
+    .pencil {
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 18px;
+      height: 18px;
+      border-radius: 50%;
+      background: var(--card-background-color, #fff);
+      color: var(--primary-text-color);
+      box-shadow: 0 0 0 1px var(--divider-color);
+      opacity: 0;
+      transition: opacity var(--ha-animation-duration-fast, 150ms) ease;
+      --mdc-icon-size: 12px;
+    }
+    .swatch:hover .pencil,
+    .swatch:focus-visible .pencil {
+      opacity: 1;
+    }
+    @media (hover: none) and (pointer: coarse) {
+      .pencil {
+        opacity: 1;
       }
-      ha-card {
-        position: relative;
-        height: 100%;
-        overflow: hidden;
-        transition: border-color var(--ha-animation-duration-fast) ease;
-      }
-      :host([active]) ha-card {
-        border-color: var(--primary-color);
-        box-shadow: 0 0 0 1px var(--primary-color);
-      }
-      button.plain.main {
-        display: flex;
-        flex-direction: column;
-        align-items: stretch;
-        gap: 0;
-        width: 100%;
-        height: 100%;
-        border-radius: 0;
-      }
-      button.plain.main:disabled {
-        cursor: default;
-      }
-      .art {
-        position: relative;
-        display: flex;
-        align-items: flex-end;
-        height: 72px;
-        padding: var(--ha-space-2) var(--ha-space-3);
-        box-sizing: border-box;
-        background: var(--art);
-        /* Keeps near-white art apart from the card. */
-        box-shadow: inset 0 -1px 0 var(--divider-color);
-        color: rgba(0, 0, 0, 0.55);
-        --mdc-icon-size: 22px;
-      }
-      .art.dark {
-        color: rgba(255, 255, 255, 0.85);
-      }
-      .art.moving {
-        background-size: 300% 100%;
-        animation: ml-drift 12s ease-in-out infinite alternate;
-      }
-      .tags {
-        position: absolute;
-        top: var(--ha-space-2);
-        inset-inline-end: var(--ha-space-2);
-        display: flex;
-        flex-wrap: wrap;
-        justify-content: flex-end;
-        gap: var(--ha-space-1);
-      }
-      .tag {
-        font-size: var(--ha-font-size-xs);
-        font-weight: var(--ha-font-weight-medium);
-        line-height: 20px;
-        padding: 0 var(--ha-space-2);
-        border-radius: var(--ha-border-radius-pill);
-        color: var(--primary-text-color);
-        background: var(--card-background-color);
-      }
-      .tag.on {
-        color: var(--text-primary-color, #fff);
-        background: var(--primary-color);
-      }
-      /* Leaves room for the tools in the card's bottom corner. */
-      .label {
-        display: flex;
-        align-items: center;
-        min-height: 48px;
-        padding-block: var(--ha-space-1);
-        padding-inline: var(--ha-space-3) 48px;
-        box-sizing: border-box;
-        min-width: 0;
-      }
-      .label.two-tools {
-        padding-inline-end: 88px;
-      }
-      .scene-name {
-        display: -webkit-box;
-        -webkit-box-orient: vertical;
-        -webkit-line-clamp: 2;
-        overflow: hidden;
-        font-weight: var(--ha-font-weight-medium);
-        line-height: var(--ha-line-height-condensed);
-      }
-      .tools {
-        position: absolute;
-        inset-inline-end: 0;
-        bottom: 0;
-        display: flex;
-        align-items: center;
-        height: 48px;
-        padding: 0 var(--ha-space-1);
-        --ha-icon-button-size: 40px;
-      }
-      @media (prefers-reduced-motion: reduce) {
-        .art.moving {
-          animation: none;
-        }
-      }
-    `,
-  ];
+    }
+    ha-tile-badge {
+      position: absolute;
+      top: 6px;
+      inset-inline-end: 6px;
+      pointer-events: none;
+    }
+    ha-tile-badge.play {
+      --tile-badge-background-color: var(--secondary-text-color);
+    }
+    ha-tile-badge.warn {
+      --tile-badge-background-color: var(--warning-color, #ffa600);
+      --tile-badge-icon-color: #000;
+    }
+  `;
 }
 
 defineElement("ml-scene-card", MlSceneCard);

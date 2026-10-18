@@ -1,14 +1,16 @@
-// Home tile: status, swatch strip of what runs, scene chips (the active one first) and the target menu.
+// Home tile: a swatch glowing in what runs, the live facts, a strip, the menu's scenes as
+// chips (the active one first) and the target menu. An empty menu offers "Add scenes".
 
 import { LitElement, css, html, nothing } from "lit";
-import { property } from "lit/decorators.js";
+import { property, state } from "lit/decorators.js";
 import { swatchBackground } from "../shared/color";
 import type { HomeAssistant, SceneInfo, TargetInfo } from "../shared/types";
 import { defineElement, plural, toastOnError } from "../shared/util";
 import { go, targetPath } from "./routes";
 import { menuId, type MlStore } from "./store";
+import "./ml-scene-picker";
 import { chipStyles, dotStyles, tileStyles } from "./styles";
-import { renderStrip, renderTargetIcon, targetVisuals, type TargetVisuals } from "./target-ui";
+import { renderStrip, renderTargetSwatch, targetVisuals, type TargetVisuals } from "./target-ui";
 
 const CHIPS = 4;
 
@@ -18,6 +20,8 @@ class MlTargetTile extends LitElement {
   @property({ attribute: false }) store!: MlStore;
 
   @property({ attribute: false }) target!: TargetInfo;
+
+  @state() private _picking = false;
 
   protected render() {
     const target = this.target;
@@ -29,7 +33,7 @@ class MlTargetTile extends LitElement {
       <ha-card>
         <div class="header">
           <button class="plain open" @click=${this._open}>
-            ${renderTargetIcon(this.hass, target, visuals)}
+            ${renderTargetSwatch(this.hass, target, visuals)}
             <span class="info">
               <span class="name">${target.name}</span>
               <span class="status">${visuals.line}</span>
@@ -38,16 +42,40 @@ class MlTargetTile extends LitElement {
           ${this._renderMotion(visuals)} ${this._renderMenu(visuals)}
         </div>
         ${renderStrip(visuals)}
-        ${
-          chips.length
-            ? html`<div class="chips">
-                ${chips
-                  .slice(0, CHIPS)
-                  .map((scene) => this._renderChip(scene, menuId(scene) === visuals.active, visuals.available))}
-              </div>`
-            : nothing
-        }
+        <div class="chips">
+          ${chips
+            .slice(0, CHIPS)
+            .map((scene) => this._renderChip(scene, menuId(scene) === visuals.active, visuals.available))}
+          ${
+            chips.length > CHIPS
+              ? html`<ha-assist-chip
+                  class="more"
+                  .label=${`+${chips.length - CHIPS}`}
+                  aria-label=${`${chips.length - CHIPS} more scenes in ${target.name}`}
+                  @click=${this._open}
+                ></ha-assist-chip>`
+              : nothing
+          }
+          ${
+            chips.length
+              ? nothing
+              : html`<button class="add" @click=${() => (this._picking = true)}>
+                  <ha-icon icon="mdi:plus"></ha-icon>
+                  Add scenes
+                </button>`
+          }
+        </div>
       </ha-card>
+      ${
+        this._picking
+          ? html`<ml-scene-picker
+              .hass=${this.hass}
+              .store=${this.store}
+              .targetId=${target.id}
+              @ml-dialog-closed=${() => (this._picking = false)}
+            ></ml-scene-picker>`
+          : nothing
+      }
     `;
   }
 
@@ -177,6 +205,33 @@ class MlTargetTile extends LitElement {
       .dot {
         width: 14px;
         height: 14px;
+      }
+      .more {
+        --ha-assist-chip-filled-container-color: transparent;
+      }
+      ha-assist-chip {
+        --ha-button-height: 36px;
+      }
+      .add {
+        display: inline-flex;
+        align-items: center;
+        gap: var(--ha-space-2);
+        height: 36px;
+        padding: 0 var(--ha-space-4) 0 var(--ha-space-3);
+        border: 1px dashed var(--divider-color);
+        border-radius: var(--ha-border-radius-pill);
+        background: none;
+        color: var(--secondary-text-color);
+        font: inherit;
+        cursor: pointer;
+        --mdc-icon-size: 18px;
+      }
+      .add:hover {
+        color: var(--primary-color);
+        border-color: var(--primary-color);
+      }
+      .add:focus-visible {
+        outline: 2px solid var(--ha-color-focus, var(--primary-color));
       }
     `,
   ];

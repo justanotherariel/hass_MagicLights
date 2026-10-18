@@ -1,5 +1,5 @@
-// Global settings: switching scenes (fade, switch-on scene), native effects, bus pacing
-// and light → bus overrides.
+// Global settings: switching scenes first (fade, switch-on scene), then native effects,
+// then bus pacing and light → bus overrides folded into one row.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
@@ -51,22 +51,16 @@ class MlSettings extends LitElement {
 
   @state() private _newLight?: string;
 
+  /** The seconds field behind "Custom…". */
+  @state() private _custom = false;
+
   protected render() {
     const settings = this.store.config.settings;
     return html`
       <h2 class="section-title">Switching scenes</h2>
       <ha-card>${this._renderSwitching(settings)}</ha-card>
       <h2 class="section-title">Lights</h2>
-      <ha-card>${this._renderLights(settings)}</ha-card>
-      <h2 class="section-title">Buses</h2>
-      <p class="hint">
-        Lights on one radio network or bridge share its message budget. Dynamic scenes pace
-        themselves to it; raise the limits only if your network keeps up.
-      </p>
-      <ha-card>
-        ${this._buses().map((bus) => this._renderBus(bus, settings))}
-        ${this._renderLightBuses(settings)}
-      </ha-card>
+      <ha-card>${this._renderLights(settings)} ${this._renderBuses(settings)}</ha-card>
       <p class="version">Magic Lights ${this.store.config.version}</p>
     `;
   }
@@ -75,12 +69,31 @@ class MlSettings extends LitElement {
     return html`
       <div class="fade">
         <span class="field-label">Fade <span class="secondary">how long a scene change takes, in every room</span></span>
-        <ml-fade-select
-          .value=${settings.transition}
-          @value-changed=${(ev: CustomEvent<{ value: number | null }>) => {
-            if (ev.detail.value !== null) this._save({ transition: ev.detail.value });
-          }}
-        ></ml-fade-select>
+        <div class="fade-row">
+          <ml-fade-select
+            .value=${settings.transition}
+            @value-changed=${(ev: CustomEvent<{ value: number | null }>) => {
+              if (ev.detail.value !== null) this._save({ transition: ev.detail.value });
+            }}
+          ></ml-fade-select>
+          ${
+            this._custom
+              ? html`<ha-input
+                  class="custom"
+                  type="number"
+                  min="0"
+                  max="300"
+                  step="0.1"
+                  autofocus
+                  .label=${"Fade"}
+                  .value=${String(settings.transition)}
+                  @change=${(ev: Event) => this._saveCustomFade(ev.target as Input)}
+                >
+                  <span slot="end">s</span>
+                </ha-input>`
+              : html`<ha-button appearance="plain" @click=${() => (this._custom = true)}>Custom…</ha-button>`
+          }
+        </div>
         <span class="secondary hint-small">
           A scene can set its own fade in its editor. Adaptive and candle scenes use it for their first step too.
         </span>
@@ -124,6 +137,36 @@ class MlSettings extends LitElement {
         ></ha-switch>
       </ha-settings-row>
     `;
+  }
+
+  /** Pacing, folded: the row says how many networks and lights it covers. */
+  private _renderBuses(settings: Settings) {
+    const buses = this._buses();
+    const lights = buses.reduce((n, bus) => n + bus.lights.length, 0);
+    const summary = [
+      buses.length === 1 ? this._busLabel(buses[0]) : plural(buses.length, "bus", "buses"),
+      plural(lights, "light"),
+      ...(buses.length === 1 ? [`${buses[0].limits.rate} msg/s`] : []),
+    ].join(" · ");
+    return html`<ha-expansion-panel class="all-buses" header="Buses" .secondary=${summary}>
+      <p class="hint">
+        Lights on one radio network or bridge share its message budget. Dynamic scenes pace
+        themselves to it; raise the limits only if your network keeps up.
+      </p>
+      ${buses.map((bus) => this._renderBus(bus, settings))} ${this._renderLightBuses(settings)}
+    </ha-expansion-panel>`;
+  }
+
+  /** Any number of seconds; an entry out of range is not saved. */
+  private _saveCustomFade(input: Input): void {
+    const value = Number(input.value);
+    if (input.value.trim() === "" || !(value >= 0 && value <= 300)) {
+      input.value = String(this.store.config.settings.transition);
+      showToast(this, "Fade must be a number of seconds from 0 to 300");
+      return;
+    }
+    this._custom = false;
+    this._save({ transition: Math.round(value * 100) / 100 });
   }
 
   /** A light nothing could classify is its own bus, labelled by its entity id. */
@@ -296,8 +339,32 @@ class MlSettings extends LitElement {
         font-size: var(--ha-font-size-s);
         font-weight: var(--ha-font-weight-normal);
       }
+      .fade-row {
+        display: flex;
+        align-items: center;
+        flex-wrap: wrap;
+        gap: var(--ha-space-2);
+      }
       ml-fade-select {
+        flex: 1 1 320px;
         max-width: 560px;
+      }
+      ha-input.custom {
+        width: 120px;
+        --ha-input-padding-bottom: 0;
+      }
+      ha-expansion-panel.all-buses {
+        border-top: 1px solid var(--divider-color);
+        border-bottom: none;
+        --expansion-panel-content-padding: 0;
+      }
+      .all-buses .hint {
+        margin: 0;
+        padding: 0 var(--ha-space-4) var(--ha-space-3);
+      }
+      .all-buses ha-expansion-panel {
+        border-top: 1px solid var(--divider-color);
+        border-bottom: none;
       }
       .hint-small {
         font-size: var(--ha-font-size-s);

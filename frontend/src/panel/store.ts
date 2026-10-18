@@ -48,7 +48,7 @@ export type Update<T, C> = Partial<T> | ((current: C) => Partial<T>);
 export const SCENE_GROUPS: readonly [SceneCategory, string][] = [
   ["custom", "Yours"],
   ["white", "Whites"],
-  ["color", "Colours"],
+  ["color", "Colour palettes"],
   ["dynamic", "Dynamic"],
   ["adaptive", "Adaptive"],
 ];
@@ -99,14 +99,6 @@ export const menuIds = (target: TargetInfo): string[] => [...(target.options.vis
 export const withScene = (ids: readonly string[], sceneId: string, shown: boolean): string[] => {
   if (!shown) return ids.filter((id) => id !== sceneId);
   return ids.includes(sceneId) ? [...ids] : [...ids, sceneId];
-};
-
-/** A menu with `sceneId` moved in front of `before` (to the end without one). */
-export const movedBefore = (ids: readonly string[], sceneId: string, before?: string): string[] => {
-  const rest = ids.filter((id) => id !== sceneId);
-  const at = before === undefined ? -1 : rest.indexOf(before);
-  rest.splice(at < 0 ? rest.length : at, 0, sceneId);
-  return rest;
 };
 
 /** Where a scene stands in one target. */
@@ -330,18 +322,17 @@ export class MlStore {
     return { ...toStored(scene), id: newSceneId(), preset: scene.id };
   }
 
-  /** A new user scene, set up in the target when given (layer 1: its rooms), blank or copied from `from`. */
-  newScene(targetId?: string, from?: SceneInfo): StoredScene {
-    const base = from ? toStored(from) : undefined;
+  /** A new user scene, set up in the target when given (layer 1: its rooms). */
+  newScene(targetId?: string): StoredScene {
     return {
       id: newSceneId(),
-      name: this.uniqueName(from ? `${from.name} copy` : "New scene"),
-      icon: base?.icon ?? null,
+      name: this.uniqueName("New scene"),
+      icon: null,
       preset: null,
-      layers: base?.layers ?? [this._blankLayer(targetId)],
-      others: base?.others ?? "off",
-      brightness: base?.brightness ?? 100,
-      transition: base?.transition ?? null,
+      layers: [this._blankLayer(targetId)],
+      others: "off",
+      brightness: 100,
+      transition: null,
     };
   }
 
@@ -444,31 +435,6 @@ export class MlStore {
     return this.saveMenus((latest) =>
       Object.fromEntries(targetIds.map((id) => [id, withScene(latest._menu(id), sceneId, shown)])),
     );
-  }
-
-  /** Flips a scene in the menu of each target. */
-  toggleInMenus(sceneId: string, targetIds: readonly string[]): Promise<TargetInfo[]> {
-    return this.saveMenus((latest) =>
-      Object.fromEntries(
-        targetIds.map((id) => {
-          const ids = latest._menu(id);
-          return [id, withScene(ids, sceneId, !ids.includes(sceneId))];
-        }),
-      ),
-    );
-  }
-
-  /** Shows or hides a scene in the target's menu, keeping the current order. */
-  setSceneVisible(targetId: string, sceneId: string, visible: boolean): Promise<TargetInfo[]> {
-    return this.setInMenus(sceneId, [targetId], visible);
-  }
-
-  /** Moves a scene to `index` among the target's runnable menu scenes (`scenes`). */
-  moveScene(targetId: string, sceneId: string, index: number): Promise<TargetInfo[]> {
-    return this.saveMenus((latest) => {
-      const anchor = latest._target(targetId).scenes.filter((id) => id !== sceneId)[index];
-      return { [targetId]: movedBefore(latest._menu(targetId), sceneId, anchor) };
-    });
   }
 
   private _target(id: string): TargetInfo {

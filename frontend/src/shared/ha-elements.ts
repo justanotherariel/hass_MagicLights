@@ -29,7 +29,6 @@ export const PANEL_TAGS = [
   "ha-input",
   "ha-expansion-panel",
   "ha-icon-picker",
-  "ha-slider",
   "ha-control-select",
   "ha-control-slider",
   "ha-control-button",

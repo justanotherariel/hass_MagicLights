@@ -23,7 +23,7 @@ import {
   settingsPath,
   targetPath,
 } from "./routes";
-import { MlStore, type StoreHost } from "./store";
+import { menuIds, MlStore, type StoreHost } from "./store";
 
 const HOME_TABS: Record<HomeTab, string> = { rooms: "Rooms", scenes: "Scenes" };
 
@@ -62,6 +62,9 @@ class MagicLightsPanel extends LitElement implements StoreHost {
   @state() private _zoneDialog?: ZoneDialogRequest;
 
   @state() private _editorTitle?: EditorTitle;
+
+  /** The Scenes tab's search query; undefined while the field is closed. */
+  @state() private _sceneSearch?: string;
 
   private _unsubscribe?: Promise<Unsubscribe | undefined>;
 
@@ -222,7 +225,9 @@ class MagicLightsPanel extends LitElement implements StoreHost {
       slot=${this.narrow ? "subRow" : nothing}
       @wa-tab-show=${(ev: CustomEvent<{ name: string }>) => {
         const tab = ev.detail.name as HomeTab;
-        if (tab && tab !== page.tab) replaceWith(homePath(tab));
+        if (!tab || tab === page.tab) return;
+        this._sceneSearch = undefined;
+        replaceWith(homePath(tab));
       }}
     >
       ${(Object.keys(HOME_TABS) as HomeTab[]).map(
@@ -245,7 +250,15 @@ class MagicLightsPanel extends LitElement implements StoreHost {
           ? html`<ha-icon-button slot="actionItems" .label=${"New zone"} @click=${() => (this._zoneDialog = {})}>
               <ha-icon icon="mdi:plus"></ha-icon>
             </ha-icon-button>`
-          : nothing
+          : html`<ha-icon-button
+              slot="actionItems"
+              class="search-toggle"
+              .label=${"Search scenes"}
+              aria-pressed=${this._sceneSearch === undefined ? "false" : "true"}
+              @click=${() => (this._sceneSearch = this._sceneSearch === undefined ? "" : undefined)}
+            >
+              <ha-icon icon="mdi:magnify"></ha-icon>
+            </ha-icon-button>`
       }
       <ha-icon-button slot="actionItems" .label=${"Settings"} @click=${() => go(settingsPath())}>
         <ha-icon icon="mdi:cog"></ha-icon>
@@ -253,9 +266,23 @@ class MagicLightsPanel extends LitElement implements StoreHost {
     `;
   }
 
+  private async _setSceneSearch(value: string | undefined): Promise<void> {
+    this._sceneSearch = value;
+    if (value !== undefined) return;
+    // Closing the field with Escape would otherwise drop focus to the page.
+    await this.updateComplete;
+    this.renderRoot.querySelector<HTMLElement>(".search-toggle")?.focus();
+  }
+
   private _homeBody(store: MlStore, page: PageOf<"home">) {
     return page.tab === "scenes"
-      ? html`<ml-scenes .hass=${this.hass} .store=${store} .narrow=${this.narrow}></ml-scenes>`
+      ? html`<ml-scenes
+          .hass=${this.hass}
+          .store=${store}
+          .narrow=${this.narrow}
+          .search=${this._sceneSearch}
+          @ml-search=${(ev: CustomEvent<{ value?: string }>) => this._setSceneSearch(ev.detail.value)}
+        ></ml-scenes>`
       : html`<ml-home .hass=${this.hass} .store=${store} .narrow=${this.narrow}></ml-home>`;
   }
 
@@ -288,6 +315,33 @@ class MagicLightsPanel extends LitElement implements StoreHost {
   }
 
   private _targetActions(page: PageOf<"target">) {
+    const target = this._store?.target(page.targetId);
+    // Nothing to reorder or hide in an empty menu.
+    const arrangeable = page.tab === "scenes" && !!target && menuIds(target).length > 0;
+    return html`${arrangeable ? this._arrangeAction() : nothing}${this._editTargetAction(page)}`;
+  }
+
+  /** Arrange mode lives in the page; the bar only starts it. */
+  private _arrangeAction() {
+    const arrange = () =>
+      (this.shadowRoot?.querySelector("ml-target-page") as { arrange?: () => void } | null)?.arrange?.();
+    return this.narrow
+      ? html`<ha-icon-button slot="actionItems" .label=${"Arrange scenes"} @click=${arrange}>
+          <ha-icon icon="mdi:drag"></ha-icon>
+        </ha-icon-button>`
+      : html`<ha-button
+          slot="actionItems"
+          appearance="outlined"
+          variant="neutral"
+          style="--ha-button-height: 44px"
+          @click=${arrange}
+        >
+          <ha-icon slot="start" icon="mdi:drag"></ha-icon>
+          Arrange
+        </ha-button>`;
+  }
+
+  private _editTargetAction(page: PageOf<"target">) {
     const target = this._store?.target(page.targetId);
     if (target?.kind === "zone") {
       const zone = this._store?.zoneOf(target.id);

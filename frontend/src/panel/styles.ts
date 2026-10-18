@@ -45,7 +45,7 @@ export const pageStyles = css`
   }
 `;
 
-/** Swatch strip, round target icon and the reset button wrapping a tile's clickable area. */
+/** Swatch strip, text and the reset button wrapping a home tile's clickable area. */
 export const tileStyles = css`
   .strip {
     height: 6px;
@@ -68,25 +68,6 @@ export const tileStyles = css`
     .strip.moving {
       animation: none;
     }
-  }
-  .target-icon {
-    flex: none;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    width: 40px;
-    height: 40px;
-    border-radius: var(--ha-border-radius-pill);
-    color: var(--state-inactive-color, var(--disabled-text-color));
-    background-color: var(--ha-color-fill-neutral-quiet-resting, var(--secondary-background-color));
-    --mdc-icon-size: 24px;
-    transition:
-      color var(--ha-animation-duration-normal) ease,
-      background-color var(--ha-animation-duration-normal) ease;
-  }
-  .target-icon.on {
-    color: var(--state-light-active-color, var(--amber-color));
-    background-color: var(--ha-color-fill-warning-quiet-resting, var(--secondary-background-color));
   }
   button.plain {
     display: flex;
