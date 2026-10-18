@@ -296,8 +296,7 @@ class Scene:
     name: str
     icon: str | None
     layers: tuple[Layer, ...]
-    scope: tuple[TargetId, ...] = ()
-    preset: str | None = None
+    preset: str | None = None  # set: the edit of that preset, for every target
     others: Literal["off", "keep"] = "off"
     brightness: int = 100
     transition: float | None = None
@@ -311,7 +310,6 @@ class Scene:
             name=data["name"],
             icon=data.get("icon"),
             layers=tuple(Layer.from_dict(layer) for layer in data["layers"]),
-            scope=tuple(data.get("scope") or ()),
             **_present(
                 data,
                 "preset",
@@ -324,7 +322,7 @@ class Scene:
 
     @property
     def public_id(self) -> str:
-        """The id targets know it by: a customised copy's is its preset's."""
+        """The id targets know it by: an edited preset's is the preset's."""
         return self.preset or self.id
 
     def to_dict(self) -> dict[str, Any]:
@@ -333,7 +331,6 @@ class Scene:
             "id": self.id,
             "name": self.name,
             "icon": self.icon,
-            "scope": list(self.scope),
             "preset": self.preset,
             "layers": [layer.to_dict() for layer in self.layers],
             "others": self.others,
@@ -675,28 +672,14 @@ class EffectLookup(Protocol):
 
 
 def available_scenes(
-    target_id: TargetId, scenes: Mapping[str, Scene], presets: Mapping[str, Scene]
+    scenes: Mapping[str, Scene], presets: Mapping[str, Scene]
 ) -> dict[str, Scene]:
-    """Return the scenes a target can run, keyed by public id.
+    """Return every scene by public id: presets, edited ones in place, then user scenes.
 
-    A customised copy replaces its preset under the preset id: a copy whose
-    scope names the target wins over an everywhere copy. Order: presets in
-    catalogue order, then user scenes in stored order.
+    Presets keep catalogue order and user scenes stored order. A stored scene
+    whose preset left the catalogue is a user scene.
     """
-    copies: dict[str, Scene] = {}
-    for scene in scenes.values():
-        if scene.preset not in presets:
-            continue
-        if target_id in scene.scope:
-            current = copies.get(scene.preset)
-            if current is None or not current.scope:
-                copies[scene.preset] = scene
-        elif not scene.scope:
-            copies.setdefault(scene.preset, scene)
-    out = {pid: copies.get(pid, preset) for pid, preset in presets.items()}
-    for scene in scenes.values():
-        if scene.preset not in presets and (
-            not scene.scope or target_id in scene.scope
-        ):
-            out[scene.id] = scene
+    overrides = {s.preset: s for s in scenes.values() if s.preset in presets}
+    out = {pid: overrides.get(pid, preset) for pid, preset in presets.items()}
+    out.update((s.id, s) for s in scenes.values() if s.preset not in presets)
     return out

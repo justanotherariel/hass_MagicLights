@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import asyncio
 from datetime import UTC, datetime
 import json
 from pathlib import Path
@@ -11,40 +10,15 @@ from typing import Any
 import unittest
 
 from custom_components.magic_lights import store
+from custom_components.magic_lights.effects import BUILTIN, Registry
 from custom_components.magic_lights.models import (
     ActivationSnapshot,
     Config,
     RuntimeV1,
     Settings,
 )
-from homeassistant.core import CoreState
 
-
-class _ShellConfig:
-    def __init__(self, config_dir: str) -> None:
-        self.config_dir = config_dir
-
-    def path(self, *parts: str) -> str:
-        return str(Path(self.config_dir, *parts))
-
-
-class _ShellBus:
-    def async_listen_once(self, event_type: str, listener: Any) -> Any:
-        return lambda: None
-
-
-class _ShellHass:
-    """Just enough of HomeAssistant for helpers.storage.Store."""
-
-    def __init__(self, config_dir: str) -> None:
-        self.data: dict[str, Any] = {}
-        self.config = _ShellConfig(config_dir)
-        self.loop = asyncio.get_running_loop()
-        self.state = CoreState.running
-        self.bus = _ShellBus()
-
-    async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
-        return func(*args)
+from .fakes import ShellHass
 
 
 class StoreTest(unittest.IsolatedAsyncioTestCase):
@@ -53,7 +27,7 @@ class StoreTest(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(tmp.cleanup)
         self.storage = Path(tmp.name, ".storage")
         self.storage.mkdir()
-        self.hass = _ShellHass(tmp.name)
+        self.hass = ShellHass(tmp.name)
 
     def write(self, key: str, version: int, data: Any) -> Path:
         path = self.storage / key
@@ -65,10 +39,13 @@ class StoreTest(unittest.IsolatedAsyncioTestCase):
         return path
 
     async def test_config_round_trip(self) -> None:
-        self.assertIsNone(await store.ConfigStore(self.hass).async_load_config())
+        def config_store() -> store.ConfigStore:
+            return store.ConfigStore(self.hass, Registry(BUILTIN), {}, dict)
+
+        self.assertIsNone(await config_store().async_load_config())
         config = Config(settings=Settings(transition=2.0))
-        await store.ConfigStore(self.hass).async_save_config(config)
-        self.assertEqual(await store.ConfigStore(self.hass).async_load_config(), config)
+        await config_store().async_save_config(config)
+        self.assertEqual(await config_store().async_load_config(), config)
 
     async def test_runtime_store(self) -> None:
         runtime = store.RuntimeStoreImpl(self.hass)

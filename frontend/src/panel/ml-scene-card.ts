@@ -18,10 +18,10 @@ export type SceneAction =
   | "reset"
   | "delete";
 
-export type SceneKind = "preset" | "customised" | "user";
+export type SceneKind = "preset" | "edited" | "user";
 
 export const sceneKind = (scene: SceneInfo): SceneKind =>
-  scene.builtin ? "preset" : scene.preset ? "customised" : "user";
+  scene.builtin ? "preset" : scene.preset ? "edited" : "user";
 
 class MlSceneCard extends LitElement {
   @property({ attribute: false }) scene!: SceneInfo;
@@ -62,7 +62,7 @@ class MlSceneCard extends LitElement {
                   ? html`<span class="tag on">${this.playing ? "Playing" : "Active"}</span>`
                   : nothing
               }
-              ${kind === "customised" ? html`<span class="tag">Customised</span>` : nothing}
+              ${kind === "edited" ? html`<span class="tag">Edited</span>` : nothing}
             </span>
           </span>
           <span class="label ${this.playable ? "two-tools" : ""}">
@@ -100,14 +100,14 @@ class MlSceneCard extends LitElement {
       <ha-icon-button slot="trigger" .label=${`Options for ${this.scene.name}`}>
         <ha-icon icon="mdi:dots-vertical"></ha-icon>
       </ha-icon-button>
-      ${item("edit", "mdi:pencil-outline", kind === "preset" ? "Customise" : "Edit")}
+      ${item("edit", "mdi:pencil-outline", "Edit")}
       ${item("duplicate", "mdi:content-copy", "Duplicate")}
       ${
         this.listed
           ? item("hide", "mdi:eye-off-outline", "Hide")
           : item("show", "mdi:eye-outline", "Show in menu")
       }
-      ${kind === "customised" ? item("reset", "mdi:restore", "Reset to preset", true) : nothing}
+      ${kind === "edited" ? item("reset", "mdi:restore", "Reset to preset", true) : nothing}
       ${kind === "user" ? item("delete", "mdi:delete-outline", "Delete", true) : nothing}
     </ha-dropdown>`;
   }

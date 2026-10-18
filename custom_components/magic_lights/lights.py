@@ -286,10 +286,7 @@ class LightIndexImpl:
             return None
         area_id = device_id = None
         if entry is not None:
-            area_id, device_id = entry.area_id, entry.device_id
-            if area_id is None and device_id is not None:
-                device = dr.async_get(hass).async_get(device_id)
-                area_id = device.area_id if device is not None else None
+            area_id, device_id = _area_of(hass, entry), entry.device_id
         friendly = state.attributes.get(ATTR_FRIENDLY_NAME) if state else None
         if friendly:
             name = str(friendly)
@@ -433,3 +430,20 @@ class LightIndexImpl:
                 self._targets_of.setdefault(entity_id, set()).add(target.id)
         for cb in list(self._subscribers):
             cb(change)
+
+
+def _area_of(hass: HomeAssistant, entry: er.RegistryEntry) -> str | None:
+    """Return the entity's area, else its device's."""
+    if entry.area_id is not None or entry.device_id is None:
+        return entry.area_id
+    device = dr.async_get(hass).async_get(entry.device_id)
+    return device.area_id if device is not None else None
+
+
+def light_areas(hass: HomeAssistant) -> dict[str, set[str]]:
+    """Light entity ids per area, as the registries place them."""
+    out: dict[str, set[str]] = defaultdict(set)
+    for entry in er.async_get(hass).entities.values():
+        if entry.domain == LIGHT_DOMAIN and (area_id := _area_of(hass, entry)):
+            out[area_id].add(entry.entity_id)
+    return dict(out)

@@ -38,8 +38,7 @@ export interface StoredScene {
   id: string; // user scenes "s_" + 8 hex (client generated); presets fixed slugs
   name: string;
   icon: string | null;
-  scope: TargetId[]; // [] = everywhere
-  preset: string | null; // origin preset id: replaces it within scope
+  preset: string | null; // set: the edit of this preset, for every room and zone
   layers: Layer[];
   others: "off" | "keep";
   brightness: number; // 1..100
@@ -93,6 +92,7 @@ export interface TargetInfo {
   options: TargetOptions;
   scenes: string[]; // visible ids, ordered (preset ids for presets)
   hidden: string[];
+  swatches: Record<string, string[]>; // by menu id: colours of the layers that reach this target
   select_entity_id: string;
 }
 
@@ -103,7 +103,7 @@ export interface SceneInfo extends StoredScene {
   category: SceneCategory;
   swatches: string[];
   dynamic: boolean;
-  customised_in: TargetId[];
+  override: string | null; // presets: the stored id of their edit
   fits: TargetId[]; // targets that run this scene and where it has lights
 }
 

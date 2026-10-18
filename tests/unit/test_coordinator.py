@@ -340,7 +340,7 @@ class Rig:
 
     # actions
     def activate(self, target: str, scene_id: str, **kw: Any) -> None:
-        scene = self.c.resolve_scene(target, scene_id) or self.config.scenes[scene_id]
+        scene = self.c.resolve_scene(scene_id) or self.config.scenes[scene_id]
         self.c.activate(target, scene, **kw)
 
     def report(self, entity_id: str, new: HaLight | None) -> None:
@@ -784,27 +784,31 @@ class AdjustNextReshuffleTest(unittest.TestCase):
 
 
 class ScenesTest(unittest.TestCase):
-    def test_default_menu_holds_the_user_scenes_in_scope(self) -> None:
-        copy = user_scene("s_00000001", "Relax", preset="relax", scope=(ROOM,))
-        mine = user_scene("s_00000002", "Mine", scope=(ROOM,))
+    def test_default_menu_holds_the_user_scenes_that_fit(self) -> None:
+        edited = user_scene("s_00000001", "Relax", preset="relax")
+        mine = explicit("s_00000002", "Mine", "room:living")
         anywhere = user_scene("s_00000003", "Anywhere")
-        rig = Rig(scenes=[copy, mine, anywhere])
+        rig = Rig(scenes=[edited, mine, anywhere])
         self.assertEqual(
             [s.id for s in rig.c.scenes_for(ROOM)], ["s_00000002", "s_00000003"]
         )
         self.assertEqual([s.id for s in rig.c.scenes_for(KITCHEN)], ["s_00000003"])
-        # Hidden presets and copies still run.
+        self.assertEqual(
+            [s.id for s in rig.c.scenes_for(ZONE)], ["s_00000002", "s_00000003"]
+        )
+        # Hidden presets, edited or not, still run.
         every = [s.id for s in rig.c.scenes_for(ROOM, include_hidden=True)]
         self.assertEqual(len(every), len(PRESETS) + 2)
         self.assertIn("s_00000001", every)
-        self.assertIs(rig.c.find_scene(ROOM, "relax"), copy)
+        self.assertIs(rig.c.find_scene(ROOM, "relax"), edited)
+        self.assertIs(rig.c.find_scene(KITCHEN, "Relax"), edited)
         self.assertEqual(rig.c.find_scene(KITCHEN, "Tokyo").id, "tokyo")
 
-    def test_visibility_order_and_copies(self) -> None:
-        copy = user_scene("s_00000001", "Relax", preset="relax", scope=(ROOM,))
-        mine = user_scene("s_00000002", "Mine", scope=(ROOM,))
+    def test_visibility_order_and_edited_presets(self) -> None:
+        edited = user_scene("s_00000001", "Relax", preset="relax")
+        mine = user_scene("s_00000002", "Mine")
         rig = Rig(
-            scenes=[copy, mine],
+            scenes=[edited, mine],
             living=TargetOptions(visible_scenes=("s_00000002", "relax", "gone")),
         )
         self.assertEqual(
@@ -812,27 +816,31 @@ class ScenesTest(unittest.TestCase):
         )
         hidden = rig.c.scenes_for(ROOM, include_hidden=True)
         self.assertEqual(len(hidden), len(PRESETS) + 1)
-        self.assertIs(rig.c.resolve_scene(ROOM, "relax"), copy)
-        self.assertIs(rig.c.resolve_scene(KITCHEN, "relax"), PRESETS["relax"])
-        self.assertIsNone(rig.c.resolve_scene(KITCHEN, "s_00000002"))
+        self.assertIs(rig.c.resolve_scene("relax"), edited)
+        self.assertIs(rig.c.resolve_scene("read"), PRESETS["read"])
+        self.assertIs(rig.c.resolve_scene("s_00000002"), mine)
+        self.assertIsNone(rig.c.resolve_scene("s_00000001"))  # known by "relax"
         kitchen = [s.id for s in rig.c.scenes_for(KITCHEN)]
         self.assertNotIn("dark", kitchen)
-        self.assertNotIn("s_00000002", kitchen)
+        self.assertEqual(kitchen, ["s_00000002"])
+
+    def test_one_option_per_name(self) -> None:
+        # Two scenes of one name can both fit once a light moves between rooms.
+        first = explicit("s_00000001", "Hell", "light.l1")
+        second = explicit("s_00000002", "hell", "light.k1", "light.l2")
+        rig = Rig(scenes=[first, second])
+        self.assertEqual([s.id for s in rig.c.scenes_for(ROOM)], ["s_00000001"])
+        self.assertIs(rig.c.find_scene(ROOM, "HELL"), first)
+        self.assertEqual([s.id for s in rig.c.scenes_for(KITCHEN)], ["s_00000002"])
 
     def test_find_scene(self) -> None:
-        zone_only = user_scene("s_00000003", "Party", scope=(ZONE,))
-        rig = Rig(scenes=[zone_only])
+        rig = Rig()
         self.assertEqual(rig.c.find_scene(ROOM, "relax").id, "relax")
         self.assertEqual(rig.c.find_scene(ROOM, "rELAx").id, "relax")
         self.assertEqual(rig.c.find_scene(ROOM, "dark").id, "dark")  # hidden
         with self.assertRaises(ServiceValidationError) as err:
-            rig.c.find_scene(ROOM, "Party")
-        self.assertEqual(err.exception.translation_key, "scene_not_available")
-        with self.assertRaises(ServiceValidationError) as err:
             rig.c.find_scene(ROOM, "Nope")
         self.assertEqual(err.exception.translation_key, "unknown_scene")
-        rig.activate(ZONE, "s_00000003")
-        self.assertIs(rig.c.find_scene(ROOM, "party"), zone_only)  # via
 
 
 def explicit(scene_id: str, name: str, *lights: str, **kw: Any) -> Scene:
@@ -1458,7 +1466,7 @@ class ApplyConfigTest(unittest.TestCase):
         self.assertEqual(len(rig.sent("light.l1")), 1)
 
     def test_zone_scene_running_on_a_room_survives(self) -> None:
-        party = user_scene("s_00000003", "Party", scope=(ZONE,))
+        party = user_scene("s_00000003", "Party")
         rig = Rig(scenes=[party])
         rig.activate(ZONE, "s_00000003")
         rig.c.activate(ROOM, rig.c.find_scene(ROOM, "Party"))

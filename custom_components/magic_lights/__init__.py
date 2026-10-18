@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import dataclasses
+from functools import partial
 
 from homeassistant.const import EVENT_HOMEASSISTANT_STOP, Platform
 from homeassistant.core import Event, HomeAssistant, callback
@@ -19,7 +20,8 @@ from .const import DOMAIN, SIGNAL_CONFIG, SIGNAL_EFFECTS
 from .data import MagicLightsConfigEntry, MagicLightsData
 from .effects import async_get_registry
 from .engine import create_engine
-from .lights import LightIndexImpl
+from .lights import LightIndexImpl, light_areas
+from .migrate_v3 import remap_runtime
 from .models import Config, LightsChange
 from .native import build_drivers
 from .panel import async_register_panel, async_register_static, async_unregister_panel
@@ -41,11 +43,15 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: MagicLightsConfigEntry) -> bool:
     registry = async_get_registry(hass)
-    store = ConfigStore(hass)
-    config = await store.async_load_config() or Config()
     presets = await hass.async_add_executor_job(load_presets, registry)
+    store = ConfigStore(hass, registry, presets, partial(light_areas, hass))
+    config = await store.async_load_config() or Config()
     runtime = RuntimeStoreImpl(hass)
     snapshot = await runtime.load()
+    if store.remap and snapshot is not None:
+        # Running scenes follow their merge; saved before anything can end them.
+        snapshot = remap_runtime(snapshot, store.remap)
+        await runtime.save(snapshot)
     integration = await async_get_integration(hass, DOMAIN)
 
     # Registries are loaded here; light states may not be yet.

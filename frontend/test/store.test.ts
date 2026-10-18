@@ -17,12 +17,24 @@ test("targets list rooms by name, then zones", async () => {
   assert.deepEqual(store.targets.map((t) => t.id), ["room:kitchen", "room:living", "zone:downstairs"]);
 });
 
-test("a preset resolves to its copy only inside the copy's scope", async () => {
+test("a preset resolves to its edit, the same in every room", async () => {
   const { store } = await load();
-  assert.equal(store.resolveScene("room:living", "savanna_sunset")?.id, "s_11111111");
-  assert.equal(store.resolveScene("room:kitchen", "savanna_sunset")?.id, "savanna_sunset");
-  assert.equal(store.resolveScene("room:living", "s_22222222")?.name, "Movie");
-  assert.equal(store.resolveScene("room:living", "nope"), undefined);
+  assert.equal(store.resolveScene("savanna_sunset")?.id, "s_11111111");
+  assert.equal(store.resolveScene("relax")?.id, "relax");
+  assert.equal(store.resolveScene("s_22222222")?.name, "Movie");
+  assert.equal(store.resolveScene("nope"), undefined);
+  assert.deepEqual(
+    store.scenesFor("room:kitchen").map((s) => s.id),
+    ["relax", "s_11111111"],
+  );
+});
+
+test("swatches are those of the layers that reach the target", async () => {
+  const { store } = await load();
+  assert.deepEqual(store.swatchesOf("savanna_sunset", "room:kitchen"), ["#ff5c2f"]);
+  assert.deepEqual(store.swatchesOf("savanna_sunset", "room:living"), ["#4000ff", "#ff5c2f"]);
+  // A target without the scene: the scene's own.
+  assert.deepEqual(store.swatchesOf("s_22222222", "room:kitchen"), ["#ffa757"]);
 });
 
 test("menu ids, origins and visible scenes", async () => {
@@ -35,7 +47,7 @@ test("menu ids, origins and visible scenes", async () => {
   assert.equal(isPlayable({ ...living[1], dynamic: true, swatches: ["#ff942b"] }), false, "one colour cannot move");
 });
 
-test("scenes group by category, a customised copy with its preset", async () => {
+test("scenes group by category, an edited preset with its preset", async () => {
   const { store } = await load();
   const living = store.scenesFor("room:living");
   assert.deepEqual(
@@ -54,25 +66,30 @@ test("scenes group by category, a customised copy with its preset", async () => 
   ]);
 });
 
-test("the editor opens a copy of an uncustomised preset, the stored copy otherwise", async () => {
+test("the editor opens a new edit of a preset, its one stored edit otherwise", async () => {
   const { store } = await load();
-  const fresh = store.editableScene("room:kitchen", "savanna_sunset");
-  assert.match(fresh!.id, /^s_[0-9a-f]{8}$/);
-  assert.equal(fresh!.preset, "savanna_sunset");
-  assert.deepEqual(fresh!.scope, ["room:kitchen"]);
-  assert.equal(store.editableScene("room:living", "savanna_sunset")!.id, "s_11111111");
-  assert.equal(store.editableScene("room:living", "unknown"), undefined);
-  assert.equal("builtin" in store.editableScene("room:living", "s_22222222")!, false);
+  const fresh = store.editableScene("relax")!;
+  assert.match(fresh.id, /^s_[0-9a-f]{8}$/);
+  assert.equal(fresh.preset, "relax");
+  assert.equal("scope" in fresh, false);
+  assert.equal(store.editableScene("savanna_sunset")!.id, "s_11111111");
+  assert.equal(store.editableScene("unknown"), undefined);
+  assert.equal("builtin" in store.editableScene("s_22222222")!, false);
 });
 
-test("new scenes get unique names and the blank layer", async () => {
+test("new scenes are set up where they are made, with a name free there", async () => {
   const { store } = await load();
   const blank = store.newScene("room:living");
   assert.equal(blank.name, "New scene");
-  assert.deepEqual(blank.layers, [{ lights: "all", effect: "white", params: { kelvin: 2700, brightness: 100 } }]);
+  assert.deepEqual(blank.layers, [
+    { lights: ["room:living"], effect: "white", params: { kelvin: 2700, brightness: 100 } },
+  ]);
+  assert.deepEqual(store.newScene("zone:downstairs").layers[0].lights, ["room:living", "room:kitchen"]);
   const copy = store.newScene("room:living", store.scene("s_22222222"));
   assert.equal(copy.name, "Movie copy");
-  assert.equal(store.uniqueName("Savanna sunset"), "Savanna sunset 2");
+  assert.equal(store.uniqueName("Savanna sunset", "room:kitchen"), "Savanna sunset 2", "presets count everywhere");
+  assert.equal(store.uniqueName("movie", "room:living"), "movie 2");
+  assert.equal(store.uniqueName("Movie", "room:kitchen"), "Movie", "Movie has no lights in the kitchen");
 });
 
 test("refresh hands the host a new immutable store", async () => {
@@ -82,7 +99,7 @@ test("refresh hands the host a new immutable store", async () => {
   assert.equal(latest(), next);
 });
 
-/** The kitchen runs the uncustomised Savanna sunset preset, which has a motion switch. */
+/** The kitchen runs the unedited Savanna sunset preset, which has a motion switch. */
 const recording = async (kitchen: Partial<SelectAttributes>) => {
   const calls: [string, Record<string, unknown>][] = [];
   const hass = fakeHass({ "select.kitchen_scene": attrs({ status: "scene", target_id: "room:kitchen", ...kitchen }) });

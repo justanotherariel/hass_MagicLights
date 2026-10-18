@@ -43,7 +43,7 @@ export const targetVisuals = (
   const view = store.status(hass, target.id);
   const attrs = view?.attrs;
   const sceneId = runningScene(attrs);
-  const running = sceneId ? store.resolveScene(attrs?.via ?? target.id, sceneId) : undefined;
+  const running = sceneId ? store.resolveScene(sceneId) : undefined;
   return {
     view,
     available: !!view?.available,

@@ -11,11 +11,11 @@ Scenes for whole rooms, the way the Hue app does them, for every light in Home A
 
 - **Every area with lights is a room.** It gets a scene select (`select.living_room_scene`) on its area page, with Off, the scenes you pick for the room, and Manual.
 - **Zones** combine rooms ("Downstairs" = living room + kitchen), and each zone gets a select too.
-- **48 built-in scenes**: Energize, Read, Relax, Nightlight, Savanna sunset, Tokyo, Cozy candle, Fireplace, Adaptive and more. Pick the ones a room needs, customise one, or build your own from layers.
+- **48 built-in scenes**: Energize, Read, Relax, Nightlight, Savanna sunset, Tokyo, Cozy candle, Fireplace, Adaptive and more. Pick the ones a room needs, edit one for every room, or build your own from layers and share it between rooms.
 - **Hands off when you take over.** A lamp you dim in another app or switch off at the wall becomes *manual*: the scene stops sending to it until you reclaim it.
 - **Adaptive lighting**: colour temperature (and, if you like, brightness) follows the sun, and a room can start it when a light is switched on.
 - **Dynamic colours**: palette scenes can drift through their colours, paced so your Zigbee network keeps up. Hue lights on Zigbee2MQTT run candle, fireplace and sunrise in firmware, and gradient strips show the whole palette.
-- **A panel and a dashboard card** to run, customise and preview everything. No YAML.
+- **A panel and a dashboard card** to run, edit and preview everything. No YAML.
 
 Magic Lights only ever sends what changed. It restores its scenes after a restart without sending a single command.
 
@@ -61,9 +61,9 @@ Each light belongs to at most one running scene. Starting a scene on a room take
 
 ### Scenes
 
-A scene is an ordered list of **layers**. Each layer runs one **effect** on some lights (all of them, chosen lights, or one room of a zone), and later layers win. A scene also has an overall brightness, a fade time (empty: the **Fade** in the panel settings), and what happens to lights no layer covers: they turn off, or they are left alone.
+A scene is an ordered list of **layers**. Each layer runs one **effect** on some lights (every room, whole rooms, or chosen lights), and later layers win. A scene also has an overall brightness, a fade time (empty: the **Fade** in the panel settings), and what happens to lights no layer covers: they turn off, or they are left alone.
 
-A scene runs only in rooms and zones where its layers reach at least one light. Elsewhere it is not in the menu, and starting it there is refused instead of switching the lights off. A running scene that an edit takes out of a room stops there, and the lights stay as they are.
+A scene is **shared by every room**: there is one "Evening", and editing it changes it in every room that uses it. Each room keeps its own lights in it, and a layer can hold one room only, for example a warmer white in the bedroom. A scene is **set up** in a room when its layers reach at least one of the room's lights. Elsewhere it is not in the menu, and starting it there is refused instead of switching the lights off. A running scene that an edit takes out of a room stops there, and the lights stay as they are. In the editor, a layer's lights are those of the room you opened it from; the other rooms' lights in it stay as they are.
 
 The effects are:
 
@@ -78,7 +78,7 @@ The effects are:
 
 The **built-in scenes** cover whites, 35 colour palettes, two candle scenes and three adaptive ones. A room's menu starts with your own scenes only: the built-in ones wait under **Hidden scenes** until you show them, and the room's settings switch them on and reorder the menu. Hidden scenes still run by name or id through the services and in a card's `scenes:` list.
 
-**Customise** a built-in scene in the editor and save it for this room or everywhere. The copy replaces the original under the same name and id, so automations keep working. **Reset** deletes the copy. **New scene** starts from scratch or from a copy. The editor previews the scene and can **Try** it on the room; **Stop trying** brings back what ran before.
+**Edit** a built-in scene to change it in every room. It keeps its name and id, so automations keep working, and shows as **Edited**. **Reset to preset** brings the original back everywhere; saving it unchanged does the same. **New scene** starts from scratch, set up in the room you are in, or from a copy; its name must be free among the built-in scenes and the scenes set up in each of its rooms. The editor previews the scene and can **Try** it on the room; **Stop trying** brings back what ran before.
 
 ### Manual lights and overrides
 
@@ -167,6 +167,10 @@ The card is also in the card picker, with a visual editor. It reads everything f
 ## Upgrading from version 1
 
 Version 2 is a rewrite and does not convert the v1 configuration. Remove the `magic_lights:` block from `configuration.yaml`, then set up your scenes in the panel. The v1 per-zone sensors are gone; use the selects instead.
+
+## Upgrading from version 2.0
+
+Version 2.1 makes scenes shared by every room. On the first start it turns scenes that only differed by room into one: same-named room scenes with the same brightness, fade and other-lights setting become one scene, each room keeping its lights and its own layers. Built-in scenes edited for one room only go back to the original there. A room menu that held all of 2.0's default built-in scenes loses those, keeping your own picks. Running scenes keep running. The old files stay next to the new ones as `.storage/magic_lights.v2.bak` and `.storage/magic_lights.runtime.v1.bak`; version 2.0 refuses the new file instead of overwriting it. To go back, stop Home Assistant, install 2.0, copy both `.bak` files back over `magic_lights` and `magic_lights.runtime`, and start it.
 
 ## Limitations
 

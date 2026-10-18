@@ -1,6 +1,5 @@
-// Pure logic of the scene editor: which lights a layer sets, layer summaries,
-// draft comparison, where a preset customisation is saved and the checks that gate
-// Try and Save.
+// Pure logic of the scene editor: which lights a layer sets, the part of a layer one
+// room edits, layer summaries, draft comparison and the checks that gate Try and Save.
 
 import { colorToHex } from "../../shared/color";
 import { getHiddenFields } from "../../shared/conditions";
@@ -11,10 +10,9 @@ import type {
   LayerLights,
   PreviewFrame,
   StoredScene,
-  TargetId,
   TargetInfo,
 } from "../../shared/types";
-import { humanise, newSceneId, withUnit } from "../../shared/util";
+import { humanise, plural, withUnit } from "../../shared/util";
 import { parseColor } from "./colors";
 
 /** The lights of a room target ("room:<area_id>"), as the backend's LightIndex.expand reads them. */
@@ -29,6 +27,61 @@ export const expandLights = (lights: LayerLights, target: TargetInfo, roomLights
     else picked.add(item);
   }
   return target.lights.filter((e) => picked.has(e));
+};
+
+/** The `room:` refs and lights that stand for the whole target. */
+export const wholeTarget = (target: TargetInfo, roomLights: RoomLights): string[] => {
+  const refs = target.rooms.map((area) => `room:${area}`);
+  const covered = new Set(refs.flatMap((ref) => roomLights(ref) ?? []));
+  return [...refs, ...target.lights.filter((e) => !covered.has(e))];
+};
+
+/** Whether an entry of a layer's lights belongs to the target: one of its rooms or lights. */
+const inTarget = (entry: string, target: TargetInfo): boolean =>
+  entry.startsWith("room:") ? target.rooms.includes(entry.slice(5)) : target.lights.includes(entry);
+
+/** The entries of a layer the target edits; "all" counts as the whole target. */
+export const roomSlice = (lights: LayerLights, target: TargetInfo, roomLights: RoomLights): string[] =>
+  lights === "all" ? wholeTarget(target, roomLights) : lights.filter((e) => inTarget(e, target));
+
+/** Whether the target's slice covers all of it. */
+export const isWhole = (lights: LayerLights, target: TargetInfo, roomLights: RoomLights): boolean => {
+  const slice = roomSlice(lights, target, roomLights);
+  return wholeTarget(target, roomLights).every((e) => slice.includes(e));
+};
+
+/**
+ * A layer's lights with the target's slice replaced and every other room's entries kept.
+ * `everyRoom` lists the `room:` refs that "all" stands for elsewhere.
+ */
+export const setRoomSlice = (
+  lights: LayerLights,
+  target: TargetInfo,
+  slice: readonly string[],
+  everyRoom: readonly string[],
+): string[] => {
+  const others = (lights === "all" ? everyRoom : lights).filter((e) => !inTarget(e, target));
+  return [...others, ...slice.filter((e) => !others.includes(e))];
+};
+
+/** "Ankleide only", "3 rooms", "also Kitchen": the rooms a layer reaches besides `here`. */
+export const layerCaption = (
+  lights: LayerLights,
+  here: TargetInfo,
+  rooms: readonly TargetInfo[],
+  roomLights: RoomLights,
+): string | undefined => {
+  if (lights === "all") return undefined;
+  const elsewhere = rooms.filter(
+    (room) =>
+      room.id !== here.id &&
+      !here.rooms.includes(room.area_id ?? "") &&
+      expandLights(lights, room, roomLights).length > 0,
+  );
+  if (!elsewhere.length) return undefined;
+  const reach = elsewhere.length === 1 ? elsewhere[0].name : plural(elsewhere.length, "room");
+  if (expandLights(lights, here, roomLights).length) return `also ${reach}`;
+  return elsewhere.length === 1 ? `${reach} only` : reach;
 };
 
 /** Light -> index of the layer that sets it; later layers win. */
@@ -143,38 +196,6 @@ export const stableJson = (value: unknown): string =>
       ? Object.fromEntries(Object.entries(v).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0)))
       : v,
   );
-
-/**
- * The id a preset customisation is saved under when its scope changes: narrowing the
- * stored copy saves a new one, so the targets it no longer covers keep the stored copy.
- */
-export const copyId = (
-  stored: StoredScene | undefined,
-  scene: StoredScene,
-  scope: readonly TargetId[],
-): string => {
-  if (!stored || !scene.preset) return scene.id;
-  const covers =
-    scope.length === 0 || (stored.scope.length > 0 && stored.scope.every((t) => scope.includes(t)));
-  if (covers) return stored.id;
-  return scene.id === stored.id ? newSceneId() : scene.id;
-};
-
-export interface CopyOverlap {
-  copy: StoredScene;
-  /** Its scope without the saved copy's targets; undefined when nothing is left. */
-  rest?: TargetId[];
-}
-
-/** Other copies of the same preset that a saved copy overlaps: both everywhere, or sharing a target. */
-export const copyOverlaps = (scene: StoredScene, scenes: readonly StoredScene[]): CopyOverlap[] =>
-  scenes.flatMap((copy) => {
-    if (!scene.preset || copy.preset !== scene.preset || copy.id === scene.id) return [];
-    if (!scene.scope.length) return copy.scope.length ? [] : [{ copy }];
-    const rest = copy.scope.filter((t) => !scene.scope.includes(t));
-    if (rest.length === copy.scope.length) return [];
-    return [{ copy, rest: rest.length ? rest : undefined }];
-  });
 
 export interface Problem {
   /** Layer index, or undefined for the scene itself. */

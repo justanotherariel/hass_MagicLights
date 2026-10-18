@@ -1,4 +1,4 @@
-// A small config (two rooms, one zone, presets, a customised copy, a user scene) and a fake hass.
+// A small config (two rooms, one zone, presets, an edited preset, a user scene) and a fake hass.
 
 import type { ConfigDto, HomeAssistant, SceneInfo, SelectAttributes, TargetInfo } from "../src/shared/types";
 
@@ -11,23 +11,32 @@ const options = {
   detect_changes: true,
 };
 
-const target = (id: TargetInfo["id"], name: string, lights: string[], scenes: string[]): TargetInfo => ({
+const target = (
+  id: TargetInfo["id"],
+  name: string,
+  lights: string[],
+  scenes: string[],
+  swatches: TargetInfo["swatches"],
+): TargetInfo => ({
   id,
   kind: id.startsWith("room:") ? "room" : "zone",
   name,
   icon: null,
   area_id: id.startsWith("room:") ? id.slice(5) : null,
-  rooms: id.startsWith("room:") ? [] : ["living", "kitchen"],
+  rooms: id.startsWith("room:") ? [id.slice(5)] : ["living", "kitchen"],
   lights,
   options,
   scenes,
   hidden: [],
+  swatches,
   select_entity_id: `select.${name.toLowerCase().replace(/ /g, "_")}_scene`,
 });
 
+// The edit of Savanna sunset has a second layer for the living room only.
+const SUNSET = ["#4000ff", "#ff5c2f"];
+
 const scene = (s: Partial<SceneInfo> & Pick<SceneInfo, "id" | "name">): SceneInfo => ({
   icon: null,
-  scope: [],
   preset: null,
   layers: [{ lights: "all", effect: "white", params: { kelvin: 2700, brightness: 100 } }],
   others: "off",
@@ -37,7 +46,7 @@ const scene = (s: Partial<SceneInfo> & Pick<SceneInfo, "id" | "name">): SceneInf
   category: "custom",
   swatches: ["#ffa757"],
   dynamic: false,
-  customised_in: [],
+  override: null,
   fits: ["room:kitchen", "room:living", "zone:downstairs"],
   ...s,
 });
@@ -45,9 +54,20 @@ const scene = (s: Partial<SceneInfo> & Pick<SceneInfo, "id" | "name">): SceneInf
 export const CONFIG: ConfigDto = {
   zones: { downstairs: { id: "downstairs", name: "Downstairs", icon: null, rooms: ["living", "kitchen"], lights: [] } },
   targets: [
-    target("zone:downstairs", "Downstairs", ["light.lamp", "light.ceiling"], ["relax", "savanna_sunset"]),
-    target("room:living", "Living room", ["light.lamp"], ["relax", "savanna_sunset", "s_22222222"]),
-    target("room:kitchen", "Kitchen", ["light.ceiling"], ["relax", "savanna_sunset"]),
+    target("zone:downstairs", "Downstairs", ["light.lamp", "light.ceiling"], ["relax", "savanna_sunset"], {
+      relax: ["#ff942b"],
+      savanna_sunset: SUNSET,
+      s_22222222: ["#ffa757"],
+    }),
+    target("room:living", "Living room", ["light.lamp"], ["relax", "savanna_sunset", "s_22222222"], {
+      relax: ["#ff942b"],
+      savanna_sunset: SUNSET,
+      s_22222222: ["#ffa757"],
+    }),
+    target("room:kitchen", "Kitchen", ["light.ceiling"], ["relax", "savanna_sunset"], {
+      relax: ["#ff942b"],
+      savanna_sunset: ["#ff5c2f"],
+    }),
   ],
   scenes: [
     scene({ id: "relax", name: "Relax", builtin: true, category: "white", swatches: ["#ff942b"] }),
@@ -59,18 +79,27 @@ export const CONFIG: ConfigDto = {
       dynamic: true,
       swatches: ["#ff5c2f", "#ffbd56"],
       layers: [{ lights: "all", effect: "palette", params: { motion: "static" } }],
-      customised_in: ["room:living"],
+      override: "s_11111111",
+      fits: [],
     }),
     scene({
       id: "s_11111111",
       name: "Savanna sunset",
       preset: "savanna_sunset",
-      scope: ["room:living"],
       category: "custom",
-      swatches: ["#4000ff", "#ff5c2f"],
-      layers: [{ lights: "all", effect: "palette", params: { motion: "dynamic" } }],
+      dynamic: true,
+      swatches: SUNSET,
+      layers: [
+        { lights: "all", effect: "palette", params: { motion: "dynamic" } },
+        { lights: ["room:living"], effect: "palette", params: { motion: "dynamic" } },
+      ],
     }),
-    scene({ id: "s_22222222", name: "Movie", scope: ["room:living"] }),
+    scene({
+      id: "s_22222222",
+      name: "Movie",
+      layers: [{ lights: ["room:living"], effect: "white", params: { kelvin: 2700, brightness: 100 } }],
+      fits: ["room:living", "zone:downstairs"],
+    }),
   ],
   lights: [],
   effects: [
@@ -106,7 +135,7 @@ export const CONFIG: ConfigDto = {
     buses: {},
     light_buses: {},
   },
-  version: "2.0.0",
+  version: "2.1.0",
 };
 
 export const attrs = (a: Partial<SelectAttributes>): SelectAttributes => ({

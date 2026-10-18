@@ -69,7 +69,6 @@ class OverrideTest(HarnessCase):
                 "scene": {
                     "id": "s_00000001",
                     "name": "Ceiling only",
-                    "scope": ["room:living_room"],
                     "layers": [
                         {
                             "lights": ["light.living_ceiling"],

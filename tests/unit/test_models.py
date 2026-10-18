@@ -262,7 +262,6 @@ class RoundTripTest(unittest.TestCase):
             "Movie",
             "mdi:movie",
             layers,
-            scope=("room:living",),
             preset="relax",
             others="keep",
             brightness=70,
@@ -313,7 +312,6 @@ class RoundTripTest(unittest.TestCase):
                 "id",
                 "name",
                 "icon",
-                "scope",
                 "preset",
                 "layers",
                 "others",
@@ -401,16 +399,12 @@ class ValidateTest(unittest.TestCase):
                     "down": {"id": "down", "name": "Downstairs", "rooms": ["living"]}
                 },
                 "targets": {"room:living": {"detect_changes": False}},
-                "scenes": {
-                    "s_00000001": scene_dict(
-                        "s_00000001", " Movie ", scope=["room:living"]
-                    )
-                },
+                "scenes": {"s_00000001": scene_dict("s_00000001", " Movie ")},
                 "settings": {"buses": {"zigbee:1": {"rate": 4}}},
             },
             self.registry,
             presets=PRESETS,
-            targets={"room:living", "zone:down"},
+            fits=lambda scene: {"room:living", "zone:down"},
         )
         scene = config.scenes["s_00000001"]
         self.assertEqual(scene.name, "Movie")
@@ -476,40 +470,58 @@ class ValidateTest(unittest.TestCase):
                 )
 
     def test_references(self) -> None:
-        scoped = {
-            "scenes": {"s_00000001": scene_dict("s_00000001", "A", scope=["room:gone"])}
+        unknown = {
+            "scenes": {"s_00000001": scene_dict("s_00000001", "A", preset="nope")}
         }
-        self.assertCode("unknown_target", scoped, targets={"room:living"})
-        validate(scoped, self.registry)  # targets unknown: not checked
-        copy = {"scenes": {"s_00000001": scene_dict("s_00000001", "A", preset="nope")}}
-        self.assertCode("unknown_preset", copy, presets=PRESETS)
+        self.assertCode("unknown_preset", unknown, presets=PRESETS)
+        validate(unknown, self.registry)  # presets unknown: not checked
+        renamed = {
+            "scenes": {
+                "s_00000001": scene_dict("s_00000001", "My relax", preset="relax")
+            }
+        }
+        err = self.assertCode("preset_name", renamed, presets=PRESETS)
+        self.assertEqual(err.path, ["scenes", "s_00000001", "name"])
+        self.assertIn("'Relax'", err.msg)
+        # A panel that still sends scopes fails loudly.
+        scoped = scene_dict("s_00000001", "A", scope=["room:living"])
+        self.assertCode("invalid", {"scenes": {"s_00000001": scoped}})
 
     def test_duplicate_names(self) -> None:
         def scenes(*items):
             return {"scenes": {s["id"]: s for s in items}}
 
-        a = scene_dict("s_0000000a", "Movie")
-        b_living = scene_dict("s_0000000b", "movie", scope=["room:living"])
-        c_kitchen = scene_dict("s_0000000c", "MOVIE", scope=["room:kitchen"])
-        self.assertCode("duplicate_name", scenes(a, b_living))
-        validate(scenes(b_living, c_kitchen), self.registry)
-        err = self.assertCode(
-            "duplicate_name", scenes(scene_dict("s_0000000d", "relax")), presets=PRESETS
-        )
-        self.assertEqual(err.path, ["scenes", "s_0000000d", "name"])
-        # A copy replaces its preset inside its scope only.
-        copy = scene_dict("s_0000000e", "Relax", preset="relax", scope=["room:living"])
-        validate(scenes(copy), self.registry, presets=PRESETS)
-        renamed = scene_dict(
-            "s_0000000f", "My relax", preset="relax", scope=["room:living"]
-        )
-        user = scene_dict("s_00000010", "Relax", scope=["room:living"])
-        validate(scenes(renamed, user), self.registry, presets=PRESETS)
-        self.assertCode(
-            "duplicate_name", scenes(renamed, {**user, "scope": []}), presets=PRESETS
-        )
-        clash = scene_dict("s_00000011", "Read", preset="relax", scope=["room:living"])
-        self.assertCode("duplicate_name", scenes(clash), presets=PRESETS)
+        where = {
+            "s_0000000a": {"room:living"},
+            "s_0000000b": {"room:living", "room:kitchen"},
+            "s_0000000c": {"room:kitchen"},
+        }
+
+        def fits(scene: Scene) -> set[str]:
+            return where.get(scene.id, set())
+
+        living = scene_dict("s_0000000a", "Movie")
+        both = scene_dict("s_0000000b", "movie")
+        kitchen = scene_dict("s_0000000c", "MOVIE")
+        # One name per target, among the scenes with lights there.
+        validate(scenes(living, kitchen), self.registry, fits=fits)
+        err = self.assertCode("duplicate_name", scenes(living, both), fits=fits)
+        self.assertEqual(err.path, ["scenes", "s_0000000b", "name"])
+        self.assertIn("room:living", err.msg)
+        validate(scenes(living, both), self.registry)  # where unknown: presets only
+        # A preset's name is taken everywhere, whatever the lights.
+        for kw in ({}, {"fits": fits}):
+            with self.subTest(**kw):
+                err = self.assertCode(
+                    "duplicate_name",
+                    scenes(scene_dict("s_0000000d", "relax")),
+                    presets=PRESETS,
+                    **kw,
+                )
+                self.assertEqual(err.path, ["scenes", "s_0000000d", "name"])
+        # An edited preset goes by its preset's name.
+        edited = scene_dict("s_0000000e", "Relax", preset="relax")
+        validate(scenes(edited, living), self.registry, presets=PRESETS, fits=fits)
 
     def test_validate_scene(self) -> None:
         existing = Config.from_dict(
@@ -523,101 +535,64 @@ class ValidateTest(unittest.TestCase):
                 }
             }
         )
+
+        def everywhere(scene: Scene) -> set[str]:
+            return {"room:living"}
+
+        # Only the saved scene's own clashes count.
         new = validate_scene(
-            scene_dict("s_0000000c", "Dinner"), self.registry, existing, presets=PRESETS
+            scene_dict("s_0000000c", "Dinner"),
+            self.registry,
+            existing,
+            presets=PRESETS,
+            fits=everywhere,
         )
         self.assertEqual(new.layers[0].params, {"kelvin": 2700, "brightness": 100})
         single = Config.from_dict(
             {"scenes": {"s_0000000a": scene_dict("s_0000000a", "Movie")}}
         )
         edit = validate_scene(
-            scene_dict("s_0000000a", "Movie", brightness=40), self.registry, single
+            scene_dict("s_0000000a", "Movie", brightness=40),
+            self.registry,
+            single,
+            fits=everywhere,
         )
         self.assertEqual(edit.brightness, 40)
         with self.assertRaises(ConfigError) as ctx:
-            validate_scene(scene_dict("s_0000000c", "movie"), self.registry, existing)
+            validate_scene(
+                scene_dict("s_0000000c", "movie"),
+                self.registry,
+                existing,
+                fits=everywhere,
+            )
         self.assertEqual(
             (ctx.exception.code, ctx.exception.path),
             ("duplicate_name", ["scenes", "s_0000000c", "name"]),
         )
-        with self.assertRaises(ConfigError) as ctx:
-            validate_scene(
-                scene_dict("s_0000000c", "x", scope=["zone:x"]),
-                self.registry,
-                existing,
-                targets=set(),
-            )
-        self.assertEqual(ctx.exception.code, "unknown_target")
-
-    def test_scopes_of_a_deleted_area(self) -> None:
-        orphan = scene_dict("s_0000000a", "Evening", scope=["room:gone"])
-        both = scene_dict("s_0000000b", "Movie", scope=["room:gone", "room:hall"])
-        stored = Config.from_dict({"scenes": {s["id"]: s for s in (orphan, both)}})
-        live = {"room:hall", "room:bed"}
-        # A scene nobody can reach any more does not take its name.
+        # Apart, the same name is fine.
         validate_scene(
-            scene_dict("s_0000000c", "Evening"), self.registry, stored, targets=live
+            scene_dict("s_0000000c", "movie"),
+            self.registry,
+            existing,
+            fits=lambda scene: {"room:kitchen"} if scene.id == "s_0000000c" else set(),
         )
-        # An edit keeps the dead entry; a new one may not add it.
-        edit = validate_scene(
-            {**both, "brightness": 40}, self.registry, stored, targets=live
-        )
-        self.assertEqual(edit.scope, ("room:gone", "room:hall"))
-        with self.assertRaises(ConfigError) as ctx:
-            validate_scene(
-                {**both, "scope": ["room:gone", "room:bed", "room:old"]},
-                self.registry,
-                stored,
-                targets=live,
-            )
-        self.assertEqual(
-            (ctx.exception.code, ctx.exception.path),
-            ("unknown_target", ["scenes", "s_0000000b", "scope", 2]),
-        )
-        # Where the scene can still be reached, its name still counts.
-        with self.assertRaises(ConfigError) as ctx:
-            validate_scene(
-                scene_dict("s_0000000c", "Movie", scope=["room:hall"]),
-                self.registry,
-                stored,
-                targets=live,
-            )
-        self.assertEqual(ctx.exception.code, "duplicate_name")
 
-    def test_one_copy_per_preset_and_target(self) -> None:
-        def config(*items) -> Config:
-            return Config.from_dict({"scenes": {s["id"]: s for s in items}})
-
+    def test_one_edit_per_preset(self) -> None:
         everywhere = scene_dict("s_0000000a", "Relax", preset="relax")
-        living = scene_dict(
-            "s_0000000b", "Relax", preset="relax", scope=["room:living", "room:hall"]
+        stored = Config.from_dict({"scenes": {"s_0000000a": everywhere}})
+        second = scene_dict("s_0000000c", "Relax", preset="relax")
+        with self.assertRaises(ConfigError) as ctx:
+            validate_scene(second, self.registry, stored, presets=PRESETS)
+        self.assertEqual(ctx.exception.code, "duplicate_copy")
+        self.assertEqual(ctx.exception.path, ["scenes", "s_0000000c", "preset"])
+        self.assertIn("s_0000000a", ctx.exception.msg)
+        self.assertCode(
+            "duplicate_copy",
+            {"scenes": {"s_0000000a": everywhere, "s_0000000c": second}},
         )
-        stored = config(everywhere, living)
-        cases = {
-            "second everywhere copy": (
-                scene_dict("s_0000000c", "Relax", preset="relax"),
-                "everywhere",
-            ),
-            "room copy widened to everywhere": (
-                {**living, "scope": []},
-                "everywhere",
-            ),
-            "room already has a copy": (
-                scene_dict("s_0000000c", "Relax", preset="relax", scope=["room:hall"]),
-                "in room:hall",
-            ),
-        }
-        for name, (data, where) in cases.items():
-            with self.subTest(name), self.assertRaises(ConfigError) as ctx:
-                validate_scene(data, self.registry, stored, presets=PRESETS)
-            self.assertEqual(ctx.exception.code, "duplicate_copy")
-            self.assertEqual(ctx.exception.path, ["scenes", data["id"], "scope"])
-            self.assertIn(where, ctx.exception.msg)
-        # Edits in place, other rooms and other presets are fine.
+        # Edits in place, other presets and user scenes are fine.
         for data in (
             {**everywhere, "brightness": 50},
-            {**living, "scope": ["room:living"]},
-            scene_dict("s_0000000c", "Relax", preset="relax", scope=["room:bed"]),
             scene_dict("s_0000000c", "Read", preset="read"),
             scene_dict("s_0000000c", "Mine"),
         ):
@@ -652,25 +627,16 @@ class ConfigErrorTest(unittest.TestCase):
 
 
 class AvailableScenesTest(unittest.TestCase):
-    def test_precedence_and_order(self) -> None:
-        everywhere = Scene.from_dict(
-            scene_dict("s_0000000a", "Relax all", preset="relax")
-        )
-        living = Scene.from_dict(
-            scene_dict(
-                "s_0000000b", "Relax here", preset="relax", scope=["room:living"]
-            )
-        )
-        user = Scene.from_dict(scene_dict("s_0000000c", "Mine", scope=["room:kitchen"]))
+    def test_edits_replace_presets_and_order(self) -> None:
+        edited = Scene.from_dict(scene_dict("s_0000000a", "Relax", preset="relax"))
+        user = Scene.from_dict(scene_dict("s_0000000c", "Mine"))
         orphan = Scene.from_dict(scene_dict("s_0000000d", "Old copy", preset="gone"))
-        scenes = {s.id: s for s in (everywhere, living, user, orphan)}
-        here = available_scenes("room:living", scenes, PRESETS)
-        self.assertEqual(list(here), ["relax", "read", "s_0000000d"])
-        self.assertIs(here["relax"], living)
-        kitchen = available_scenes("room:kitchen", scenes, PRESETS)
-        self.assertEqual(list(kitchen), ["relax", "read", "s_0000000c", "s_0000000d"])
-        self.assertIs(kitchen["relax"], everywhere)
-        self.assertIs(available_scenes("room:x", {}, PRESETS)["read"], PRESETS["read"])
+        scenes = {s.id: s for s in (user, edited, orphan)}
+        every = available_scenes(scenes, PRESETS)
+        self.assertEqual(list(every), ["relax", "read", "s_0000000c", "s_0000000d"])
+        self.assertIs(every["relax"], edited)
+        self.assertIs(every["s_0000000d"], orphan)
+        self.assertIs(available_scenes({}, PRESETS)["read"], PRESETS["read"])
 
 
 class ContextTest(unittest.TestCase):

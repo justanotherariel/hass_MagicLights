@@ -95,7 +95,7 @@ class MlTargetSettings extends LitElement {
 
   private _renderMenu(target: TargetInfo) {
     const order = this._order ?? target.scenes;
-    const visible = order.flatMap((id) => this.store.resolveScene(target.id, id) ?? []);
+    const visible = order.flatMap((id) => this.store.resolveScene(id) ?? []);
     const hidden = this.store.scenesFor(target.id, "hidden");
     return html`<h2 class="section-title">Scene menu</h2>
       <ha-card>

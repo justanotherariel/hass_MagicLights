@@ -1,25 +1,28 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { colorToHex, colorToRgb } from "../src/shared/color";
-import type { EffectInfo, PaletteInfo, PreviewFrame, StoredScene, TargetInfo } from "../src/shared/types";
+import type { EffectInfo, HomeAssistant, PaletteInfo, PreviewFrame, StoredScene, TargetInfo } from "../src/shared/types";
 import { MlStore, toStored } from "../src/panel/store";
 import { hsToRgb, parseColor, rgbToHs, swatchColors, xyToKelvin } from "../src/panel/editor/colors";
 import {
-  copyId,
-  copyOverlaps,
   expandLights,
   frameAt,
+  isWhole,
   labelledSelector,
+  layerCaption,
   layerOwners,
   layerSummary,
   layerSwatches,
   nextParams,
+  roomSlice,
   sceneProblems,
+  setRoomSlice,
   stableJson,
+  wholeTarget,
   withDefaults,
 } from "../src/panel/editor/editor-model";
 import { dropWorkingCopy, openWorkingCopy } from "../src/panel/editor/working-copy";
-import { fakeHass } from "./fixtures";
+import { CONFIG, fakeHass } from "./fixtures";
 
 // Schemas as effects/schema.py serialises them (HA 2026.8).
 const pct = { number: { min: 1, max: 100, step: 1, unit_of_measurement: "%", mode: "slider" } };
@@ -133,6 +136,7 @@ const ZONE: TargetInfo = {
   },
   scenes: [],
   hidden: [],
+  swatches: {},
   select_entity_id: "select.downstairs_scene",
 };
 // The kitchen room also holds an area-less light the zone does not include.
@@ -234,7 +238,6 @@ const scene = (s: Partial<StoredScene>): StoredScene => ({
   id: "s_00000001",
   name: "Movie",
   icon: null,
-  scope: [],
   preset: null,
   layers: [{ lights: "all", effect: "white", params: {} }],
   others: "off",
@@ -316,40 +319,68 @@ test("swatch colours are unique and sorted by hue", () => {
   assert.equal(swatchColors([palette("c", many)], 16).length, 16);
 });
 
-test("narrowing a stored customisation saves a new copy, widening keeps its id", () => {
-  const everywhere = scene({ id: "s_0000000e", preset: "relax", scope: [] });
-  const fresh = copyId(everywhere, everywhere, ["room:bedroom"]);
-  assert.match(fresh, /^s_[0-9a-f]{8}$/);
-  assert.notEqual(fresh, everywhere.id);
-  const narrowed = { ...everywhere, id: fresh, scope: ["room:bedroom" as const] };
-  assert.equal(copyId(everywhere, narrowed, ["room:bedroom"]), fresh, "toggling keeps the new id");
-  assert.equal(copyId(everywhere, narrowed, []), everywhere.id);
-  const room = scene({ id: "s_0000000b", preset: "relax", scope: ["room:bedroom"] });
-  assert.equal(copyId(room, room, []), room.id);
-  const two = scene({ id: "s_0000000c", preset: "relax", scope: ["room:bedroom", "room:office"] });
-  assert.notEqual(copyId(two, two, ["room:bedroom"]), two.id);
-  const unsaved = scene({ id: "s_0000000f", preset: "relax", scope: ["room:bedroom"] });
-  assert.equal(copyId(undefined, unsaved, []), unsaved.id);
-  const own = scene({ scope: ["room:bedroom"] });
-  assert.equal(copyId(own, own, []), own.id, "a user scene's scope is where it is available");
+const room = (area: string, lights: string[], name = area): TargetInfo => ({
+  ...ZONE,
+  id: `room:${area}`,
+  kind: "room",
+  name,
+  area_id: area,
+  rooms: [area],
+  lights,
+});
+const LIVING = room("living", ROOMS["room:living"], "Living room");
+const KITCHEN = room("kitchen", ROOMS["room:kitchen"], "Kitchen");
+const CLOSET = room("closet", ["light.closet"], "Closet");
+const HOUSE = [LIVING, KITCHEN, CLOSET];
+const houseLights = (id: string) => HOUSE.find((t) => t.id === id)?.lights;
+const EVERY_ROOM = HOUSE.map((t) => t.id);
+
+test("a room edits only its own part of a layer", () => {
+  // One layer shared by three rooms: the living room by its lights, the others whole.
+  const shared = ["light.ceiling", "light.lamp", "room:kitchen", "room:closet"];
+  assert.deepEqual(roomSlice(shared, LIVING, houseLights), ["light.ceiling", "light.lamp"]);
+  assert.deepEqual(roomSlice(shared, KITCHEN, houseLights), ["room:kitchen"]);
+  assert.deepEqual(roomSlice("all", LIVING, houseLights), ["room:living"]);
+  assert.equal(isWhole(shared, KITCHEN, houseLights), true);
+  assert.equal(isWhole(shared, LIVING, houseLights), false, "by its lights, not as a whole");
+  assert.equal(isWhole("all", CLOSET, houseLights), true);
+
+  // "All lights" on: the room as a whole instead of its lights.
+  assert.deepEqual(setRoomSlice(shared, LIVING, wholeTarget(LIVING, houseLights), EVERY_ROOM), [
+    "room:kitchen",
+    "room:closet",
+    "room:living",
+  ]);
+  // Off: only this room's entries go.
+  assert.deepEqual(setRoomSlice(shared, KITCHEN, [], EVERY_ROOM), ["light.ceiling", "light.lamp", "room:closet"]);
+  // The picker swaps this room's lights and keeps the other rooms'.
+  assert.deepEqual(setRoomSlice(shared, LIVING, ["light.lamp"], EVERY_ROOM), [
+    "room:kitchen",
+    "room:closet",
+    "light.lamp",
+  ]);
+  // From "all", the other rooms keep their place by name.
+  assert.deepEqual(setRoomSlice("all", CLOSET, [], EVERY_ROOM), ["room:living", "room:kitchen"]);
+  assert.deepEqual(setRoomSlice(["room:closet"], LIVING, [], EVERY_ROOM), ["room:closet"]);
 });
 
-test("a saved customisation makes room in the copies it overlaps", () => {
-  const everywhere = scene({ id: "s_0000000e", preset: "relax", scope: [] });
-  const two = scene({ id: "s_0000000c", preset: "relax", scope: ["room:bedroom", "room:office"] });
-  const kitchen = scene({ id: "s_0000000d", preset: "relax", scope: ["room:kitchen"] });
-  const other = scene({ id: "s_00000010", preset: "focus", scope: [] });
-  const stored = [everywhere, two, kitchen, other, scene({})];
-  const widened = { ...kitchen, scope: [] };
-  assert.deepEqual(copyOverlaps(widened, stored), [{ copy: everywhere }]);
-  const bedroom = scene({ id: "s_00000011", preset: "relax", scope: ["room:bedroom"] });
-  assert.deepEqual(copyOverlaps(bedroom, stored), [{ copy: two, rest: ["room:office"] }]);
-  assert.deepEqual(copyOverlaps({ ...bedroom, scope: ["room:bedroom", "room:office"] }, stored), [
-    { copy: two, rest: undefined },
-  ]);
-  assert.deepEqual(copyOverlaps(kitchen, stored), [], "a room copy and an everywhere copy coexist");
-  assert.deepEqual(copyOverlaps(everywhere, stored), []);
-  assert.deepEqual(copyOverlaps(scene({ scope: [] }), stored), [], "user scenes are no copies");
+test("a zone's part of a layer is its rooms and its own lights", () => {
+  const zone = { ...ZONE, lights: [...ZONE.lights, "light.porch"] };
+  assert.deepEqual(wholeTarget(zone, roomLights), ["room:living", "room:kitchen", "light.porch"]);
+  const layer = ["room:kitchen", "room:closet", "light.lamp"];
+  assert.deepEqual(roomSlice(layer, zone, roomLights), ["room:kitchen", "light.lamp"]);
+  assert.deepEqual(setRoomSlice(layer, zone, ["room:living"], EVERY_ROOM), ["room:closet", "room:living"]);
+});
+
+test("layer captions name the other rooms a layer reaches", () => {
+  const closetOnly = ["room:closet"];
+  assert.equal(layerCaption(closetOnly, LIVING, HOUSE, houseLights), "Closet only");
+  assert.equal(layerCaption(closetOnly, CLOSET, HOUSE, houseLights), undefined);
+  const spread = ["light.lamp", "room:kitchen", "room:closet"];
+  assert.equal(layerCaption(spread, CLOSET, HOUSE, houseLights), "also 2 rooms");
+  assert.equal(layerCaption(["room:kitchen", "room:closet"], LIVING, HOUSE, houseLights), "2 rooms");
+  assert.equal(layerCaption("all", LIVING, HOUSE, houseLights), undefined);
+  assert.equal(layerCaption(["room:kitchen"], ZONE, HOUSE, houseLights), undefined, "a zone's own rooms");
 });
 
 test("a reload keeps the edits of a scene that was never saved unsaved", async () => {
@@ -364,34 +395,94 @@ test("a reload keeps the edits of a scene that was never saved unsaved", async (
 
   // The gallery's New scene writes the draft, then the editor opens it.
   const created = store.newScene("room:living");
-  store.setDraft("room:living", created.id, created);
-  assert.deepEqual(openWorkingCopy(store, "room:living", created.id)?.baseline, created);
-  store.setDraft("room:living", created.id, { ...created, name: "Edited" });
-  const reloaded = openWorkingCopy(store, "room:living", created.id);
+  store.setDraft(created.id, created);
+  assert.deepEqual(openWorkingCopy(store, created.id)?.baseline, created);
+  store.setDraft(created.id, { ...created, name: "Edited" });
+  const reloaded = openWorkingCopy(store, created.id);
   assert.equal(reloaded?.restored, true);
+  assert.equal(reloaded?.stale, undefined);
   assert.equal(reloaded?.scene.name, "Edited");
   assert.deepEqual(reloaded?.baseline, created);
-  dropWorkingCopy(store, "room:living", created.id);
+  dropWorkingCopy(store, created.id);
   assert.equal(items.size, 0);
 
   // A preset copy keeps its generated id and its baseline.
-  const copy = openWorkingCopy(store, "room:kitchen", "relax")!;
-  store.setDraft("room:kitchen", "relax", { ...copy.scene, brightness: 40 });
-  const again = openWorkingCopy(store, "room:kitchen", "relax");
+  const copy = openWorkingCopy(store, "relax")!;
+  store.setDraft("relax", { ...copy.scene, brightness: 40 });
+  const again = openWorkingCopy(store, "relax");
   assert.equal(again?.scene.id, copy.scene.id);
   assert.deepEqual(again?.baseline, copy.scene);
 
   // Without its draft, an old baseline is not used.
-  store.setDraft("room:kitchen", "relax", undefined);
-  const next = openWorkingCopy(store, "room:kitchen", "relax")!;
+  store.setDraft("relax", undefined);
+  const next = openWorkingCopy(store, "relax")!;
   assert.equal(next.restored, false);
   assert.deepEqual(next.baseline, next.scene);
 
-  // A stored scene is measured against its stored copy, also after its id changed.
-  const sunset = openWorkingCopy(store, "room:living", "savanna_sunset")!;
-  store.setDraft("room:living", "savanna_sunset", { ...sunset.scene, id: "s_12345678", scope: [] });
-  assert.deepEqual(
-    openWorkingCopy(store, "room:living", "savanna_sunset")?.baseline,
-    toStored(store.scene("s_11111111")!),
-  );
+  // An edited preset opens its stored edit and is measured against it.
+  const sunset = openWorkingCopy(store, "savanna_sunset")!;
+  assert.equal(sunset.scene.id, "s_11111111");
+  store.setDraft("savanna_sunset", { ...sunset.scene, brightness: 40 });
+  const edited = openWorkingCopy(store, "savanna_sunset");
+  assert.deepEqual(edited?.baseline, toStored(store.scene("s_11111111")!));
+  assert.equal(edited?.stale, undefined);
+});
+
+test("a draft of a scene removed elsewhere says saving brings it back", async () => {
+  const items = new Map<string, string>();
+  const sessionStorage = {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+  };
+  Object.assign(globalThis, { window: { sessionStorage } });
+  const store = await MlStore.load({ hass: fakeHass(), storeChanged: () => undefined });
+  for (const sceneId of ["savanna_sunset", "s_22222222"]) {
+    const copy = openWorkingCopy(store, sceneId)!;
+    store.setDraft(sceneId, { ...copy.scene, brightness: 40 });
+  }
+  // A new preset edit was never stored, so nothing was removed.
+  const fresh = openWorkingCopy(store, "relax")!;
+  store.setDraft("relax", { ...fresh.scene, brightness: 40 });
+
+  // Another tab resets Savanna sunset and deletes Movie.
+  const config = structuredClone(CONFIG);
+  config.scenes = config.scenes
+    .filter((s) => !["s_11111111", "s_22222222"].includes(s.id))
+    .map((s) => (s.id === "savanna_sunset" ? { ...s, override: null } : s));
+  const hass = { ...fakeHass(), callWS: async <T>() => structuredClone(config) as T } as HomeAssistant;
+  const later = await MlStore.load({ hass, storeChanged: () => undefined });
+
+  const sunset = openWorkingCopy(later, "savanna_sunset")!;
+  assert.equal(sunset.scene.id, "s_11111111");
+  assert.equal(sunset.stale, "removed");
+  assert.equal(openWorkingCopy(later, "s_22222222")?.stale, "removed");
+  assert.equal(openWorkingCopy(later, "relax")?.stale, undefined);
+  dropWorkingCopy(later, "savanna_sunset");
+  assert.equal(items.has("magic_lights.draft.savanna_sunset.stored"), false);
+});
+
+test("one scene has one draft, whichever room opens it", async () => {
+  const items = new Map<string, string>();
+  const sessionStorage = {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+  };
+  Object.assign(globalThis, { window: { sessionStorage } });
+  const store = await MlStore.load({ hass: fakeHass(), storeChanged: () => undefined });
+
+  const relax = openWorkingCopy(store, "relax")!;
+  store.setDraft("relax", { ...relax.scene, brightness: 40 });
+  assert.deepEqual([...items.keys()].sort(), ["magic_lights.draft.relax", "magic_lights.draft.relax.base"]);
+
+  // A preset draft begun before the preset was edited elsewhere saves over that edit, and says so.
+  const preset = { ...toStored(store.scene("savanna_sunset")!), id: "s_99999999", preset: "savanna_sunset" };
+  store.setDraft("savanna_sunset", { ...preset, brightness: 40 });
+  store.setDraft("savanna_sunset.base", preset);
+  const late = openWorkingCopy(store, "savanna_sunset")!;
+  assert.equal(late.scene.id, "s_11111111");
+  assert.equal(late.scene.brightness, 40);
+  assert.equal(late.stale, "saved");
+  assert.deepEqual(late.baseline, toStored(store.scene("s_11111111")!));
 });

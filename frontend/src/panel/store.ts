@@ -24,6 +24,7 @@ import type {
   Zone,
 } from "../shared/types";
 import { newSceneId } from "../shared/util";
+import { wholeTarget } from "./editor/editor-model";
 
 export interface StoreHost {
   readonly hass: HomeAssistant;
@@ -81,7 +82,6 @@ export const toStored = (scene: StoredScene): StoredScene => ({
   id: scene.id,
   name: scene.name,
   icon: scene.icon,
-  scope: [...scene.scope],
   preset: scene.preset,
   layers: structuredClone(scene.layers),
   others: scene.others,
@@ -89,7 +89,7 @@ export const toStored = (scene: StoredScene): StoredScene => ({
   transition: scene.transition,
 });
 
-/** The id a scene has in menus, services and runtime: a customised copy goes by its preset's id. */
+/** The id a scene has in menus, services and runtime: an edited preset goes by its preset's id. */
 export const menuId = (scene: StoredScene): string => scene.preset ?? scene.id;
 
 export class MlStore {
@@ -132,7 +132,7 @@ export class MlStore {
     return this._targets.get(id);
   }
 
-  /** A scene by its own id (preset, user scene or customised copy). */
+  /** A scene by its own id (preset, user scene or the edit of a preset). */
   scene(id: string): SceneInfo | undefined {
     return this._scenes.get(id);
   }
@@ -162,19 +162,13 @@ export class MlStore {
     );
   }
 
-  /** A preset id resolves to its customised copy for the target (target scope wins over everywhere). */
-  resolveScene(targetId: string, sceneId: string): SceneInfo | undefined {
+  /** What a menu id runs, in every room: a preset's edit, else the preset or the stored scene. */
+  resolveScene(sceneId: string): SceneInfo | undefined {
     const scene = this._scenes.get(sceneId);
-    if (!scene?.builtin) return scene;
-    const copies = this.config.scenes.filter((s) => s.preset === sceneId);
-    return (
-      copies.find((s) => s.scope.includes(targetId as TargetId)) ??
-      copies.find((s) => s.scope.length === 0) ??
-      scene
-    );
+    return (scene?.override && this._scenes.get(scene.override)) || scene;
   }
 
-  /** The preset a customised copy replaces, else the scene itself. */
+  /** The preset an edit replaces, else the scene itself. */
   origin(scene: SceneInfo): SceneInfo {
     return (scene.preset && this._scenes.get(scene.preset)) || scene;
   }
@@ -183,15 +177,15 @@ export class MlStore {
   scenesFor(targetId: string, which: "visible" | "hidden" = "visible"): SceneInfo[] {
     const target = this._targets.get(targetId);
     const ids = (which === "visible" ? target?.scenes : target?.hidden) ?? [];
-    return ids.flatMap((id) => this.resolveScene(targetId, id) ?? []);
+    return ids.flatMap((id) => this.resolveScene(id) ?? []);
   }
 
-  /** Scenes available everywhere, for the global default scene. */
+  /** The user's scenes, for the global default scene. */
   globalScenes(): SceneInfo[] {
-    return this.config.scenes.filter((s) => s.scope.length === 0 && !s.preset);
+    return this.config.scenes.filter((s) => !s.builtin && !s.preset);
   }
 
-  /** The gallery section of a scene; a customised copy sits where its preset does. */
+  /** The gallery section of a scene; an edited preset sits where its preset does. */
   groupOf(scene: SceneInfo): SceneCategory {
     const category = this.origin(scene).category;
     return SCENE_GROUPS.some(([key]) => key === category) ? category : "custom";
@@ -220,25 +214,26 @@ export class MlStore {
 
   readonly statusNames: StatusNames = {
     target: (id) => this.targetName(id),
-    scene: (id, owner) => this.resolveScene(owner, id)?.name,
+    scene: (id) => this.resolveScene(id)?.name,
   };
 
+  /** A layer for one room only shows in that room. */
   readonly swatchesOf = (sceneId: string, owner: TargetId): readonly string[] | undefined =>
-    this.resolveScene(owner, sceneId)?.swatches;
+    this._targets.get(owner)?.swatches[sceneId] ?? this.resolveScene(sceneId)?.swatches;
 
-  // ---- editor drafts (sessionStorage, keyed by route)
+  // ---- editor drafts (sessionStorage, keyed by scene: one scene, one draft in every room)
 
-  draft(targetId: string, sceneId: string): StoredScene | undefined {
+  draft(sceneId: string): StoredScene | undefined {
     try {
-      const raw = storage()?.getItem(`${DRAFT_PREFIX}${targetId}.${sceneId}`);
+      const raw = storage()?.getItem(`${DRAFT_PREFIX}${sceneId}`);
       return raw ? (JSON.parse(raw) as StoredScene) : undefined;
     } catch {
       return undefined;
     }
   }
 
-  setDraft(targetId: string, sceneId: string, scene: StoredScene | undefined): void {
-    const key = `${DRAFT_PREFIX}${targetId}.${sceneId}`;
+  setDraft(sceneId: string, scene: StoredScene | undefined): void {
+    const key = `${DRAFT_PREFIX}${sceneId}`;
     try {
       if (scene) storage()?.setItem(key, JSON.stringify(scene));
       else storage()?.removeItem(key);
@@ -249,44 +244,56 @@ export class MlStore {
 
   /**
    * What the editor opens at /t/<target>/scene/<sceneId>: the draft, else the
-   * stored scene (a preset id opens its copy for this target), else a new copy
-   * of the preset scoped to the target. Undefined for unknown ids.
+   * stored scene (a preset id opens its edit), else a new edit of the preset for
+   * every room. Undefined for unknown ids.
    */
-  editableScene(targetId: string, sceneId: string): StoredScene | undefined {
-    const draft = this.draft(targetId, sceneId);
+  editableScene(sceneId: string): StoredScene | undefined {
+    const draft = this.draft(sceneId);
+    const override = this._scenes.get(sceneId)?.override;
+    // The preset was edited elsewhere since: the draft becomes that edit.
+    if (draft?.preset && override) return { ...draft, id: override };
     if (draft) return draft;
-    const scene = this.resolveScene(targetId, sceneId);
+    const scene = this.resolveScene(sceneId);
     if (!scene) return undefined;
     if (!scene.builtin) return toStored(scene);
-    return { ...toStored(scene), id: newSceneId(), preset: scene.id, scope: [targetId as TargetId] };
+    return { ...toStored(scene), id: newSceneId(), preset: scene.id };
   }
 
-  /** A new user scene for the target, blank or copied from `from`. */
+  /** A new user scene set up in the target, blank or copied from `from`. */
   newScene(targetId: string, from?: SceneInfo): StoredScene {
     const base = from ? toStored(from) : undefined;
     return {
       id: newSceneId(),
-      name: this.uniqueName(from ? `${from.name} copy` : "New scene"),
+      name: this.uniqueName(from ? `${from.name} copy` : "New scene", targetId),
       icon: base?.icon ?? null,
-      scope: [targetId as TargetId],
       preset: null,
-      layers: base?.layers ?? [this._blankLayer()],
+      layers: base?.layers ?? [this._blankLayer(targetId)],
       others: base?.others ?? "off",
       brightness: base?.brightness ?? 100,
       transition: base?.transition ?? null,
     };
   }
 
-  uniqueName(base: string): string {
-    const taken = new Set(this.config.scenes.map((s) => s.name.toLowerCase()));
+  /** A name no preset and no scene set up in the target has (the backend's rule). */
+  uniqueName(base: string, targetId: string): string {
+    const taken = new Set(
+      this.config.scenes
+        .filter((s) => s.builtin || s.fits.includes(targetId as TargetId))
+        .map((s) => s.name.toLowerCase()),
+    );
     let name = base;
     for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${base} ${n}`;
     return name;
   }
 
-  private _blankLayer(): Layer {
+  private _blankLayer(targetId: string): Layer {
     const effect = this._effects.get("white") ?? this.config.effects[0];
-    return { lights: "all", effect: effect?.key ?? "white", params: { ...effect?.defaults } };
+    const target = this._targets.get(targetId);
+    return {
+      lights: target ? wholeTarget(target, (id) => this._targets.get(id)?.lights) : [],
+      effect: effect?.key ?? "white",
+      params: { ...effect?.defaults },
+    };
   }
 
   // ---- config writes (each refreshes the store)
@@ -320,7 +327,7 @@ export class MlStore {
     return this._write(() => api.saveScene(this._hass, scene));
   }
 
-  /** Deleting a customised copy resets the preset. */
+  /** Deleting the edit of a preset resets it in every room. */
   async deleteScene(sceneId: string): Promise<void> {
     await this._write(() => api.deleteScene(this._hass, sceneId));
   }
@@ -400,7 +407,7 @@ export class MlStore {
   /** Activates a scene by menu id; the active one is applied again with its adjustments. */
   async activate(targetId: string, sceneId: string): Promise<void> {
     const attrs = this.status(this._hass, targetId)?.attrs;
-    const scene = this.resolveScene(attrs?.via ?? targetId, sceneId);
+    const scene = this.resolveScene(sceneId);
     const options = activationOptions(attrs, sceneId, scene);
     await api.activateScene(this._hass, this._select(targetId), sceneId, options);
   }

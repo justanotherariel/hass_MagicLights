@@ -58,7 +58,7 @@ async def demo_setup(h: Harness) -> None:
 
 
 async def demo_scenes(h: Harness) -> None:
-    """Make the home look lived in: a zone, a customised scene, live scenes."""
+    """Make the home look lived in: a zone, a user scene, live scenes."""
     await h.ws(
         {
             "type": "magic_lights/zone/save",
@@ -78,11 +78,10 @@ async def demo_scenes(h: Harness) -> None:
                 "id": "s_0a1b2c3d",
                 "name": "Movie night",
                 "icon": "mdi:movie-open",
-                "scope": ["room:living_room"],
                 "preset": None,
                 "layers": [
                     {
-                        "lights": "all",
+                        "lights": ["room:living_room"],
                         "effect": "white",
                         "params": {"kelvin": 2200, "brightness": 30},
                     },

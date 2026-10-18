@@ -211,10 +211,7 @@ class PresetCatalogueTest(unittest.TestCase):
         self.assertEqual(len(self.raw), 48)
         self.assertEqual(list(self.presets), [s["id"] for s in self.raw])
         self.assertTrue(
-            all(
-                s.builtin and not s.scope and s.preset is None
-                for s in self.presets.values()
-            )
+            all(s.builtin and s.preset is None for s in self.presets.values())
         )
 
     def test_categories(self) -> None:
@@ -241,9 +238,10 @@ class PresetCatalogueTest(unittest.TestCase):
                     keys = {m.schema for m in PARAM_TABLE[layer["effect"]].schema}
                     self.assertLessEqual(set(layer["params"]), keys)
             self.assertEqual(
-                (item["others"], item["brightness"], item["transition"], item["scope"]),
-                ("off", 100, None, []),
+                (item["others"], item["brightness"], item["transition"]),
+                ("off", 100, None),
             )
+            self.assertNotIn("scope", item)
 
     def test_values(self) -> None:
         relax = self.presets["relax"].layers[0]

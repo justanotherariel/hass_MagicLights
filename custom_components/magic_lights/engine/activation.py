@@ -98,7 +98,7 @@ class LayerRun:
 class Activation:
     id: str
     target_id: TargetId
-    scene_id: str  # public id: the preset id for a customised copy
+    scene_id: str  # public id: the preset id for an edited preset
     scene: Scene  # as resolved for the target
     started: datetime
     transition: float  # the effective one: explicit, the scene's or the default

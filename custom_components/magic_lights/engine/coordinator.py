@@ -153,19 +153,22 @@ class Coordinator:
     def scenes_for(
         self, target_id: TargetId, *, include_hidden: bool = False
     ) -> list[Scene]:
-        """Scenes that fit a target, in menu order, customised copies in place."""
+        """Scenes that fit a target, in menu order, edited presets in place."""
         if (target := self.targets.get(target_id)) is None:
             return []
-        available = {
-            public_id: scene
-            for public_id, scene in available_scenes(
-                target_id, self.config.scenes, self.presets
-            ).items()
-            if self.fits(scene, target)
-        }
+        available: dict[str, Scene] = {}
+        names: set[str] = set()
+        for public_id, scene in available_scenes(
+            self.config.scenes, self.presets
+        ).items():
+            # Lights moving between rooms can make two same-named scenes fit
+            # one target; the first is the one find_scene runs.
+            if self.fits(scene, target) and scene.name.casefold() not in names:
+                available[public_id] = scene
+                names.add(scene.name.casefold())
         order = target.options.visible_scenes
         if order is None:
-            # Presets, and the copies that stand in for them, are picked by hand.
+            # Presets, edited or not, are picked by hand.
             ids = [
                 public_id for public_id in available if public_id not in self.presets
             ]
@@ -175,11 +178,9 @@ class Coordinator:
             ids += [public_id for public_id in available if public_id not in ids]
         return [available[public_id] for public_id in ids]
 
-    def resolve_scene(self, target_id: TargetId, scene_id: str) -> Scene | None:
-        """Return the scene a target runs for a public id (copies replace presets)."""
-        return available_scenes(target_id, self.config.scenes, self.presets).get(
-            scene_id
-        )
+    def resolve_scene(self, scene_id: str) -> Scene | None:
+        """Return the scene a public id runs (an edited preset replaces it)."""
+        return available_scenes(self.config.scenes, self.presets).get(scene_id)
 
     def find_scene(self, target_id: TargetId, scene: str) -> Scene:
         """Find a scene by id or case-insensitive name; raise ServiceValidationError.
@@ -188,11 +189,7 @@ class Coordinator:
         without any is refused: running it would only switch the target off.
         """
         target = self._target(target_id)
-        candidates = list(
-            available_scenes(target_id, self.config.scenes, self.presets).values()
-        )
-        if (via := self._via(target_id)) is not None and not via.draft:
-            candidates.append(via.scene)
+        candidates = list(available_scenes(self.config.scenes, self.presets).values())
         found = next((c for c in candidates if scene in (c.id, c.preset)), None)
         if found is None:
             key = scene.casefold()
@@ -203,21 +200,12 @@ class Coordinator:
         if found is None:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
-                translation_key=(
-                    "scene_not_available" if self._exists(scene) else "unknown_scene"
-                ),
+                translation_key="unknown_scene",
                 translation_placeholders={"scene": scene, "target_id": target_id},
             )
         if not self.fits(found, target):
             raise self._not_adapted(found, target)
         return found
-
-    def _exists(self, scene: str) -> bool:
-        key = scene.casefold()
-        return any(
-            scene in (s.id, s.preset) or s.name.casefold() == key
-            for s in (*self.presets.values(), *self.config.scenes.values())
-        )
 
     @staticmethod
     def _not_adapted(scene: Scene, target: Target) -> ServiceValidationError:
@@ -226,13 +214,6 @@ class Coordinator:
             translation_key="scene_not_adapted",
             translation_placeholders={"scene": scene.name, "target": target.name},
         )
-
-    def _resolve_for(self, target_id: TargetId, scene_id: str) -> Scene | None:
-        if (scene := self.resolve_scene(target_id, scene_id)) is not None:
-            return scene
-        # A zone-scoped scene picked on a room through the zone (status "via").
-        stored = self.config.scenes.get(scene_id)
-        return stored if stored is not None and stored.preset is None else None
 
     # ---- actions
 
@@ -413,7 +394,7 @@ class Coordinator:
             index %= len(seq)
         if seq[index] == _OFF:
             self.turn_off(target_id, context=context)
-        elif (scene := self.resolve_scene(target_id, seq[index])) is not None:
+        elif (scene := self.resolve_scene(seq[index])) is not None:
             self.activate(target_id, scene, context=context)
 
     @callback
@@ -564,7 +545,7 @@ class Coordinator:
                 activation.scene_id = saved.public_id
                 scene = saved
             else:
-                scene = self._resolve_for(activation.target_id, activation.scene_id)
+                scene = self.resolve_scene(activation.scene_id)
             if scene is None or not self.fits(scene, target):
                 # Its lights keep their state: replanning would switch them off.
                 self._end(activation, "config")
@@ -664,7 +645,7 @@ class Coordinator:
         target = self.targets.get(snapshot.target)
         if target is None or snapshot.target in self.by_target:
             return None
-        scene = self._resolve_for(snapshot.target, snapshot.scene_id)
+        scene = self.resolve_scene(snapshot.scene_id)
         if scene is None or not self.fits(scene, target):
             return None
         # Never widened, never stolen: an earlier snapshot wins an overlap.
@@ -958,7 +939,7 @@ class Coordinator:
             if (
                 own is None
                 and (default := self._default_scene(target)) is not None
-                and (scene := self.resolve_scene(target_id, default)) is not None
+                and (scene := self.resolve_scene(default)) is not None
                 and self.fits(scene, target)
             ):
                 self.activate(target_id, scene, only_on={e})

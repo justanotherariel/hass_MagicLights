@@ -29,7 +29,7 @@ export const fetchConfig = (hass: HomeAssistant): Promise<ConfigDto> => ws<Confi
 export const saveScene = async (hass: HomeAssistant, scene: StoredScene): Promise<SceneInfo> =>
   (await ws<{ scene: SceneInfo }>(hass, "scene/save", { scene })).scene;
 
-/** Deleting a customised preset resets it. */
+/** Deleting the edit of a preset resets it in every room. */
 export const deleteScene = (hass: HomeAssistant, sceneId: string) =>
   ws<Record<string, never>>(hass, "scene/delete", { scene_id: sceneId });
 

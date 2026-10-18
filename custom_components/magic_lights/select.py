@@ -159,10 +159,12 @@ class TargetSceneSelect(SelectEntity):
             # Only config and effect changes alter the menu.
             registry = self._data.registry
             self._menu = coordinator.scenes_for(self._target_id)
-            self._summaries = [scene_summary(s, registry) for s in self._menu]
+            self._summaries = [
+                scene_summary(coordinator, registry, s, target) for s in self._menu
+            ]
             shown = {s.public_id for s in self._menu}
             self._hidden = [
-                scene_summary(s, registry)
+                scene_summary(coordinator, registry, s, target)
                 for s in coordinator.scenes_for(self._target_id, include_hidden=True)
                 if s.public_id not in shown
             ]

@@ -45,7 +45,7 @@ export interface ConfirmRequest extends ConfirmParams {
 export const confirmAction = (el: HTMLElement, params: ConfirmParams): Promise<boolean> =>
   new Promise((resolve) => fire<ConfirmRequest>(el, "ml-confirm", { ...params, resolve }));
 
-/** Asks before resetting a customised preset or deleting a user scene. */
+/** Asks before resetting an edited preset or deleting a user scene. */
 export const confirmRemoveScene = (
   el: HTMLElement,
   scene: { name: string },
@@ -56,13 +56,13 @@ export const confirmRemoveScene = (
     reset
       ? {
           title: `Reset ${scene.name}?`,
-          text: "Your changes to this preset are removed and the original comes back.",
+          text: "Your changes are removed in every room and zone, and the original preset comes back.",
           confirmText: "Reset",
           destructive: true,
         }
       : {
           title: `Delete ${scene.name}?`,
-          text: "The scene is removed everywhere it is available. A room running it switches to Manual.",
+          text: "The scene is removed from every room and zone. A room running it switches to Manual.",
           confirmText: "Delete",
           destructive: true,
         },

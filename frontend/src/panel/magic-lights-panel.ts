@@ -148,9 +148,9 @@ class MagicLightsPanel extends LitElement implements StoreHost {
       case "target":
         return store?.target(page.targetId)?.name ?? "Magic Lights";
       case "editor": {
-        const { targetId, sceneId } = page;
+        const { sceneId } = page;
         if (this._editorTitle?.sceneId === sceneId) return this._editorTitle.title || "New scene";
-        const scene = store?.draft(targetId, sceneId) ?? store?.resolveScene(targetId, sceneId);
+        const scene = store?.draft(sceneId) ?? store?.resolveScene(sceneId);
         return scene?.name || "New scene";
       }
       default:

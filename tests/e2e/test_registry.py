@@ -47,9 +47,12 @@ class RenameTest(HarnessCase):
                 "scene": {
                     "id": "s_0000f001",
                     "name": "TV red",
-                    "scope": ["room:living_room"],
                     "layers": [
-                        {"lights": "all", "effect": "white", "params": {}},
+                        {
+                            "lights": ["room:living_room"],
+                            "effect": "white",
+                            "params": {},
+                        },
                         {
                             "lights": ["light.living_tv_strip"],
                             "effect": "static",

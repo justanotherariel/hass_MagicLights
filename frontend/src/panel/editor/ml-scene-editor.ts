@@ -1,19 +1,13 @@
-// Scene editor: name, icon, scope, brightness, transition and other lights; the
-// layer list and the selected layer; a live preview; Try / Stop trying, Save, Reset to
-// preset and Delete. The working copy lives in sessionStorage under the route until it
-// is saved or discarded, so leaving the editor loses nothing.
+// Scene editor: name, icon, brightness, transition and other lights; the layer list
+// and the selected layer, edited for this room; a live preview; Try / Stop trying, Save,
+// Reset to preset and Delete. A scene is the same in every room. The working copy lives
+// in sessionStorage under the route until it is saved or discarded, so leaving the
+// editor loses nothing.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
 import { swatchBackground } from "../../shared/color";
-import type {
-  HomeAssistant,
-  Layer,
-  PreviewFrame,
-  StoredScene,
-  TargetId,
-  TargetInfo,
-} from "../../shared/types";
+import type { HomeAssistant, Layer, PreviewFrame, StoredScene, TargetId, TargetInfo } from "../../shared/types";
 import {
   confirmAction,
   confirmRemoveScene,
@@ -28,24 +22,28 @@ import { goBack, targetPath } from "../routes";
 import { toStored, type MlStore } from "../store";
 import { pageStyles } from "../styles";
 import {
-  copyId,
-  copyOverlaps,
   expandLights,
+  isWhole,
+  layerCaption,
   layerOwners,
   layerSummary,
   layerSwatches,
+  roomSlice,
   sceneProblems,
   stableJson,
-  type CopyOverlap,
   type Problem,
 } from "./editor-model";
 import type { LayerChanged } from "./ml-layer-card";
 import type { BulbClick } from "./ml-preview";
-import { dropWorkingCopy, openWorkingCopy } from "./working-copy";
+import { dropWorkingCopy, openWorkingCopy, type WorkingCopy } from "./working-copy";
 import "./ml-layer-card";
 import "./ml-preview";
 
 const LIVE_DELAY = 400;
+const STALE_NOTE: Record<NonNullable<WorkingCopy["stale"]>, string> = {
+  saved: " The scene was saved since; saving these changes replaces that.",
+  removed: " The scene was removed since; saving these changes brings it back.",
+};
 const MOTION_PREVIEW = { duration: 60, samples: 120 };
 const DAY_PREVIEW = { duration: 86400, samples: 48 };
 
@@ -55,10 +53,6 @@ interface Route {
   targetId: string;
   sceneId: string;
 }
-
-const SCOPE_TARGET = "target";
-const SCOPE_EVERYWHERE = "everywhere";
-const SCOPE_OTHER = "other";
 
 export interface EditorTitle {
   sceneId: string;
@@ -98,6 +92,9 @@ class MlSceneEditor extends LitElement {
 
   /** The working copy came back from an earlier visit with unsaved changes. */
   @state() private _restored = false;
+
+  /** The restored changes are older than the scene's last save. */
+  @state() private _stale: WorkingCopy["stale"];
 
   /** The route the working copy belongs to. */
   private _route?: Route;
@@ -156,7 +153,7 @@ class MlSceneEditor extends LitElement {
   // ---- working copy
 
   private _open(route: Route): void {
-    const copy = openWorkingCopy(this.store, route.targetId, route.sceneId);
+    const copy = openWorkingCopy(this.store, route.sceneId);
     this._frames = undefined;
     this._previewError = undefined;
     this._error = undefined;
@@ -168,6 +165,7 @@ class MlSceneEditor extends LitElement {
     this._route = route;
     this._baseline = stableJson(copy.baseline);
     this._restored = copy.restored && this._dirty;
+    this._stale = this._restored ? copy.stale : undefined;
     // A draft running here is this editor's from before a reload.
     this._trying = !this._stopping && this._draftRunning(route.targetId);
     this._refreshPreview();
@@ -184,11 +182,11 @@ class MlSceneEditor extends LitElement {
         .catch(() => undefined)
         .finally(() => (this._stopping = false));
     }
-    if (!this._dirty) dropWorkingCopy(this.store, route.targetId, route.sceneId);
+    if (!this._dirty) dropWorkingCopy(this.store, route.sceneId);
     this._route = undefined;
   }
 
-  /** The config's copy of the scene being edited (a user scene or a customised preset). */
+  /** The config's copy of the scene being edited (a user scene or an edited preset). */
   private _storedScene(scene: StoredScene) {
     const stored = this.store.scene(scene.id);
     return stored && !stored.builtin ? stored : undefined;
@@ -210,7 +208,8 @@ class MlSceneEditor extends LitElement {
   private _update(scene: StoredScene): void {
     this._scene = scene;
     this._restored &&= this._dirty;
-    if (this._route) this.store.setDraft(this._route.targetId, this._route.sceneId, scene);
+    if (!this._restored) this._stale = undefined;
+    if (this._route) this.store.setDraft(this._route.sceneId, scene);
     this._live();
   }
 
@@ -230,6 +229,7 @@ class MlSceneEditor extends LitElement {
 
   private _discard(): void {
     this._restored = false;
+    this._stale = undefined;
     this._update(this._original);
   }
 
@@ -323,20 +323,11 @@ class MlSceneEditor extends LitElement {
     const scene = this._scene;
     const route = this._route;
     if (!scene || !route) return;
-    const payload = this._payload(scene);
-    const overlaps = copyOverlaps(payload, this.store.config.scenes);
-    const original = this._original.id;
-    const replaced = overlaps.filter(({ copy }) => copy.id !== original);
-    if (replaced.length && !(await this._confirmReplace(replaced))) return;
     this._busy = "save";
     this._error = undefined;
     try {
-      // Copies of one preset must not overlap, so the older ones make room first.
-      for (const { copy, rest } of overlaps) {
-        if (rest) await this.store.saveScene({ ...toStored(copy), scope: rest });
-        else await this.store.deleteScene(copy.id);
-      }
-      await this.store.saveScene(payload);
+      // An edit equal to its preset is not kept: the backend removes it.
+      await this.store.saveScene(this._payload(scene));
     } catch (err) {
       this._error = errorMessage(err);
       this._busy = undefined;
@@ -347,20 +338,6 @@ class MlSceneEditor extends LitElement {
     this._busy = undefined;
     showToast(this, `Saved ${scene.name.trim()}`);
     this._leave(route);
-  }
-
-  private _confirmReplace(replaced: CopyOverlap[]): Promise<boolean> {
-    const where = ({ copy, rest }: CopyOverlap) => {
-      const shared = copy.scope.filter((id) => !rest?.includes(id));
-      return shared.length ? `for ${shared.map((id) => this.store.targetName(id)).join(", ")}` : "everywhere";
-    };
-    const taken = replaced.map((o) => `${o.copy.name} is already customised ${where(o)}.`);
-    return confirmAction(this, {
-      title: "Replace customisation?",
-      text: `${taken.join(" ")} Saving replaces it with this one.`,
-      confirmText: "Replace",
-      destructive: true,
-    });
   }
 
   private async _delete(reset: boolean): Promise<void> {
@@ -387,7 +364,7 @@ class MlSceneEditor extends LitElement {
 
   private _leave(route: Route): void {
     this._leaving = true;
-    dropWorkingCopy(this.store, route.targetId, route.sceneId);
+    dropWorkingCopy(this.store, route.sceneId);
     goBack(targetPath(route.targetId));
   }
 
@@ -457,7 +434,7 @@ class MlSceneEditor extends LitElement {
         <div class="columns">
           <div>
             <h2 class="section-title">Scene</h2>
-            ${this._renderScene(target, scene, problems)}
+            ${this._renderScene(scene, problems)}
             <h2 class="section-title">Layers</h2>
             ${this._renderLayers(target, scene, owners, problems, selected)}
           </div>
@@ -498,7 +475,9 @@ class MlSceneEditor extends LitElement {
       ${
         this._restored
           ? html`<ha-alert alert-type="info" title="Unsaved changes">
-              These changes are from an earlier visit and have not been saved yet.
+              These changes are from an earlier visit and have not been saved yet.${
+                this._stale ? STALE_NOTE[this._stale] : ""
+              }
               <ha-button slot="action" appearance="plain" @click=${this._discard}>Discard</ha-button>
             </ha-alert>`
           : nothing
@@ -513,21 +492,7 @@ class MlSceneEditor extends LitElement {
     `;
   }
 
-  private _renderScene(target: TargetInfo, scene: StoredScene, problems: Problem[]) {
-    const own = target.kind === "zone" ? "This zone" : "This room";
-    const scope =
-      scene.scope.length === 0
-        ? SCOPE_EVERYWHERE
-        : scene.scope.length === 1 && scene.scope[0] === target.id
-          ? SCOPE_TARGET
-          : SCOPE_OTHER;
-    const scopeOptions = [
-      { value: SCOPE_TARGET, label: own },
-      { value: SCOPE_EVERYWHERE, label: "Everywhere" },
-      ...(scope === SCOPE_OTHER
-        ? [{ value: SCOPE_OTHER, label: scene.scope.map((id) => this.store.targetName(id)).join(", ") }]
-        : []),
-    ];
+  private _renderScene(scene: StoredScene, problems: Problem[]) {
     const defaultTransition = this.store.config.settings.transition;
     const nameProblems = problems.filter((p) => p.layer === undefined);
     return html`<ha-card>
@@ -536,6 +501,8 @@ class MlSceneEditor extends LitElement {
           <ha-input
             label="Name"
             required
+            .readonly=${!!scene.preset}
+            .hint=${scene.preset ? "An edited preset keeps its name." : ""}
             .value=${scene.name}
             @input=${(ev: Event) => this._setField("name", (ev.target as HTMLInputElement).value ?? "")}
           ></ha-input>
@@ -547,19 +514,11 @@ class MlSceneEditor extends LitElement {
           ></ha-icon-picker>
         </div>
         ${nameProblems.map((p) => html`<p class="problem">${p.message}</p>`)}
-        <div class="field">
-          <span class="field-label">${scene.preset ? "Customise for" : "Available in"}</span>
-          <ha-control-select
-            .options=${scopeOptions}
-            .value=${scope}
-            .label=${scene.preset ? "Customise for" : "Available in"}
-            @value-changed=${(ev: CustomEvent<{ value: string }>) => {
-              ev.stopPropagation();
-              if (ev.detail.value === SCOPE_TARGET) this._setScope([target.id]);
-              else if (ev.detail.value === SCOPE_EVERYWHERE) this._setScope([]);
-            }}
-          ></ha-control-select>
-        </div>
+        ${
+          scene.preset
+            ? html`<p class="hint">Changes to this preset apply in every room and zone.</p>`
+            : nothing
+        }
         <ha-selector
           .hass=${this.hass}
           .selector=${{ number: { min: 1, max: 100, step: 1, mode: "slider", unit_of_measurement: "%" } }}
@@ -603,13 +562,6 @@ class MlSceneEditor extends LitElement {
         </div>
       </div>
     </ha-card>`;
-  }
-
-  private _setScope(scope: TargetId[]): void {
-    const scene = this._scene;
-    if (!scene || stableJson(scope) === stableJson(scene.scope)) return;
-    const id = copyId(this._storedScene(this._original), scene, scope);
-    this._update({ ...scene, id, scope });
   }
 
   private _renderLayers(
@@ -686,16 +638,26 @@ class MlSceneEditor extends LitElement {
     </div>`;
   }
 
+  /** This room's part of the layer, and the rooms it also reaches. */
   private _lightsLabel(target: TargetInfo, layer: Layer): string {
-    if (layer.lights === "all") return "All lights";
-    const rooms = layer.lights
-      .filter((l) => l.startsWith("room:"))
-      .map((l) => this.hass.areas?.[l.slice(5)]?.name ?? this.store.targetName(l));
-    const entities = layer.lights.filter((l) => !l.startsWith("room:") && target.lights.includes(l));
-    const parts = [...rooms];
-    if (entities.length === 1 && !rooms.length) parts.push(this.store.lightName(entities[0]));
-    else if (entities.length) parts.push(plural(entities.length, "light"));
-    return parts.join(" + ") || "No lights";
+    const roomLights = (id: string) => this.store.target(id)?.lights;
+    const rooms = this.store.targets.filter((t) => t.kind === "room");
+    const caption = layerCaption(layer.lights, target, rooms, roomLights);
+    let here: string;
+    if (isWhole(layer.lights, target, roomLights)) here = "All lights";
+    else {
+      const slice = roomSlice(layer.lights, target, roomLights);
+      const refs = slice
+        .filter((l) => l.startsWith("room:"))
+        .map((l) => this.hass.areas?.[l.slice(5)]?.name ?? this.store.targetName(l));
+      const entities = slice.filter((l) => !l.startsWith("room:"));
+      const parts = [...refs];
+      if (entities.length === 1 && !refs.length) parts.push(this.store.lightName(entities[0]));
+      else if (entities.length) parts.push(plural(entities.length, "light"));
+      here = parts.join(" + ");
+    }
+    if (!here) return caption ?? "No lights";
+    return caption ? `${here} (${caption})` : here;
   }
 
   private _addLayer(): void {

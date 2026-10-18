@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable, Coroutine, Iterable, Sequence
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 import heapq
 import itertools
+from pathlib import Path
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
 
@@ -36,6 +38,7 @@ from custom_components.magic_lights.models import (
     TargetId,
     TargetOptions,
 )
+from homeassistant.core import CoreState
 from homeassistant.helpers import selector
 
 START = datetime(2026, 6, 21, 10, 0, tzinfo=UTC)
@@ -459,3 +462,30 @@ class FakeRegistry:
 
     def get(self, key: str) -> Effect | None:
         return self.effects.get(key)
+
+
+class _ShellConfig:
+    def __init__(self, config_dir: str) -> None:
+        self.config_dir = config_dir
+
+    def path(self, *parts: str) -> str:
+        return str(Path(self.config_dir, *parts))
+
+
+class _ShellBus:
+    def async_listen_once(self, event_type: str, listener: Any) -> Any:
+        return lambda: None
+
+
+class ShellHass:
+    """Just enough of HomeAssistant for helpers.storage.Store."""
+
+    def __init__(self, config_dir: str) -> None:
+        self.data: dict[str, Any] = {}
+        self.config = _ShellConfig(config_dir)
+        self.loop = asyncio.get_running_loop()
+        self.state = CoreState.running
+        self.bus = _ShellBus()
+
+    async def async_add_executor_job(self, func: Any, *args: Any) -> Any:
+        return func(*args)

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Collection, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 import dataclasses
 from typing import Any
 
@@ -18,7 +18,6 @@ from .models import (
     TargetId,
     TargetOptions,
     Zone,
-    available_scenes,
 )
 
 RESERVED_NAMES = frozenset({OPTION_OFF.casefold(), OPTION_MANUAL.casefold()})
@@ -54,7 +53,6 @@ SCENE_SCHEMA = vol.Schema(
         vol.Required("id"): _SCENE_ID,
         vol.Required("name"): _NAME,
         vol.Optional("icon", default=None): vol.Maybe(str),
-        vol.Optional("scope", default=list): vol.All([_TARGET_ID], _unique),
         vol.Optional("preset", default=None): vol.Maybe(_ID),
         vol.Required("layers"): vol.All([LAYER_SCHEMA], vol.Length(min=1)),
         vol.Optional("others", default="off"): vol.In(["off", "keep"]),
@@ -173,76 +171,73 @@ def _build_scene(
     return dataclasses.replace(Scene.from_dict(raw), layers=tuple(layers))
 
 
-def _check_refs(
-    scene: Scene,
-    presets: Mapping[str, Scene] | None,
-    targets: Collection[TargetId] | None,
-    path: Sequence[Any],
-    stored: Scene | None = None,
+# The targets a scene has lights in.
+type Fits = Callable[[Scene], Collection[TargetId]]
+
+
+def _check_preset(
+    scene: Scene, presets: Mapping[str, Scene] | None, path: Sequence[Any]
 ) -> None:
-    if presets is not None and scene.preset is not None and scene.preset not in presets:
+    if presets is None or scene.preset is None:
+        return
+    if (preset := presets.get(scene.preset)) is None:
         raise ConfigError(
             "unknown_preset", f"unknown preset '{scene.preset}'", [*path, "preset"]
         )
-    if targets is not None:
-        # An edit may keep the entry of a target that went away (a deleted area).
-        kept = () if stored is None else stored.scope
-        for i, target_id in enumerate(scene.scope):
-            if target_id not in targets and target_id not in kept:
-                raise ConfigError(
-                    "unknown_target",
-                    f"unknown target '{target_id}'",
-                    [*path, "scope", i],
-                )
+    # Automations and select states know an edited preset by the preset's name.
+    if scene.name != preset.name:
+        raise ConfigError(
+            "preset_name",
+            f"an edited preset keeps its name '{preset.name}'",
+            [*path, "name"],
+        )
 
 
 def _check_copies(scene: Scene, scenes: Mapping[str, Scene]) -> None:
-    """Reject a second copy of a preset where another copy already applies."""
+    """Reject a second edit of a preset: one applies to every target."""
     if scene.preset is None:
         return
     for other in scenes.values():
-        if other.id == scene.id or other.preset != scene.preset:
-            continue
-        if not scene.scope and not other.scope:
-            where = "everywhere"
-        elif shared := [t for t in scene.scope if t in other.scope]:
-            where = f"in {', '.join(shared)}"
-        else:
-            continue
-        raise ConfigError(
-            "duplicate_copy",
-            f"another customised copy ('{other.name}') already applies {where}",
-            ["scenes", scene.id, "scope"],
-        )
+        if other.id != scene.id and other.preset == scene.preset:
+            raise ConfigError(
+                "duplicate_copy",
+                f"'{other.name}' is already edited ({other.id})",
+                ["scenes", scene.id, "preset"],
+            )
 
 
 def _check_names(
     scenes: Mapping[str, Scene],
     presets: Mapping[str, Scene],
     only: str | None,
-    targets: Collection[TargetId] | None,
+    fits: Fits | None,
 ) -> None:
-    # Availability only depends on whether a target is named in a scope, so
-    # every unnamed target behaves like the "*" stand-in. A target that went
-    # away shows no scenes, so its scope entries cannot clash.
-    named = {t for s in scenes.values() for t in s.scope}
-    if targets is not None:
-        named &= set(targets)
-    for target_id in [*sorted(named), "*"]:
-        seen: dict[str, Scene] = {}
-        for scene in available_scenes(target_id, scenes, presets).values():
-            other = seen.setdefault(scene.name.casefold(), scene)
-            if other is scene or (
-                only is not None and only not in (scene.id, other.id)
-            ):
+    """Names are unique among the scenes of each target; presets count everywhere.
+
+    Without `fits`, user scenes are only checked against the presets.
+    """
+
+    def clash(offender: Scene, where: str) -> ConfigError:
+        return ConfigError(
+            "duplicate_name",
+            f"a scene named '{offender.name}' already exists ({where})",
+            ["scenes", offender.id, "name"],
+        )
+
+    preset_names = {p.name.casefold() for p in presets.values()}
+    users = [s for s in scenes.values() if s.preset not in presets]
+    for scene in users:
+        if only in (None, scene.id) and scene.name.casefold() in preset_names:
+            raise clash(scene, "a preset")
+    if fits is None:
+        return
+    seen: dict[tuple[TargetId, str], Scene] = {}
+    for scene in users:
+        for target_id in sorted(fits(scene)):
+            other = seen.setdefault((target_id, scene.name.casefold()), scene)
+            if other is scene or only not in (None, scene.id, other.id):
                 continue
-            offender = scene if only in (None, scene.id) else other
-            where = "everywhere" if target_id == "*" else target_id
-            raise ConfigError(
-                "duplicate_name",
-                f"a scene named '{scene.name}' already exists ({where})",
-                ["scenes", offender.id, "name"],
-            )
+            raise clash(scene if only in (None, scene.id) else other, target_id)
 
 
 def validate_scene(
@@ -251,15 +246,15 @@ def validate_scene(
     config: Config,
     *,
     presets: Mapping[str, Scene] | None = None,
-    targets: Collection[TargetId] | None = None,
+    fits: Fits | None = None,
 ) -> Scene:
     """Validate one stored scene for saving into `config`."""
     path = ["scenes", data.get("id")]
     raw = _apply(SCENE_SCHEMA, data, path)
     scene = _build_scene(raw, registry, path)
-    _check_refs(scene, presets, targets, path, config.scenes.get(scene.id))
+    _check_preset(scene, presets, path)
     _check_copies(scene, config.scenes)
-    _check_names({**config.scenes, scene.id: scene}, presets or {}, scene.id, targets)
+    _check_names({**config.scenes, scene.id: scene}, presets or {}, scene.id, fits)
     return scene
 
 
@@ -275,9 +270,9 @@ def validate(
     registry: EffectLookup,
     *,
     presets: Mapping[str, Scene] | None = None,
-    targets: Collection[TargetId] | None = None,
+    fits: Fits | None = None,
 ) -> Config:
-    """Validate a whole ConfigV2 dict; params come back with defaults filled."""
+    """Validate a whole stored config; params come back with defaults filled."""
     raw = _apply(CONFIG_SCHEMA, data, [])
     for key, zone in raw["zones"].items():
         if zone["id"] != key:
@@ -290,8 +285,9 @@ def validate(
         if scene_data["id"] != key:
             raise ConfigError("invalid", "scene id does not match its key", path)
         scenes[key] = _build_scene(scene_data, registry, path)
-        _check_refs(scenes[key], presets, targets, path)
-    _check_names(scenes, presets or {}, None, targets)
+        _check_preset(scenes[key], presets, path)
+        _check_copies(scenes[key], scenes)
+    _check_names(scenes, presets or {}, None, fits)
     return Config(
         zones={k: Zone.from_dict(v) for k, v in raw["zones"].items()},
         targets={k: TargetOptions.from_dict(v) for k, v in raw["targets"].items()},

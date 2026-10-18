@@ -39,7 +39,7 @@ test("via a zone, with the zone's scene swatches", async () => {
     via: "zone:downstairs",
   });
   assert.equal(text, "Savanna sunset · via Downstairs");
-  assert.deepEqual(swatches, ["#ff5c2f", "#ffbd56"]);
+  assert.deepEqual(swatches, ["#4000ff", "#ff5c2f"]);
 });
 
 test("lights running elsewhere and mixed targets", async () => {
@@ -70,7 +70,7 @@ test("lights running elsewhere and mixed targets", async () => {
     ],
   });
   assert.equal(mixed.text, "Living room: Relax · Kitchen: Savanna sunset");
-  assert.deepEqual(mixed.swatches, ["#ff942b", "#ff5c2f", "#ffbd56"]);
+  assert.deepEqual(mixed.swatches, ["#ff942b", "#ff5c2f"], "the kitchen's own swatches");
 });
 
 test("drafts and manual targets", async () => {

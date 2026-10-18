@@ -144,7 +144,7 @@ class MlSceneGallery extends LitElement {
 
   private _create(from?: SceneInfo): void {
     const draft = this.store.newScene(this.targetId, from);
-    this.store.setDraft(this.targetId, draft.id, draft);
+    this.store.setDraft(draft.id, draft);
     this._picking = false;
     go(editorPath(this.targetId, draft.id));
   }

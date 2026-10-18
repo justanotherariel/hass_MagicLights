@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+import json
 import shutil
 from typing import Any
 from unittest import IsolatedAsyncioTestCase
@@ -12,7 +14,7 @@ from homeassistant.const import STATE_ON
 from tests.harness import DOMAIN, Harness
 from tests.scenario import DEMO_AREAS, DEMO_LIGHTS
 
-from . import KITCHEN, LIVING, HarnessCase
+from . import KITCHEN, LIVING, LIVING_LIGHTS, HarnessCase
 
 
 def lights_as_left(h: Harness) -> list[dict[str, Any]]:
@@ -73,6 +75,112 @@ class RestartTest(IsolatedAsyncioTestCase):
             self.assertEqual(second.events, [])
         finally:
             await second.stop()
+
+
+def hell(scene_id: str, area_id: str) -> dict[str, Any]:
+    return {
+        "id": scene_id,
+        "name": "Hell",
+        "icon": None,
+        "scope": [f"room:{area_id}"],
+        "preset": None,
+        "layers": [
+            {
+                "lights": "all",
+                "effect": "white",
+                "params": {"kelvin": 4000, "brightness": 80},
+            }
+        ],
+        "others": "off",
+        "brightness": 100,
+        "transition": None,
+    }
+
+
+class UpgradeTest(IsolatedAsyncioTestCase):
+    async def test_v2_scenes_merge_and_keep_running(self) -> None:
+        def stored(key: str, version: int, data: dict[str, Any]) -> dict[str, Any]:
+            return {"version": version, "minor_version": 1, "key": key, "data": data}
+
+        # The living room light did nothing under the kitchen's scope.
+        film = hell("s_00000003", "kitchen") | {"name": "Film"}
+        film["layers"] = [
+            dict(film["layers"][0], lights=["light.kitchen_island", LIVING_LIGHTS[0]])
+        ]
+        v2 = {
+            "scenes": {
+                s["id"]: s
+                for s in (
+                    hell("s_00000002", "living_room"),
+                    hell("s_00000001", "kitchen"),
+                    film,
+                )
+            },
+            "targets": {"room:kitchen": {"visible_scenes": ["s_00000002"]}},
+        }
+        running = {
+            "id": "01JA0000000000000000000000",
+            "target": "room:living_room",
+            "scene_id": "s_00000002",
+            "started": "2026-10-17T08:00:00+00:00",
+            "lights": LIVING_LIGHTS,
+            "manual": [],
+            "adjust": {},
+            "only_on": False,
+        }
+        runtime = {
+            "activations": [running],
+            "salts": {"s_00000002|room:living_room": 2},
+        }
+        h = Harness(
+            lights=[
+                dict(conf, on=conf["name"].startswith("Living")) for conf in DEMO_LIGHTS
+            ],
+            areas=DEMO_AREAS,
+            storage=stored(DOMAIN, 2, v2),
+            extra_storage={
+                f"{DOMAIN}.runtime": stored(f"{DOMAIN}.runtime", 1, runtime)
+            },
+        )
+        self.addAsyncCleanup(h.stop)
+        await h.start()
+        await h.setup_integration()
+        await h.idle()
+
+        self.assertEqual(h.hass.states.get(LIVING).state, "Hell")
+        self.assertEqual(h.attributes(LIVING)["scene_id"], "s_00000001")
+        self.assertEqual(
+            h.hass.states.get(KITCHEN).attributes["options"], ["Off", "Hell", "Manual"]
+        )
+        self.assertEqual(
+            h.hass.states.get(LIVING).attributes["options"], ["Off", "Hell", "Manual"]
+        )
+        config = await h.ws({"type": "magic_lights/config"})
+        scenes = {s["id"]: s for s in config["scenes"] if not s["builtin"]}
+        self.assertEqual(list(scenes), ["s_00000001", "s_00000003"])
+        self.assertEqual(
+            scenes["s_00000001"]["layers"][0]["lights"],
+            ["room:living_room", "room:kitchen"],
+        )
+        self.assertEqual(
+            scenes["s_00000003"]["layers"][0]["lights"], ["light.kitchen_island"]
+        )
+
+        storage = h.config_dir / ".storage"
+
+        def read(key: str) -> dict[str, Any]:
+            return json.loads((storage / key).read_text())
+
+        saved = await asyncio.to_thread(read, f"{DOMAIN}.runtime")
+        self.assertEqual(saved["data"]["activations"][0]["scene_id"], "s_00000001")
+        self.assertIn("s_00000001|room:living_room", saved["data"]["salts"])
+        self.assertEqual((await asyncio.to_thread(read, DOMAIN))["version"], 3)
+        old = await asyncio.to_thread(read, f"{DOMAIN}.v2.bak")
+        self.assertEqual(old["data"], v2)
+        old_runtime = await asyncio.to_thread(read, f"{DOMAIN}.runtime.v1.bak")
+        self.assertEqual(
+            old_runtime["data"]["activations"][0]["scene_id"], "s_00000002"
+        )
 
 
 class ReloadTest(HarnessCase):

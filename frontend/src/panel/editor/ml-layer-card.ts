@@ -1,5 +1,6 @@
-// The selected layer: its lights ("All lights", entities, zone rooms), its effect and
-// the effect's params form. Fires ml-layer-changed with the edited layer.
+// The selected layer: this room's part of its lights ("All lights", entities, zone
+// rooms), its effect and the effect's params form. Other rooms' lights stay as they are.
+// Fires ml-layer-changed with the edited layer.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property } from "lit/decorators.js";
@@ -7,7 +8,7 @@ import type { HomeAssistant, Layer, TargetInfo } from "../../shared/types";
 import { checkedOf, defineElement, fire, plural } from "../../shared/util";
 import type { MlStore } from "../store";
 import { chipStyles } from "../styles";
-import { expandLights } from "./editor-model";
+import { expandLights, isWhole, roomSlice, setRoomSlice, wholeTarget } from "./editor-model";
 import "./ml-plugin-form";
 
 export interface LayerChanged {
@@ -34,12 +35,13 @@ class MlLayerCard extends LitElement {
   protected render() {
     const layer = this.layer;
     const effect = this.store.effect(layer.effect);
+    const whole = isWhole(layer.lights, this.target, this._roomLights);
     return html`<ha-card>
       <div class="card-content">
         ${this.problems.map((p) => html`<ha-alert alert-type="warning">${p}</ha-alert>`)}
         <section>
-          <ha-switch .checked=${layer.lights === "all"} @change=${this._allChanged}>All lights</ha-switch>
-          ${layer.lights === "all" ? nothing : this._renderPickers(layer.lights)}
+          <ha-switch .checked=${whole} @change=${this._allChanged}>All lights</ha-switch>
+          ${whole ? nothing : this._renderPickers(roomSlice(layer.lights, this.target, this._roomLights))}
           ${
             this.overridden.length
               ? html`<p class="hint">
@@ -79,9 +81,10 @@ class MlLayerCard extends LitElement {
     </ha-card>`;
   }
 
-  private _renderPickers(lights: string[]) {
-    const rooms = lights.filter((l) => l.startsWith("room:"));
-    const entities = lights.filter((l) => !l.startsWith("room:"));
+  /** `slice`: this target's entries of the layer. */
+  private _renderPickers(slice: string[]) {
+    const rooms = slice.filter((l) => l.startsWith("room:"));
+    const entities = slice.filter((l) => !l.startsWith("room:"));
     return html`
       ${
         this.target.kind === "zone" && this.target.rooms.length
@@ -94,8 +97,7 @@ class MlLayerCard extends LitElement {
                   class=${active ? "active" : ""}
                   .active=${active}
                   .label=${this.hass.areas?.[area]?.name ?? this.store.targetName(ref)}
-                  @click=${() =>
-                    this._setLights(active ? lights.filter((l) => l !== ref) : [...lights, ref])}
+                  @click=${() => this._setSlice(active ? slice.filter((l) => l !== ref) : [...slice, ref])}
                 >
                   <ha-icon
                     slot="icon"
@@ -114,7 +116,7 @@ class MlLayerCard extends LitElement {
         .required=${false}
         @value-changed=${(ev: CustomEvent<{ value?: string[] }>) => {
           ev.stopPropagation();
-          this._setLights([...rooms, ...(ev.detail.value ?? [])]);
+          this._setSlice([...rooms, ...(ev.detail.value ?? [])]);
         }}
       ></ha-selector>
     `;
@@ -153,12 +155,15 @@ class MlLayerCard extends LitElement {
     return options;
   }
 
+  private _roomLights = (id: string) => this.store.target(id)?.lights;
+
   private _allChanged(ev: Event): void {
-    this._setLights(checkedOf(ev) ? "all" : []);
+    this._setSlice(checkedOf(ev) ? wholeTarget(this.target, this._roomLights) : []);
   }
 
-  private _setLights(lights: Layer["lights"]): void {
-    this._emit({ ...this.layer, lights });
+  private _setSlice(slice: string[]): void {
+    const everyRoom = this.store.targets.filter((t) => t.kind === "room").map((t) => t.id);
+    this._emit({ ...this.layer, lights: setRoomSlice(this.layer.lights, this.target, slice, everyRoom) });
   }
 
   private _effectChanged(ev: CustomEvent<{ value?: string }>): void {

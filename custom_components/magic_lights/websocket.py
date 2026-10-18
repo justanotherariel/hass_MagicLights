@@ -122,9 +122,16 @@ def _draft(data: MagicLightsData, raw: Mapping[str, Any]) -> Scene:
     return validate_scene(raw, data.registry, Config())
 
 
-def _with_new_scene(config: Config, scene: Scene) -> Mapping[TargetId, TargetOptions]:
-    """Show a new scene in menus the user has ordered by hand."""
-    if scene.id in config.scenes or scene.preset is not None:
+def _fits(data: MagicLightsData, scene: Scene) -> set[TargetId]:
+    coordinator = data.coordinator
+    return {t.id for t in coordinator.targets.values() if coordinator.fits(scene, t)}
+
+
+def _with_fitting_scene(
+    config: Config, scene: Scene, before: set[TargetId], after: set[TargetId]
+) -> Mapping[TargetId, TargetOptions]:
+    """Show a user scene in hand-ordered menus of targets it newly has lights in."""
+    if scene.preset is not None:
         return config.targets
     return {
         target_id: (
@@ -132,11 +139,20 @@ def _with_new_scene(config: Config, scene: Scene) -> Mapping[TargetId, TargetOpt
                 options, visible_scenes=(*options.visible_scenes, scene.id)
             )
             if options.visible_scenes is not None
-            and (not scene.scope or target_id in scene.scope)
+            and target_id in after - before
+            and scene.id not in options.visible_scenes
             else options
         )
         for target_id, options in config.targets.items()
     }
+
+
+def _pristine(scene: Scene, presets: Mapping[str, Scene]) -> bool:
+    """Whether an edit of a preset is the preset itself, defaults filled in."""
+    if (preset := presets.get(scene.preset or "")) is None:
+        return False
+    fields = ("layers", "others", "brightness", "transition", "icon")
+    return all(getattr(scene, f) == getattr(preset, f) for f in fields)
 
 
 def _without_refs(config: Config, scene_id: str) -> Config:
@@ -161,22 +177,6 @@ def _without_refs(config: Config, scene_id: str) -> Config:
     return dataclasses.replace(config, targets=targets, settings=settings)
 
 
-def _without_target(
-    scenes: Mapping[str, Scene], target_id: TargetId
-) -> dict[str, Scene]:
-    """Drop a deleted target from the scenes' scopes.
-
-    A scene scoped to it alone goes too: an empty scope would mean everywhere.
-    """
-    out: dict[str, Scene] = {}
-    for scene_id, scene in scenes.items():
-        if target_id not in scene.scope:
-            out[scene_id] = scene
-        elif scope := tuple(t for t in scene.scope if t != target_id):
-            out[scene_id] = dataclasses.replace(scene, scope=scope)
-    return out
-
-
 def _config_dto(hass: HomeAssistant, data: MagicLightsData) -> dict[str, Any]:
     coordinator = data.coordinator
     config = coordinator.config
@@ -184,7 +184,7 @@ def _config_dto(hass: HomeAssistant, data: MagicLightsData) -> dict[str, Any]:
     return {
         "zones": {zone_id: zone.to_dict() for zone_id, zone in config.zones.items()},
         "targets": [
-            target_info(hass, coordinator, target)
+            target_info(hass, coordinator, data.registry, target)
             for target in coordinator.targets.values()
         ],
         "scenes": [scene_info(coordinator, data.registry, s) for s in scenes],
@@ -220,6 +220,7 @@ def ws_config(
 async def ws_scene_save(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
+    """Save a scene; an edit of a preset that matches the preset removes the edit."""
     if (data := _data_or_error(hass, connection, msg)) is None:
         return
     coordinator = data.coordinator
@@ -230,17 +231,28 @@ async def ws_scene_save(
             data.registry,
             config,
             presets=data.presets,
-            targets=coordinator.targets,
+            fits=partial(_fits, data),
         )
     except ConfigError as err:
         _send_invalid(connection, msg, err, skip=2)
         return
+    if _pristine(scene, data.presets):
+        if scene.id in config.scenes:
+            scenes = {k: v for k, v in config.scenes.items() if k != scene.id}
+            await data.async_commit(hass, dataclasses.replace(config, scenes=scenes))
+        preset = data.presets[scene.public_id]
+        connection.send_result(
+            msg["id"], {"scene": scene_info(coordinator, data.registry, preset)}
+        )
+        return
+    stored = config.scenes.get(scene.id)
+    before = set() if stored is None else _fits(data, stored)
     await data.async_commit(
         hass,
         dataclasses.replace(
             config,
             scenes={**config.scenes, scene.id: scene},
-            targets=_with_new_scene(config, scene),
+            targets=_with_fitting_scene(config, scene, before, _fits(data, scene)),
         ),
     )
     connection.send_result(
@@ -256,7 +268,7 @@ async def ws_scene_save(
 async def ws_scene_delete(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Delete a user scene; deleting a customised copy resets its preset."""
+    """Delete a user scene; deleting an edited preset resets it everywhere."""
     if (data := _data_or_error(hass, connection, msg)) is None:
         return
     config = data.coordinator.config
@@ -269,7 +281,7 @@ async def ws_scene_delete(
     config = dataclasses.replace(
         config, scenes={k: v for k, v in config.scenes.items() if k != scene_id}
     )
-    # A copy's references name its preset, which stays.
+    # An edited preset's references name the preset, which stays.
     if deleted.preset is None:
         config = _without_refs(config, scene_id)
     await data.async_commit(hass, config)
@@ -324,7 +336,6 @@ async def ws_zone_delete(
             config,
             zones={k: v for k, v in config.zones.items() if k != zone_id},
             targets={k: v for k, v in config.targets.items() if k != target_id},
-            scenes=_without_target(config.scenes, target_id),
         ),
     )
     connection.send_result(msg["id"], {})
@@ -366,7 +377,7 @@ async def ws_target_options(
     )
     target = coordinator.targets[target_id]
     connection.send_result(
-        msg["id"], {"target": target_info(hass, coordinator, target)}
+        msg["id"], {"target": target_info(hass, coordinator, data.registry, target)}
     )
 
 
@@ -412,7 +423,9 @@ async def ws_menus_save(
         msg["id"],
         {
             "targets": [
-                target_info(hass, coordinator, coordinator.targets[target_id])
+                target_info(
+                    hass, coordinator, data.registry, coordinator.targets[target_id]
+                )
                 for target_id in msg["menus"]
             ]
         },
