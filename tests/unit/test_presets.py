@@ -109,6 +109,16 @@ class PresetTest(unittest.TestCase):
                     self.assertTrue(1 <= len(swatches) <= 5)
                     self.assertTrue(all(HEX.match(s) for s in swatches), swatches)
 
+    def test_adaptive_presets_hold_their_day_brightness(self) -> None:
+        for item in self.raw:
+            if item["category"] != "adaptive":
+                continue
+            with self.subTest(item["id"]):
+                params = self.presets[item["id"]].layers[0].params
+                self.assertEqual(params["brightness_mode"], "static")
+                self.assertEqual(params["brightness"], params["max_brightness"])
+                self.assertLess(params["min_brightness"], params["max_brightness"])
+
     def test_categories_match_effects(self) -> None:
         effects = {
             "white": {"white", "palette"},

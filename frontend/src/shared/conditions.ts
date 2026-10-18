@@ -51,8 +51,8 @@ export const isFieldVisible = (schema: HaFormSchema, data: Data): boolean => {
   return conditions.every((condition) => evaluateCondition(condition, data));
 };
 
-// Hiding a field drops its value, which can flip another field's condition, so
-// resolve the set to a fixpoint.
+// A hidden field counts as empty in the other fields' conditions, as in ha-form,
+// which can hide more of them, so resolve the set to a fixpoint.
 export const getHiddenFields = (schema: readonly HaFormSchema[], data: Data): Set<string> => {
   const hidden = new Set<string>();
   const evalData: Record<string, unknown> = { ...(data ?? {}) };

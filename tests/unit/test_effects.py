@@ -31,6 +31,7 @@ from custom_components.magic_lights.effects.palette import (
     _next,
     step_seconds,
 )
+from custom_components.magic_lights.effects.schema import serialize_schema
 from custom_components.magic_lights.effects.static import Static
 from custom_components.magic_lights.effects.white import White
 from custom_components.magic_lights.models import (
@@ -582,7 +583,7 @@ class AdaptiveTest(unittest.TestCase):
                         )
 
     def test_dst_night_is_continuous(self) -> None:
-        params = Adaptive.validate({})
+        params = Adaptive.validate({"brightness_mode": "tanh"})
         for day in (date(2026, 3, 29), date(2026, 10, 25)):
             with self.subTest(day=day):
                 start = datetime(day.year, day.month, day.day, 0, 0, tzinfo=UTC)
@@ -595,6 +596,52 @@ class AdaptiveTest(unittest.TestCase):
                 ]
                 self.assertTrue(all(v.brightness == 0.4 for v in values))
                 self.assertTrue(all(v.color == Color(kelvin=2200) for v in values))
+
+    def test_static_brightness_with_kelvin_following_the_sun(self) -> None:
+        params = {"brightness_mode": "static", "brightness": 70, "min_brightness": 10}
+        run = Run(Adaptive, lights(1), params, sun=BERLIN)
+        day = datetime(2026, 6, 21, tzinfo=UTC)
+        states = [
+            run.render(first=False, now=day + timedelta(hours=h)).states["light.l0"]
+            for h in range(24)
+        ]
+        self.assertEqual({s.brightness for s in states}, {0.7})
+        kelvins = [s.color.kelvin for s in states]
+        self.assertEqual((min(kelvins), max(kelvins)), (2200, 5000))
+        self.assertEqual(Adaptive.validate({})["brightness_mode"], "static")
+
+    def test_brightness_fields_follow_the_mode(self) -> None:
+        fields = {f["name"]: f for f in serialize_schema(Adaptive.schema)}
+        mode = "brightness_mode"
+        self.assertEqual(
+            [o["value"] for o in fields[mode]["selector"]["select"]["options"]],
+            ["static", "default", "linear", "tanh"],
+        )
+        self.assertEqual(
+            fields["brightness"]["visible"], {"field": mode, "value": "static"}
+        )
+        for name in ("min_brightness", "max_brightness"):
+            self.assertEqual(
+                fields[name]["visible"],
+                {"field": mode, "operator": "not_eq", "value": "static"},
+            )
+        for name in ("ramp_dark", "ramp_light"):
+            self.assertEqual(
+                fields[name]["visible"],
+                {"field": mode, "operator": "in", "value": ["linear", "tanh"]},
+            )
+        # Kelvin uses the rest in every mode.
+        always = set(fields) - {
+            mode,
+            "brightness",
+            "min_brightness",
+            "max_brightness",
+            "ramp_dark",
+            "ramp_light",
+        }
+        self.assertEqual(
+            {n for n in always if "visible" in fields[n]}, set(), sorted(always)
+        )
 
     def test_curve_defaults_match_the_schema(self) -> None:
         self.assertEqual(_curve_params(Adaptive.validate({})), AdaptiveParams())

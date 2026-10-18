@@ -67,7 +67,8 @@ vol.Required("speed", default=0.5, description={
 }): selector.NumberSelector(selector.NumberSelectorConfig(min=0, max=1, step=0.05, mode="slider"))
 ```
 
-- `description` carries the field's `label`, `helper` text and `visible` condition (ha-form's format: `{"field", "value"}` or `{"condition": "and" | "or" | "not", "conditions": [...]}`). Without a label the key is humanised.
+- `description` carries the field's `label`, `helper` text and `visible` condition (ha-form's format: `{"field", "value"}`, optionally with `"operator"`: `"eq"`, `"not_eq"`, `"in"`, `"not_in"`, `"exists"` or `"not_exists"`; or `{"condition": "and" | "or" | "not", "conditions": [...]}`). Without a label the key is humanised.
+- A hidden field only leaves the form: its value is kept, saved and passed to `render`, so a mode switched off and on again comes back as it was. Read the controlling field in `render` to know whether to use it.
 - `vol.Optional` without a default means the key may be missing from `ctx.params`.
 - `api.py` adds:
   - `PCT`: a 1–100 % slider. Divide by 100 for `LightState.brightness`.
@@ -112,7 +113,7 @@ vol.Required("speed", default=0.5, description={
 - Return a state for every light you want set. Omitted lights keep what they were last sent; returning an unchanged state costs nothing (it is not resent).
 - Set `effect` or `gradient` only after checking `light.caps`, and always give a `color` beside them for lights or paths that cannot use them. White-only lights get the white nearest to your xy; give them a kelvin to choose it yourself.
 - `next_update` is raised to at least `max(ctx.min_period, 0.1)`. Plan your steps with `ctx.min_period` in mind and use it (or your step length) as `transition` for smooth fades.
-- If the effect can move or hold still, give it a parameter named `motion` with the values `"static"` and `"dynamic"`, and honour `ctx.adjust.get("dynamic")` over it (`True` plays, `False` holds, `None` means as configured). The panel and the card offer play/pause only for effects with such a `motion` parameter; the `activate_scene` and `set_dynamic` services set `dynamic` for any scene. Play moves a scene saved as `"static"` too, so do not hide the fields motion uses behind `motion`: the editor drops the values of hidden fields.
+- If the effect can move or hold still, give it a parameter named `motion` with the values `"static"` and `"dynamic"`, and honour `ctx.adjust.get("dynamic")` over it (`True` plays, `False` holds, `None` means as configured). The panel and the card offer play/pause only for effects with such a `motion` parameter; the `activate_scene` and `set_dynamic` services set `dynamic` for any scene. Play moves a scene saved as `"static"` too, so do not hide the fields motion uses behind `motion`: the user could not set them for play.
 
 ## A complete example
 

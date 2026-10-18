@@ -394,19 +394,21 @@ PARAM_TABLE: dict[str, vol.Schema] = {
     ),
     "adaptive": vol.Schema(
         {
-            vol.Required("min_brightness", default=40): PCT,
-            vol.Required("max_brightness", default=100): PCT,
-            vol.Required("min_kelvin", default=2200): KELVIN(1000, 10000),
-            vol.Required("max_kelvin", default=5000): KELVIN(1000, 10000),
-            vol.Required("brightness_mode", default="tanh"): _select(
+            vol.Required("brightness_mode", default="static"): _select(
                 [
+                    {"value": "static", "label": "None (static)"},
                     {"value": "default", "label": "Dim after sunset"},
                     {"value": "linear", "label": "Linear ramp"},
                     {"value": "tanh", "label": "Smooth ramp"},
                 ]
             ),
+            vol.Required("brightness", default=100): PCT,
+            vol.Required("min_brightness", default=40): PCT,
+            vol.Required("max_brightness", default=100): PCT,
             vol.Required("ramp_dark", default=60): _number(5, 240),
             vol.Required("ramp_light", default=90): _number(5, 240),
+            vol.Required("min_kelvin", default=2200): KELVIN(1000, 10000),
+            vol.Required("max_kelvin", default=5000): KELVIN(1000, 10000),
             vol.Required("sunrise_offset", default=0): _number(-180, 180),
             vol.Required("sunset_offset", default=0): _number(-180, 180),
             vol.Optional("min_sunrise"): selector.TimeSelector(),

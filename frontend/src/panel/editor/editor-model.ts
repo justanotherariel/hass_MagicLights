@@ -56,6 +56,14 @@ export const withDefaults = (
   return out;
 };
 
+/** A form's params after one field changed; hidden fields keep their values. */
+export const nextParams = (
+  defaults: Record<string, unknown> | undefined,
+  params: Record<string, unknown>,
+  name: string,
+  value: unknown,
+): Record<string, unknown> => withDefaults(defaults, { ...params, [name]: value === "" ? undefined : value });
+
 const visibleItems = (effect: EffectInfo | undefined, values: Record<string, unknown>): HaFormSchema[] => {
   const schema = effect?.schema ?? [];
   const hidden = getHiddenFields(schema, values);
@@ -104,6 +112,11 @@ export const layerSwatches = (effect: EffectInfo | undefined, params: Record<str
   return colours.slice(0, 5).map(colorToHex);
 };
 
+const optionLabel = (item: HaFormSchema, value: string): string => {
+  const select = labelledSelector(item.selector ?? {}).select as { options?: { value?: unknown; label?: string }[] };
+  return select.options?.find((option) => option.value === value)?.label ?? humanise(value);
+};
+
 const formatNumber = (value: number): string =>
   Number.isInteger(value) ? String(value) : String(Math.round(value * 100) / 100);
 
@@ -118,7 +131,7 @@ export const layerSummary = (effect: EffectInfo | undefined, params: Record<stri
     if (type === "color_temp" && typeof value === "number") parts.push(`${Math.round(value)} K`);
     else if (type === "number" && typeof value === "number" && config.unit_of_measurement) {
       parts.push(withUnit(formatNumber(value), config.unit_of_measurement));
-    } else if (type === "select" && typeof value === "string" && value) parts.push(humanise(value));
+    } else if (type === "select" && typeof value === "string" && value) parts.push(optionLabel(item, value));
   }
   return parts.slice(0, 3).join(" · ");
 };

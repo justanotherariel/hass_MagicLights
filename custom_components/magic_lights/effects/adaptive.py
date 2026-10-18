@@ -1,4 +1,4 @@
-"""Adaptive: brightness and colour temperature follow the sun."""
+"""Adaptive: colour temperature, and brightness if wanted, follow the sun."""
 
 from __future__ import annotations
 
@@ -26,6 +26,11 @@ _UNSHIFTED = {
     "max_sunset": None,
 }
 
+# Kelvin follows the sun in every mode, so only the brightness fields depend on it.
+_STATIC = {"field": "brightness_mode", "value": "static"}
+_CURVE = {"field": "brightness_mode", "operator": "not_eq", "value": "static"}
+_RAMPS = {"field": "brightness_mode", "operator": "in", "value": ["linear", "tanh"]}
+
 
 def _number(lo: float, hi: float, unit: str) -> selector.NumberSelector:
     return selector.NumberSelector(
@@ -41,6 +46,7 @@ def _time(value: str | time | None) -> time | None:
 
 def _curve_params(params: Mapping[str, Any]) -> AdaptiveParams:
     return AdaptiveParams(
+        brightness=params["brightness"],
         min_brightness=params["min_brightness"],
         max_brightness=params["max_brightness"],
         min_kelvin=round(params["min_kelvin"]),
@@ -61,35 +67,27 @@ class Adaptive(Effect):
     key = "adaptive"
     name = "Adaptive"
     description = (
-        "Brightness and colour temperature follow the sun, like Adaptive Lighting."
+        "Colour temperature follows the sun, like Adaptive Lighting; brightness"
+        " can follow it too."
     )
     icon = "mdi:theme-light-dark"
     category = "adaptive"
     schema = vol.Schema(
         {
             vol.Required(
-                "min_brightness", default=40, description={"label": "Night brightness"}
-            ): PCT,
-            vol.Required(
-                "max_brightness", default=100, description={"label": "Day brightness"}
-            ): PCT,
-            vol.Required(
-                "min_kelvin", default=2200, description={"label": "Warmest white"}
-            ): KELVIN(1000, 10000),
-            vol.Required(
-                "max_kelvin", default=5000, description={"label": "Coolest white"}
-            ): KELVIN(1000, 10000),
-            vol.Required(
                 "brightness_mode",
-                default="tanh",
+                default="static",
                 description={
                     "label": "Brightness curve",
-                    "helper": "Dim after sunset: down from sunset to midnight."
-                    " The ramps: around sunrise and sunset",
+                    "helper": "Dim after sunset: down until midnight, back up by"
+                    " sunrise. The ramps change around sunrise and sunset",
                 },
             ): selector.SelectSelector(
                 selector.SelectSelectorConfig(
                     options=[
+                        selector.SelectOptionDict(
+                            value="static", label="None (static)"
+                        ),
                         selector.SelectOptionDict(
                             value="default", label="Dim after sunset"
                         ),
@@ -99,11 +97,27 @@ class Adaptive(Effect):
                 )
             ),
             vol.Required(
+                "brightness",
+                default=100,
+                description={"label": "Brightness", "visible": _STATIC},
+            ): PCT,
+            vol.Required(
+                "min_brightness",
+                default=40,
+                description={"label": "Night brightness", "visible": _CURVE},
+            ): PCT,
+            vol.Required(
+                "max_brightness",
+                default=100,
+                description={"label": "Day brightness", "visible": _CURVE},
+            ): PCT,
+            vol.Required(
                 "ramp_dark",
                 default=60,
                 description={
                     "label": "Ramp on the dark side",
                     "helper": "Minutes after sunset and before sunrise",
+                    "visible": _RAMPS,
                 },
             ): _number(5, 240, "min"),
             vol.Required(
@@ -112,8 +126,15 @@ class Adaptive(Effect):
                 description={
                     "label": "Ramp on the light side",
                     "helper": "Minutes before sunset and after sunrise",
+                    "visible": _RAMPS,
                 },
             ): _number(5, 240, "min"),
+            vol.Required(
+                "min_kelvin", default=2200, description={"label": "Warmest white"}
+            ): KELVIN(1000, 10000),
+            vol.Required(
+                "max_kelvin", default=5000, description={"label": "Coolest white"}
+            ): KELVIN(1000, 10000),
             vol.Required(
                 "sunrise_offset", default=0, description={"label": "Sunrise offset"}
             ): _number(-180, 180, "min"),

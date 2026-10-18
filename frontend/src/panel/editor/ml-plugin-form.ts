@@ -1,14 +1,14 @@
 // An effect's params form built from its serialised schema: one ha-selector per
 // item, our own fields for the custom colour selectors, ha-form visibility conditions,
 // and a YAML object editor when the schema could not be serialised. Fires value-changed
-// with the whole params object; hidden fields are dropped, visible ones prefilled.
+// with the whole params object, prefilled; hidden fields keep their values.
 
 import { LitElement, css, html } from "lit";
 import { property } from "lit/decorators.js";
 import { getHiddenFields } from "../../shared/conditions";
 import type { HaFormSchema, HomeAssistant, PaletteInfo } from "../../shared/types";
 import { defineElement, fire, humanise } from "../../shared/util";
-import { labelledSelector, withDefaults } from "./editor-model";
+import { labelledSelector, nextParams, withDefaults } from "./editor-model";
 import "./ml-color-field";
 import "./ml-palette-field";
 
@@ -91,12 +91,7 @@ class MlPluginForm extends LitElement {
   }
 
   private _changed(name: string, value: unknown): void {
-    const next = withDefaults(this.defaults, {
-      ...this.data,
-      [name]: value === "" ? undefined : value,
-    });
-    for (const field of getHiddenFields(this.schema ?? [], next)) delete next[field];
-    this._emit(next);
+    this._emit(nextParams(this.defaults, this.data, name, value));
   }
 
   private _emit(value: Params): void {

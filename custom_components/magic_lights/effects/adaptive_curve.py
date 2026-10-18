@@ -24,11 +24,12 @@ _POLAR_HALF_SPAN = timedelta(minutes=30)
 class AdaptiveParams:
     """Curve parameters. Brightness in percent, color temperature in kelvin."""
 
+    brightness: float = 100  # static mode only
     min_brightness: float = 40
     max_brightness: float = 100
     min_kelvin: int = 2200
     max_kelvin: int = 5000
-    brightness_mode: Literal["default", "linear", "tanh"] = "tanh"
+    brightness_mode: Literal["static", "default", "linear", "tanh"] = "static"
     # Ramp before/after sunset and sunrise (linear/tanh only).
     ramp_dark: timedelta = timedelta(minutes=60)
     ramp_light: timedelta = timedelta(minutes=90)
@@ -54,7 +55,9 @@ def adaptive_values(
     kelvin = params.min_kelvin + (params.max_kelvin - params.min_kelvin) * max(pos, 0)
 
     lo, hi = params.min_brightness, params.max_brightness
-    if params.brightness_mode == "default":
+    if params.brightness_mode == "static":
+        bri = params.brightness
+    elif params.brightness_mode == "default":
         bri = hi if pos > 0 else lo + (hi - lo) * (1 + pos)
     else:
         # Each bracket holds exactly one of sunrise/sunset.

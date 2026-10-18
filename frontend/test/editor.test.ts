@@ -13,6 +13,7 @@ import {
   layerOwners,
   layerSummary,
   layerSwatches,
+  nextParams,
   sceneProblems,
   stableJson,
   withDefaults,
@@ -75,6 +76,43 @@ const LIGHT_EFFECT: EffectInfo = {
     { name: "color", required: true, selector: { magic_lights_color: {} } },
   ],
   defaults: { effect: "candle", brightness: 35, speed: 0.5, color: { xy: [0.561, 0.4042] } },
+};
+const MODE = "brightness_mode";
+const ADAPTIVE: EffectInfo = {
+  ...WHITE,
+  key: "adaptive",
+  name: "Adaptive",
+  category: "adaptive",
+  schema: [
+    {
+      name: MODE,
+      required: true,
+      selector: {
+        select: {
+          options: [
+            { value: "static", label: "None (static)" },
+            { value: "default", label: "Dim after sunset" },
+            { value: "tanh", label: "Smooth ramp" },
+          ],
+        },
+      },
+    },
+    { name: "brightness", required: true, selector: pct, visible: { field: MODE, value: "static" } },
+    {
+      name: "min_brightness",
+      required: true,
+      selector: pct,
+      visible: { field: MODE, operator: "not_eq", value: "static" },
+    },
+    {
+      name: "ramp_dark",
+      required: true,
+      selector: { number: { min: 5, max: 240, unit_of_measurement: "min", mode: "slider" } },
+      visible: { field: MODE, operator: "in", value: ["linear", "tanh"] },
+    },
+    { name: "min_kelvin", required: true, selector: { color_temp: { unit: "kelvin", min: 1000, max: 10000 } } },
+  ],
+  defaults: { [MODE]: "static", brightness: 100, min_brightness: 40, ramp_dark: 60, min_kelvin: 2200 },
 };
 
 const ZONE: TargetInfo = {
@@ -140,6 +178,23 @@ test("layer summaries rebuild describe() from the schema", () => {
   assert.equal(layerSummary(PALETTE, { motion: "dynamic" }), "60% · Dynamic");
   assert.equal(layerSummary(LIGHT_EFFECT, { effect: "fireplace", brightness: 45 }), "Fireplace · 45%");
   assert.equal(layerSummary(undefined, { kelvin: 2700 }), "");
+});
+
+test("layer summaries show option labels and skip hidden fields", () => {
+  assert.equal(layerSummary(ADAPTIVE, {}), "None (static) · 100% · 2200 K");
+  // Values of hidden fields are kept, but not summarised.
+  const params = { [MODE]: "default", brightness: 70, min_brightness: 20, ramp_dark: 30 };
+  assert.equal(layerSummary(ADAPTIVE, params), "Dim after sunset · 20% · 2200 K");
+  assert.equal(layerSummary(ADAPTIVE, { ...params, [MODE]: "tanh" }), "Smooth ramp · 20% · 30 min");
+});
+
+test("form edits keep the values of fields a mode hides", () => {
+  const custom = { [MODE]: "tanh", min_brightness: 20, ramp_dark: 30, min_sunrise: "06:30:00" };
+  const hidden = nextParams(ADAPTIVE.defaults, custom, MODE, "static");
+  assert.deepEqual(hidden, { ...custom, [MODE]: "static", brightness: 100, min_kelvin: 2200 });
+  const shown = nextParams(ADAPTIVE.defaults, hidden, MODE, "tanh");
+  assert.deepEqual(shown, { ...custom, brightness: 100, min_kelvin: 2200 });
+  assert.equal(nextParams(ADAPTIVE.defaults, shown, "min_sunrise", "").min_sunrise, undefined);
 });
 
 test("layer swatches: a palette wins over single colours", () => {

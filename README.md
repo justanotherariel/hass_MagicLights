@@ -13,7 +13,7 @@ Scenes for whole rooms, the way the Hue app does them, for every light in Home A
 - **Zones** combine rooms ("Downstairs" = living room + kitchen), and each zone gets a select too.
 - **48 built-in scenes**: Energize, Read, Relax, Nightlight, Savanna sunset, Tokyo, Cozy candle, Fireplace, Adaptive and more. Customise one for one room, or build your own from layers.
 - **Hands off when you take over.** A lamp you dim in another app or switch off at the wall becomes *manual*: the scene stops sending to it until you reclaim it.
-- **Adaptive lighting**: brightness and colour temperature follow the sun, and a room can start it when a light is switched on.
+- **Adaptive lighting**: colour temperature (and, if you like, brightness) follows the sun, and a room can start it when a light is switched on.
 - **Dynamic colours**: palette scenes can drift through their colours, paced so your Zigbee network keeps up. Hue lights on Zigbee2MQTT run candle, fireplace and sunrise in firmware, and gradient strips show the whole palette.
 - **A panel and a dashboard card** to run, customise and preview everything. No YAML.
 
@@ -72,7 +72,7 @@ The effects are:
 | Colour | One colour or white |
 | Colour palette | Deals up to nine colours over the lights; static or moving |
 | Light effect | A firmware effect (Hue: candle, fireplace, sunrise, …); candle and fireplace are emulated on other lights |
-| Adaptive | Brightness and colour temperature follow the sun |
+| Adaptive | Colour temperature follows the sun; brightness holds one level or follows it too |
 
 The **built-in scenes** cover whites, 35 colour palettes, two candle scenes and three adaptive ones. A room's menu shows a curated subset; the rest are one switch away in the room's settings, where you can also reorder the menu.
 
@@ -93,7 +93,7 @@ Magic Lights tells its own commands apart from yours by what it last sent, not b
 
 ### Adaptive
 
-The **Adaptive** scenes follow the sun like [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting): bright and cool at noon, dim and warm in the evening, with optional sunrise and sunset clamps. They update every 90 seconds and glide 45 seconds between updates, at low priority. Switching to one fades like any other scene.
+The **Adaptive** scenes follow the sun like [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting): cool white at noon, warm in the evening, with optional sunrise and sunset clamps. Their brightness stays at one level by default; set **Brightness curve** to dim them after sunset or ramp them around sunrise and sunset. They update every 90 seconds and glide 45 seconds between updates, at low priority. Switching to one fades like any other scene.
 
 To get adaptive light without touching anything, set **When a light is switched on** in the panel settings to Adaptive. A light switched on in a room that is off then gets Adaptive. Only that light: the others join as they are switched on. Each room can override this or turn it off.
 
