@@ -1,4 +1,4 @@
-Magic Lights built-in scenes (scenes.json)
+Magic Lights built-in scenes (scenes.json) and parts (parts.json)
 
 The colour palettes, brightness levels and colour-temperature fallbacks of the
 built-in colour scenes are derived from hass-scene_presets by Sören Beye

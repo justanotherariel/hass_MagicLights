@@ -1,4 +1,4 @@
-"""presets/scenes.json against the real effects."""
+"""presets/scenes.json and presets/parts.json against the real effects."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from custom_components.magic_lights.effects.schema import PaletteSelector
 from custom_components.magic_lights.models import normalise
 from custom_components.magic_lights.presets import (
     SCENES_FILE,
+    load_parts,
     load_presets,
     palettes_from_presets,
 )
@@ -59,6 +60,25 @@ class PresetTest(unittest.TestCase):
         with self.assertNoLogs("custom_components.magic_lights.presets", "ERROR"):
             presets = load_presets(self.registry)
         self.assertEqual(list(presets), IDS)
+
+    def test_parts_are_the_presets(self) -> None:
+        with self.assertNoLogs("custom_components.magic_lights.presets", "ERROR"):
+            parts = load_parts(self.registry)
+        self.assertEqual(list(parts), IDS)
+        for part_id, part in parts.items():
+            with self.subTest(part_id):
+                preset = self.presets[part_id]
+                (layer,) = preset.layers
+                self.assertEqual(
+                    (part.name, part.icon, part.category, part.effect, part.params),
+                    (
+                        preset.name,
+                        preset.icon,
+                        preset.category,
+                        layer.effect,
+                        layer.params,
+                    ),
+                )
 
     def test_every_param_validates(self) -> None:
         for item in self.raw:

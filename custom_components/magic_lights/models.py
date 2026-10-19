@@ -14,6 +14,7 @@ import copy
 import dataclasses
 from dataclasses import dataclass, field
 from datetime import datetime, tzinfo
+import re
 from typing import TYPE_CHECKING, Any, Literal, Protocol
 
 from astral import Observer
@@ -29,6 +30,7 @@ if TYPE_CHECKING:
 
 TargetId = str
 SceneCategory = Literal["white", "color", "dynamic", "adaptive", "custom"]
+PartCategory = Literal["white", "color", "dynamic", "adaptive"]
 LightStatus = Literal["scene", "manual", "elsewhere", "off", "on", "unavailable"]
 
 
@@ -340,6 +342,96 @@ class Scene:
 
 
 @dataclass(frozen=True, slots=True)
+class Part:
+    """A named look: one effect with its params."""
+
+    id: str  # "p_" + 8 hex, or a built-in's slug
+    name: str
+    effect: str
+    params: Mapping[str, Any]
+    icon: str | None = None  # built-ins only
+    category: PartCategory | None = None  # built-ins only
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> Part:
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            effect=data["effect"],
+            params=copy.deepcopy(dict(data.get("params") or {})),
+            **_present(data, "icon", "category"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return the stored form: the catalogue keeps icons and categories."""
+        return {
+            "id": self.id,
+            "name": self.name,
+            "effect": self.effect,
+            "params": copy.deepcopy(dict(self.params)),
+        }
+
+
+_USER_PART_ID = re.compile(r"p_[0-9a-f]{8}")
+
+
+def is_user_part(part_id: str) -> bool:
+    """Whether `part_id` names a user part rather than a built-in."""
+    return _USER_PART_ID.fullmatch(part_id) is not None
+
+
+@dataclass(frozen=True, slots=True)
+class PartLayer:
+    lights: Literal["all"] | tuple[str, ...]  # "light.x" or "room:<area_id>"
+    part: str  # part id
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> PartLayer:
+        lights = data["lights"]
+        return cls(
+            lights="all" if lights == "all" else tuple(lights), part=data["part"]
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "lights": "all" if self.lights == "all" else list(self.lights),
+            "part": self.part,
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class StoredScene:
+    """A target's scene: which of its lights play which part; a later layer wins."""
+
+    id: str
+    name: str
+    icon: str | None
+    layers: tuple[PartLayer, ...]
+    others: Literal["off", "keep"] = "off"
+    transition: float | None = None
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> StoredScene:
+        return cls(
+            id=data["id"],
+            name=data["name"],
+            icon=data.get("icon"),
+            layers=tuple(PartLayer.from_dict(layer) for layer in data["layers"]),
+            **_present(data, "others", "transition"),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "id": self.id,
+            "name": self.name,
+            "icon": self.icon,
+            "layers": [layer.to_dict() for layer in self.layers],
+            "others": self.others,
+            "transition": self.transition,
+        }
+
+
+@dataclass(frozen=True, slots=True)
 class Zone:
     id: str
     name: str
@@ -465,6 +557,50 @@ class Config:
                 k: v.to_dict() for k, v in self.targets.items() if v != default
             },
             "scenes": {k: v.to_dict() for k, v in self.scenes.items()},
+            "settings": self.settings.to_dict(),
+        }
+
+
+@dataclass(frozen=True, slots=True)
+class ConfigV4:
+    """Store v4: shared parts, and each target's scenes in menu order."""
+
+    zones: Mapping[str, Zone] = field(default_factory=dict)
+    targets: Mapping[TargetId, TargetOptions] = field(default_factory=dict)
+    parts: Mapping[str, Part] = field(default_factory=dict)
+    scenes: Mapping[TargetId, tuple[StoredScene, ...]] = field(default_factory=dict)
+    settings: Settings = field(default_factory=Settings)
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> ConfigV4:
+        """Build from the stored form without validating effects."""
+        return cls(
+            zones={k: Zone.from_dict(v) for k, v in (data.get("zones") or {}).items()},
+            targets={
+                k: TargetOptions.from_dict(v)
+                for k, v in (data.get("targets") or {}).items()
+            },
+            parts={k: Part.from_dict(v) for k, v in (data.get("parts") or {}).items()},
+            scenes={
+                k: tuple(StoredScene.from_dict(s) for s in v)
+                for k, v in (data.get("scenes") or {}).items()
+            },
+            settings=Settings.from_dict(data.get("settings") or {}),
+        )
+
+    def to_dict(self) -> dict[str, Any]:
+        default = TargetOptions()
+        targets = {}
+        for target_id, options in self.targets.items():
+            if dataclasses.replace(options, visible_scenes=None) != default:
+                stored = options.to_dict()
+                del stored["visible_scenes"]  # a target's scenes are its menu
+                targets[target_id] = stored
+        return {
+            "zones": {k: v.to_dict() for k, v in self.zones.items()},
+            "targets": targets,
+            "parts": {k: v.to_dict() for k, v in self.parts.items()},
+            "scenes": {k: [s.to_dict() for s in v] for k, v in self.scenes.items()},
             "settings": self.settings.to_dict(),
         }
 
@@ -683,3 +819,39 @@ def available_scenes(
     out = {pid: overrides.get(pid, preset) for pid, preset in presets.items()}
     out.update((s.id, s) for s in scenes.values() if s.preset not in presets)
     return out
+
+
+def all_parts(
+    stored: Mapping[str, Part], builtins: Mapping[str, Part]
+) -> dict[str, Part]:
+    """Return every part by id: built-ins with their edits, then user parts.
+
+    Built-ins keep catalogue order and user parts stored order. An edit whose
+    built-in left the catalogue is ignored.
+    """
+    out = {
+        part_id: (
+            dataclasses.replace(builtin, effect=edit.effect, params=edit.params)
+            if (edit := stored.get(part_id)) is not None
+            else builtin
+        )
+        for part_id, builtin in builtins.items()
+    }
+    out.update((k, part) for k, part in stored.items() if is_user_part(k))
+    return out
+
+
+def resolve(scene: StoredScene, parts: Mapping[str, Part]) -> Scene:
+    """Return the scene the engine runs; a layer whose part is missing is dropped."""
+    return Scene(
+        id=scene.id,
+        name=scene.name,
+        icon=scene.icon,
+        layers=tuple(
+            Layer(layer.lights, part.effect, part.params)
+            for layer in scene.layers
+            if (part := parts.get(layer.part)) is not None
+        ),
+        others=scene.others,
+        transition=scene.transition,
+    )

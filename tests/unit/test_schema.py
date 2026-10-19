@@ -18,7 +18,9 @@ from custom_components.magic_lights.effects.schema import (
 )
 from custom_components.magic_lights.models import Frame, LightState
 from custom_components.magic_lights.presets import (
+    PARTS_FILE,
     SCENES_FILE,
+    load_parts,
     load_presets,
     palettes_from_presets,
 )
@@ -235,7 +237,7 @@ class EffectBaseTest(unittest.TestCase):
 
 
 class PresetCatalogueTest(unittest.TestCase):
-    """scenes.json against the parameter table (fakes.PARAM_TABLE)."""
+    """scenes.json and parts.json against the parameter table (fakes.PARAM_TABLE)."""
 
     @classmethod
     def setUpClass(cls) -> None:
@@ -318,6 +320,22 @@ class PresetCatalogueTest(unittest.TestCase):
         with self.assertLogs("custom_components.magic_lights.presets", "ERROR"):
             presets = load_presets(registry)
         self.assertEqual(len(presets), 45)
+        with self.assertLogs("custom_components.magic_lights.presets", "ERROR"):
+            parts = load_parts(registry)
+        self.assertEqual(len(parts), 45)
+        self.assertNotIn("adaptive", parts)
+
+    def test_parts_file(self) -> None:
+        raw = json.loads(PARTS_FILE.read_text(encoding="utf-8"))
+        self.assertEqual([p["id"] for p in raw], [s["id"] for s in self.raw])
+        for item in raw:
+            with self.subTest(item["id"]):
+                self.assertEqual(
+                    set(item), {"id", "name", "icon", "category", "effect", "params"}
+                )
+        parts = load_parts(FakeRegistry())
+        self.assertEqual(list(parts), [p["id"] for p in raw])
+        self.assertEqual(parts["relax"].params, self.presets["relax"].layers[0].params)
 
 
 if __name__ == "__main__":
