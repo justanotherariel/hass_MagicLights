@@ -1,23 +1,24 @@
-// A small config (two rooms, one zone, presets, an edited preset, a user scene) and a fake hass.
+// A small config (two rooms, one zone, built-ins with an edit, parts of yours shared by
+// rooms, a scene without lights in its room) and a fake hass.
 
-import type { ConfigDto, HomeAssistant, SceneInfo, SelectAttributes, TargetInfo } from "../src/shared/types";
+import type {
+  ConfigDto,
+  HomeAssistant,
+  PartInfo,
+  SceneInfo,
+  SelectAttributes,
+  TargetInfo,
+} from "../src/shared/types";
 
 const options = {
   excluded_lights: [],
   extra_lights: [],
-  visible_scenes: null,
   default_scene: null,
   reclaim_on_turn_on: true,
   detect_changes: true,
 };
 
-const target = (
-  id: TargetInfo["id"],
-  name: string,
-  lights: string[],
-  scenes: string[],
-  swatches: TargetInfo["swatches"],
-): TargetInfo => ({
+const target = (id: TargetInfo["id"], name: string, lights: string[], scenes: string[]): TargetInfo => ({
   id,
   kind: id.startsWith("room:") ? "room" : "zone",
   name,
@@ -27,79 +28,106 @@ const target = (
   lights,
   options,
   scenes,
-  hidden: [],
-  swatches,
   select_entity_id: `select.${name.toLowerCase().replace(/ /g, "_")}_scene`,
 });
 
-// The edit of Savanna sunset has a second layer for the living room only.
 const SUNSET = ["#4000ff", "#ff5c2f"];
 
-const scene = (s: Partial<SceneInfo> & Pick<SceneInfo, "id" | "name">): SceneInfo => ({
+const part = (p: Partial<PartInfo> & Pick<PartInfo, "id" | "name">): PartInfo => ({
+  effect: "white",
+  params: { kelvin: 2700, brightness: 100 },
   icon: null,
-  preset: null,
-  layers: [{ lights: "all", effect: "white", params: { kelvin: 2700, brightness: 100 } }],
-  others: "off",
-  brightness: 100,
-  transition: null,
+  category: null,
   builtin: false,
-  category: "custom",
+  edited: false,
+  original: null,
   swatches: ["#ffa757"],
   dynamic: false,
-  override: null,
-  fits: ["room:kitchen", "room:living", "zone:downstairs"],
-  ...s,
+  used_by: [],
+  dormant: [],
+  ...p,
 });
+
+const scene = (
+  s: Partial<SceneInfo> & Pick<SceneInfo, "id" | "name" | "target"> & { part: string },
+): SceneInfo => {
+  const { part: partId, ...rest } = s;
+  return {
+    icon: null,
+    layers: [{ lights: "all", part: partId }],
+    others: "off",
+    transition: null,
+    swatches: ["#ffa757"],
+    dynamic: false,
+    fits: true,
+    dormant: false,
+    ...rest,
+  };
+};
 
 export const CONFIG: ConfigDto = {
   zones: { downstairs: { id: "downstairs", name: "Downstairs", icon: null, rooms: ["living", "kitchen"], lights: [] } },
   targets: [
-    target("zone:downstairs", "Downstairs", ["light.lamp", "light.ceiling"], ["relax", "savanna_sunset"], {
-      relax: ["#ff942b"],
-      savanna_sunset: SUNSET,
-      s_22222222: ["#ffa757"],
+    target("zone:downstairs", "Downstairs", ["light.lamp", "light.ceiling"], ["s_00000006"]),
+    target("room:living", "Living room", ["light.lamp"], ["s_00000001", "s_00000002", "s_00000003"]),
+    target("room:kitchen", "Kitchen", ["light.ceiling"], ["s_00000004", "s_00000005"]),
+  ],
+  parts: [
+    part({
+      id: "relax",
+      name: "Relax",
+      icon: "mdi:sofa",
+      category: "white",
+      builtin: true,
+      original: { effect: "white", params: { kelvin: 2700, brightness: 100 } },
+      swatches: ["#ff942b"],
+      used_by: ["s_00000001", "s_00000004"],
     }),
-    target("room:living", "Living room", ["light.lamp"], ["relax", "savanna_sunset", "s_22222222"], {
-      relax: ["#ff942b"],
-      savanna_sunset: SUNSET,
-      s_22222222: ["#ffa757"],
+    part({
+      id: "savanna_sunset",
+      name: "Savanna sunset",
+      icon: "mdi:weather-sunset",
+      category: "color",
+      builtin: true,
+      edited: true,
+      effect: "palette",
+      params: { motion: "dynamic" },
+      original: { effect: "palette", params: { motion: "static" } },
+      dynamic: true,
+      swatches: SUNSET,
+      used_by: ["s_00000005", "s_00000006"],
     }),
-    target("room:kitchen", "Kitchen", ["light.ceiling"], ["relax", "savanna_sunset"], {
-      relax: ["#ff942b"],
-      savanna_sunset: ["#ff5c2f"],
+    part({ id: "p_00000001", name: "Movie", used_by: ["s_00000002"] }),
+    part({
+      id: "p_00000002",
+      name: "Nachtlicht",
+      effect: "palette",
+      params: { motion: "static" },
+      swatches: ["#ff5c2f"],
+      used_by: ["s_00000003"],
+      dormant: ["s_0000000a"],
     }),
   ],
   scenes: [
-    scene({ id: "relax", name: "Relax", builtin: true, category: "white", swatches: ["#ff942b"] }),
+    scene({ id: "s_00000006", name: "Savanna sunset", target: "zone:downstairs", part: "savanna_sunset", swatches: SUNSET, dynamic: true }),
+    scene({ id: "s_00000001", name: "Relax", target: "room:living", part: "relax", icon: "mdi:sofa", swatches: ["#ff942b"] }),
+    scene({ id: "s_00000002", name: "Movie", target: "room:living", part: "p_00000001" }),
+    // The hallway light it plays on left the living room.
+    {
+      ...scene({ id: "s_00000003", name: "Nachtlicht", target: "room:living", part: "p_00000002", fits: false }),
+      layers: [{ lights: ["light.hall"], part: "p_00000002" }],
+    },
+    scene({ id: "s_00000004", name: "Relax", target: "room:kitchen", part: "relax", swatches: ["#ff942b"] }),
     scene({
-      id: "savanna_sunset",
+      id: "s_00000005",
       name: "Savanna sunset",
-      builtin: true,
-      category: "color",
+      target: "room:kitchen",
+      part: "savanna_sunset",
+      swatches: ["#ff5c2f"],
       dynamic: true,
-      swatches: ["#ff5c2f", "#ffbd56"],
-      layers: [{ lights: "all", effect: "palette", params: { motion: "static" } }],
-      override: "s_11111111",
-      fits: [],
     }),
-    scene({
-      id: "s_11111111",
-      name: "Savanna sunset",
-      preset: "savanna_sunset",
-      category: "custom",
-      dynamic: true,
-      swatches: SUNSET,
-      layers: [
-        { lights: "all", effect: "palette", params: { motion: "dynamic" } },
-        { lights: ["room:living"], effect: "palette", params: { motion: "dynamic" } },
-      ],
-    }),
-    scene({
-      id: "s_22222222",
-      name: "Movie",
-      layers: [{ lights: ["room:living"], effect: "white", params: { kelvin: 2700, brightness: 100 } }],
-      fits: ["room:living", "zone:downstairs"],
-    }),
+    // A scene of a room that is gone.
+    scene({ id: "s_0000000a", name: "Nachtlicht", target: "room:attic", part: "p_00000002", fits: false, dormant: true }),
   ],
   lights: [],
   effects: [
@@ -135,7 +163,7 @@ export const CONFIG: ConfigDto = {
     buses: {},
     light_buses: {},
   },
-  version: "2.1.0",
+  version: "3.0.0",
 };
 
 export const attrs = (a: Partial<SelectAttributes>): SelectAttributes => ({
@@ -156,7 +184,6 @@ export const attrs = (a: Partial<SelectAttributes>): SelectAttributes => ({
   target_id: "room:living",
   kind: "room",
   scenes: [],
-  hidden_scenes: [],
   options: [],
   ...a,
 });
@@ -177,3 +204,15 @@ export const fakeHass = (states: Record<string, SelectAttributes> = {}, availabl
       return structuredClone(CONFIG) as T;
     },
   }) as unknown as HomeAssistant;
+
+/** A sessionStorage for the editor's drafts; returns its items. */
+export const draftStorage = (): Map<string, string> => {
+  const items = new Map<string, string>();
+  const sessionStorage = {
+    getItem: (key: string) => items.get(key) ?? null,
+    setItem: (key: string, value: string) => void items.set(key, value),
+    removeItem: (key: string) => void items.delete(key),
+  };
+  Object.assign(globalThis, { window: { sessionStorage } });
+  return items;
+};

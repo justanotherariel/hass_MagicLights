@@ -112,15 +112,15 @@ test("stub config and entity suggestion find magic_lights selects", () => {
 });
 
 test("scene subset by id or name, in config order; the others are reported", () => {
-  const honolulu = scene("honolulu", "Honolulu", ["#ff5c2f", "#3d7bff"], true);
-  const a = attrs({ scenes: SCENES, hidden_scenes: [honolulu] });
+  const a = attrs({ scenes: SCENES });
   assert.deepEqual(cardScenes(a, []), { scenes: SCENES, missing: [] });
   const picked = cardScenes(a, ["movie", "relax", "honolulu", "disco", "Relax"]);
-  assert.deepEqual(picked.scenes.map((s) => s.id), ["s_22222222", "relax", "honolulu"]);
-  assert.deepEqual(picked.missing, ["disco"]);
-  // A hidden scene that runs still gets its name and colours.
-  const names = lookup(hassWith({ "select.kitchen_scene": { target_id: "room:kitchen", hidden_scenes: [honolulu] } }));
-  assert.deepEqual(names.swatchesOf("honolulu", "room:kitchen"), honolulu.swatches);
+  assert.deepEqual(picked.scenes.map((s) => s.id), ["s_22222222", "relax"]);
+  // Only the room's menu: a scene without lights here, or of another room, is missing.
+  assert.deepEqual(picked.missing, ["honolulu", "disco"]);
+  const names = lookup(hassWith({ "select.kitchen_scene": { target_id: "room:kitchen" } }));
+  assert.deepEqual(names.swatchesOf("savanna_sunset", "room:kitchen"), SCENES[1].swatches);
+  assert.equal(names.swatchesOf("honolulu", "room:kitchen"), undefined);
 });
 
 test("play only on dynamic scenes with several colours", () => {

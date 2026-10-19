@@ -4,6 +4,8 @@ import type {
   Adjust,
   ConfigDto,
   HomeAssistant,
+  Part,
+  PartInfo,
   PreviewFrame,
   PreviewRequest,
   SceneInfo,
@@ -26,12 +28,30 @@ const ws = <T>(hass: HomeAssistant, command: string, payload: Record<string, unk
 
 export const fetchConfig = (hass: HomeAssistant): Promise<ConfigDto> => ws<ConfigDto>(hass, "config");
 
-export const saveScene = async (hass: HomeAssistant, scene: StoredScene): Promise<SceneInfo> =>
-  (await ws<{ scene: SceneInfo }>(hass, "scene/save", { scene })).scene;
+export interface Library {
+  parts?: Part[];
+  scenes?: { target: TargetId; scene: StoredScene }[];
+}
 
-/** Deleting the edit of a preset resets it in every room. */
+export interface SavedLibrary {
+  parts: PartInfo[];
+  scenes: SceneInfo[];
+}
+
+/** Parts and scenes in one commit, or nothing. A built-in saved as it ships loses its edit. */
+export const saveLibrary = (hass: HomeAssistant, library: Library): Promise<SavedLibrary> =>
+  ws<SavedLibrary>(hass, "library/save", { ...library });
+
 export const deleteScene = (hass: HomeAssistant, sceneId: string) =>
   ws<Record<string, never>>(hass, "scene/delete", { scene_id: sceneId });
+
+/** Your part, unless a scene uses it; a built-in loses its edit. */
+export const deletePart = (hass: HomeAssistant, partId: string) =>
+  ws<Record<string, never>>(hass, "part/delete", { part_id: partId });
+
+/** A target's scenes in a new order: its menu's. */
+export const orderScenes = async (hass: HomeAssistant, targetId: TargetId, sceneIds: string[]): Promise<TargetInfo> =>
+  (await ws<{ target: TargetInfo }>(hass, "scenes/order", { target_id: targetId, scene_ids: sceneIds })).target;
 
 export const saveZone = async (hass: HomeAssistant, zone: Zone): Promise<Zone> =>
   (await ws<{ zone: Zone }>(hass, "zone/save", { zone })).zone;
@@ -47,13 +67,6 @@ export const saveTargetOptions = async (
   (await ws<{ target: TargetInfo }>(hass, "target/options", { target_id: targetId, options }))
     .target;
 
-/** Menus of several targets in one commit; null restores a target's default menu. */
-export const saveMenus = async (
-  hass: HomeAssistant,
-  menus: Partial<Record<TargetId, string[] | null>>,
-): Promise<TargetInfo[]> =>
-  (await ws<{ targets: TargetInfo[] }>(hass, "menus/save", { menus })).targets;
-
 export const saveSettings = (hass: HomeAssistant, settings: Partial<Settings>) =>
   ws<Record<string, never>>(hass, "settings/save", { settings });
 
@@ -63,8 +76,14 @@ export const fetchPreview = async (
 ): Promise<PreviewFrame[]> =>
   (await ws<{ frames: PreviewFrame[] }>(hass, "preview", { ...request })).frames;
 
-export const tryScene = (hass: HomeAssistant, targetId: TargetId, scene: StoredScene, adjust?: Adjust) =>
-  ws<Record<string, never>>(hass, "try", { target_id: targetId, scene, ...(adjust ? { adjust } : {}) });
+export const tryScene = (
+  hass: HomeAssistant,
+  targetId: TargetId,
+  scene: StoredScene,
+  parts: Part[] = [],
+  adjust?: Adjust,
+) =>
+  ws<Record<string, never>>(hass, "try", { target_id: targetId, scene, parts, ...(adjust ? { adjust } : {}) });
 
 export const stopTry = (hass: HomeAssistant, targetId: TargetId) =>
   ws<Record<string, never>>(hass, "try/stop", { target_id: targetId });

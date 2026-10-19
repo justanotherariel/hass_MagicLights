@@ -1,12 +1,12 @@
 // Settings tab: switch-on scene, turn-on/override behaviour and, for zones, edit/delete.
-// The menu itself is arranged on the Scenes tab and picked in "Add scenes".
+// The scenes themselves are made and arranged on the Scenes tab.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property } from "lit/decorators.js";
 import type { HomeAssistant, TargetInfo, TargetOptions } from "../shared/types";
 import { confirmAction, defineElement, fire, plural, saveSwitch, toastOnError } from "../shared/util";
 import { goBack, homePath } from "./routes";
-import { menuId, type MlStore } from "./store";
+import type { MlStore } from "./store";
 import { pageStyles } from "./styles";
 
 const INHERIT = "__inherit__";
@@ -58,17 +58,19 @@ class MlTargetSettings extends LitElement {
 
   private _renderDefaultScene(target: TargetInfo) {
     const globalId = this.store.config.settings.default_scene;
-    const globalName = globalId ? (this.store.scene(globalId)?.name ?? globalId) : "nothing";
+    const globalName = globalId ? (this.store.part(globalId)?.name ?? globalId) : "nothing";
     const value = target.options.default_scene ?? INHERIT;
-    const scenes = [...this.store.scenesFor(target.id), ...this.store.scenesFor(target.id, "hidden")];
     const options = [
       { value: INHERIT, label: `Like all rooms (${globalName})` },
       { value: NONE, label: "Nothing" },
-      ...this.store.sceneOptions(scenes, menuId),
+      ...this.store.scenesOf(target.id).map((scene) => ({
+        value: scene.id,
+        label: scene.fits ? scene.name : `${scene.name} (no lights here)`,
+      })),
     ];
     return html`<ha-settings-row .narrow=${this.narrow}>
       <span slot="heading">When a light is switched on</span>
-      <span slot="description">Scene for the switched-on light while this room is off.</span>
+      <span slot="description">One of this room's scenes, for the switched-on light while the room is off.</span>
       <ha-select
         .label=${"Scene when a light is switched on"}
         .options=${options}

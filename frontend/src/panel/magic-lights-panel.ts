@@ -10,7 +10,6 @@ import type { HomeAssistant, PanelInfo, Route, Unsubscribe, Zone } from "../shar
 import { debounce, defineElement, errorMessage, navigate, type ConfirmRequest } from "../shared/util";
 import { renderEditorBar, type EditorTitle } from "./editor/ml-editor-bar";
 import {
-  type HomeTab,
   type Page,
   type TargetTab,
   editorPath,
@@ -23,9 +22,7 @@ import {
   settingsPath,
   targetPath,
 } from "./routes";
-import { menuIds, MlStore, type StoreHost } from "./store";
-
-const HOME_TABS: Record<HomeTab, string> = { rooms: "Rooms", scenes: "Scenes" };
+import { type Draft, MlStore, type StoreHost } from "./store";
 
 const TARGET_TABS: Record<TargetTab, string> = {
   scenes: "Scenes",
@@ -63,9 +60,6 @@ class MagicLightsPanel extends LitElement implements StoreHost {
 
   @state() private _editorTitle?: EditorTitle;
 
-  /** The Scenes tab's search query; undefined while the field is closed. */
-  @state() private _sceneSearch?: string;
-
   private _unsubscribe?: Promise<Unsubscribe | undefined>;
 
   private _refresh = debounce(() => {
@@ -100,10 +94,12 @@ class MagicLightsPanel extends LitElement implements StoreHost {
     const page = this._page;
     if (page.name === "redirect") replaceWith(page.path);
     const store = this._store;
-    if (page.name === "new_scene" && store && (!page.targetId || store.target(page.targetId))) {
-      const draft = store.newScene(page.targetId);
-      store.setDraft(draft.id, draft);
-      replaceWith(editorPath(draft.id, page.targetId));
+    if (page.name === "new_scene" && store?.target(page.targetId)) {
+      // An unknown part starts the scene from a blank one.
+      const partId = page.partId && store.part(page.partId) ? page.partId : null;
+      const draft = store.newScene(page.targetId, partId);
+      store.setDraft(draft.scene.id, draft);
+      replaceWith(editorPath(page.targetId, draft.scene.id));
     }
   }
 
@@ -113,7 +109,7 @@ class MagicLightsPanel extends LitElement implements StoreHost {
   }
 
   private get _page(): Page {
-    return parseRoute(this.route?.path);
+    return parseRoute(this.route?.path, location.search);
   }
 
   private _connect(): void {
@@ -176,7 +172,7 @@ class MagicLightsPanel extends LitElement implements StoreHost {
   private _renderBar(page: Page) {
     switch (page.name) {
       case "home":
-        return this._homeBar(page);
+        return this._homeBar();
       case "settings":
         return html`<div slot="title">Magic Lights settings</div>`;
       case "target":
@@ -198,13 +194,12 @@ class MagicLightsPanel extends LitElement implements StoreHost {
     }
     const store = this._store;
     if (!store) return this._spinner();
-    const target = "targetId" in page && page.targetId ? store.target(page.targetId) : undefined;
-    if (page.name === "not_found" || ("targetId" in page && page.targetId && !target)) {
+    if (page.name === "not_found" || ("targetId" in page && !store.target(page.targetId))) {
       return this._notFound();
     }
     switch (page.name) {
       case "home":
-        return this._homeBody(store, page);
+        return html`<ml-home .hass=${this.hass} .store=${store} .narrow=${this.narrow}></ml-home>`;
       case "settings":
         return html`<ml-settings .hass=${this.hass} .store=${store} .narrow=${this.narrow}></ml-settings>`;
       case "target":
@@ -217,73 +212,18 @@ class MagicLightsPanel extends LitElement implements StoreHost {
     }
   }
 
-  // ---- home: Rooms | Scenes
+  // ---- home
 
-  private _homeBar(page: PageOf<"home">) {
-    const tabs = html`<ha-tab-group
-      class="home-tabs"
-      slot=${this.narrow ? "subRow" : nothing}
-      @wa-tab-show=${(ev: CustomEvent<{ name: string }>) => {
-        const tab = ev.detail.name as HomeTab;
-        if (!tab || tab === page.tab) return;
-        this._sceneSearch = undefined;
-        replaceWith(homePath(tab));
-      }}
-    >
-      ${(Object.keys(HOME_TABS) as HomeTab[]).map(
-        (tab) =>
-          html`<ha-tab-group-tab slot="nav" panel=${tab} .active=${page.tab === tab}>
-            ${HOME_TABS[tab]}
-          </ha-tab-group-tab>`,
-      )}
-    </ha-tab-group>`;
-    const title = this.panel?.title ?? "Magic Lights";
+  private _homeBar() {
     return html`
-      ${
-        this.narrow
-          ? html`<div slot="title">${title}</div>
-              ${tabs}`
-          : html`<div slot="title" class="title-with-tabs"><span class="title-text">${title}</span>${tabs}</div>`
-      }
-      ${
-        page.tab === "rooms"
-          ? html`<ha-icon-button slot="actionItems" .label=${"New zone"} @click=${() => (this._zoneDialog = {})}>
-              <ha-icon icon="mdi:plus"></ha-icon>
-            </ha-icon-button>`
-          : html`<ha-icon-button
-              slot="actionItems"
-              class="search-toggle"
-              .label=${"Search scenes"}
-              aria-pressed=${this._sceneSearch === undefined ? "false" : "true"}
-              @click=${() => (this._sceneSearch = this._sceneSearch === undefined ? "" : undefined)}
-            >
-              <ha-icon icon="mdi:magnify"></ha-icon>
-            </ha-icon-button>`
-      }
+      <div slot="title">${this.panel?.title ?? "Magic Lights"}</div>
+      <ha-icon-button slot="actionItems" .label=${"New zone"} @click=${() => (this._zoneDialog = {})}>
+        <ha-icon icon="mdi:plus"></ha-icon>
+      </ha-icon-button>
       <ha-icon-button slot="actionItems" .label=${"Settings"} @click=${() => go(settingsPath())}>
         <ha-icon icon="mdi:cog"></ha-icon>
       </ha-icon-button>
     `;
-  }
-
-  private async _setSceneSearch(value: string | undefined): Promise<void> {
-    this._sceneSearch = value;
-    if (value !== undefined) return;
-    // Closing the field with Escape would otherwise drop focus to the page.
-    await this.updateComplete;
-    this.renderRoot.querySelector<HTMLElement>(".search-toggle")?.focus();
-  }
-
-  private _homeBody(store: MlStore, page: PageOf<"home">) {
-    return page.tab === "scenes"
-      ? html`<ml-scenes
-          .hass=${this.hass}
-          .store=${store}
-          .narrow=${this.narrow}
-          .search=${this._sceneSearch}
-          @ml-search=${(ev: CustomEvent<{ value?: string }>) => this._setSceneSearch(ev.detail.value)}
-        ></ml-scenes>`
-      : html`<ml-home .hass=${this.hass} .store=${store} .narrow=${this.narrow}></ml-home>`;
   }
 
   // ---- room or zone
@@ -316,8 +256,8 @@ class MagicLightsPanel extends LitElement implements StoreHost {
 
   private _targetActions(page: PageOf<"target">) {
     const target = this._store?.target(page.targetId);
-    // Nothing to reorder or hide in an empty menu.
-    const arrangeable = page.tab === "scenes" && !!target && menuIds(target).length > 0;
+    // Nothing to reorder in a menu of one.
+    const arrangeable = page.tab === "scenes" && !!target && target.scenes.length > 1;
     return html`${arrangeable ? this._arrangeAction() : nothing}${this._editTargetAction(page)}`;
   }
 
@@ -375,28 +315,32 @@ class MagicLightsPanel extends LitElement implements StoreHost {
     ></ml-target-page>`;
   }
 
-  // ---- scene editor (target-free; the route's room is where it previews and tries)
+  // ---- scene editor (of the route's room)
 
   private _editorBar(page: PageOf<"editor"> | PageOf<"new_scene">) {
-    const store = this._store;
-    let title = page.name === "new_scene" ? "New scene" : "Scene";
+    let title = "New scene";
     let bar: EditorTitle | undefined;
     if (page.name === "editor") {
       const { sceneId } = page;
       if (this._editorTitle?.sceneId === sceneId) bar = this._editorTitle;
-      else title = (store?.draft(sceneId) ?? store?.resolveScene(sceneId))?.name || title;
+      else title = this._sceneName(page.targetId, sceneId) || "Scene";
     }
     return renderEditorBar(bar, title, this.narrow);
   }
 
+  /** The draft's or saved name of a scene of this target; another room's scene is not found here. */
+  private _sceneName(targetId: string, sceneId: string): string | undefined {
+    const saved = this._store?.scene(sceneId);
+    if (saved && saved.target !== targetId) return undefined;
+    return (this._store?.draft<Draft>(sceneId)?.scene ?? saved)?.name;
+  }
+
   private _editorBody(store: MlStore, page: PageOf<"editor">) {
-    const preview = page.targetId ?? store.previewTarget(page.sceneId)?.id;
     return html`<ml-scene-editor
       .hass=${this.hass}
       .store=${store}
-      .targetId=${preview ?? ""}
+      .targetId=${page.targetId}
       .sceneId=${page.sceneId}
-      .parent=${parentPath(page) ?? homePath("scenes")}
       .narrow=${this.narrow}
     ></ml-scene-editor>`;
   }
@@ -476,23 +420,6 @@ class MagicLightsPanel extends LitElement implements StoreHost {
       --ha-tab-active-text-color: var(--app-header-text-color, white);
       --ha-tab-indicator-color: var(--app-header-text-color, white);
       --ha-tab-track-color: transparent;
-    }
-    /* Wide: the home tabs sit in the bar, centred in the space the title leaves. */
-    .title-with-tabs {
-      display: flex;
-      align-items: center;
-      gap: var(--ha-space-6);
-      min-width: 0;
-    }
-    .title-text {
-      flex: none;
-    }
-    .title-with-tabs .home-tabs {
-      flex: 1;
-      display: flex;
-      justify-content: center;
-      font-size: var(--ha-font-size-m);
-      line-height: normal;
     }
     .content {
       box-sizing: border-box;

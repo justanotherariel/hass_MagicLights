@@ -10,7 +10,7 @@ import { defineElement, plural, toastOnError } from "../shared/util";
 import { AMBER } from "./components/ml-value-bar";
 import "./components/ml-value-bar";
 import { heroText } from "./room-facts";
-import { menuId, type MlStore } from "./store";
+import type { MlStore } from "./store";
 import { kelvinNow, renderTargetSwatch, targetVisuals, type TargetVisuals } from "./target-ui";
 
 interface Action {
@@ -87,7 +87,7 @@ class MlTargetHero extends LitElement {
         label: visuals.moving ? "Hold colours" : "Play colours",
         icon: visuals.moving ? "mdi:pause" : "mdi:play",
         pressed: visuals.moving,
-        run: () => this.store.toggleMotion(id, menuId(running)),
+        run: () => this.store.toggleMotion(id, running.id),
         failure: "Could not change the motion",
       });
     }

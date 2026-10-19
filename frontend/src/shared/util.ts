@@ -45,28 +45,14 @@ export interface ConfirmRequest extends ConfirmParams {
 export const confirmAction = (el: HTMLElement, params: ConfirmParams): Promise<boolean> =>
   new Promise((resolve) => fire<ConfirmRequest>(el, "ml-confirm", { ...params, resolve }));
 
-/** Asks before resetting an edited preset or deleting a user scene. */
-export const confirmRemoveScene = (
-  el: HTMLElement,
-  scene: { name: string },
-  reset: boolean,
-): Promise<boolean> =>
-  confirmAction(
-    el,
-    reset
-      ? {
-          title: `Reset ${scene.name}?`,
-          text: "Your changes are removed in every room and zone, and the original preset comes back.",
-          confirmText: "Reset",
-          destructive: true,
-        }
-      : {
-          title: `Delete ${scene.name}?`,
-          text: "The scene is removed from every room and zone. A room running it switches to Manual.",
-          confirmText: "Delete",
-          destructive: true,
-        },
-  );
+/** Asks before deleting a room's scene; its parts stay for the other scenes. */
+export const confirmRemoveScene = (el: HTMLElement, scene: { name: string }, room: string): Promise<boolean> =>
+  confirmAction(el, {
+    title: `Delete ${scene.name}?`,
+    text: `The scene is removed from ${room}; its parts stay. If it is running, ${room} switches to Manual.`,
+    confirmText: "Delete",
+    destructive: true,
+  });
 
 export const debounce = <A extends unknown[]>(fn: (...args: A) => void, wait: number) => {
   let timer: ReturnType<typeof setTimeout> | undefined;
@@ -84,11 +70,16 @@ export const humanise = (key: string): string => {
   return words.charAt(0).toUpperCase() + words.slice(1);
 };
 
-/** Client-generated user scene id, `s_` + 8 hex. */
-export const newSceneId = (): string => {
+const newId = (prefix: string): string => {
   const bytes = crypto.getRandomValues(new Uint8Array(4));
-  return `s_${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
+  return `${prefix}${Array.from(bytes, (b) => b.toString(16).padStart(2, "0")).join("")}`;
 };
+
+/** Client-generated scene id, `s_` + 8 hex. */
+export const newSceneId = (): string => newId("s_");
+
+/** Client-generated id of your part, `p_` + 8 hex. */
+export const newPartId = (): string => newId("p_");
 
 /** HA's unit spacing: "60%" but "2700 K". */
 export const withUnit = (value: number | string, unit: string): string =>

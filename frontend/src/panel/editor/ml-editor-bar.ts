@@ -1,6 +1,6 @@
-// The editor's part of the panel's top bar: the scene's name with what kind of scene it
-// is, and Try / Save. The editor describes them in an ml-editor-title event; the panel
-// renders them with renderEditorBar into the bar's slots.
+// The editor's part of the panel's top bar: the scene's name with its room, and Try /
+// Save. The editor describes them in an ml-editor-title event; the panel renders them
+// with renderEditorBar into the bar's slots.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property } from "lit/decorators.js";
@@ -9,10 +9,9 @@ import { defineElement } from "../../shared/util";
 export interface EditorTitle {
   sceneId: string;
   title: string;
-  /** "Your scene · 8 rooms", "Preset · Edited". */
+  /** "Living Room", "New scene · Living Room". */
   badge: string;
-  edited: boolean;
-  /** The preview room, where Try runs. */
+  /** The scene's room, where Try runs. */
   room: string;
   trying: boolean;
   canTry: boolean;
@@ -33,13 +32,7 @@ class MlEditorTitle extends LitElement {
   protected render() {
     const bar = this.bar;
     return html`<span class="title">${bar?.title || this.fallback}</span>
-      ${
-        bar?.badge && !this.narrow
-          ? html`<span class="badge ${bar.edited ? "edited" : ""}">
-              ${bar.edited ? html`<ha-icon icon="mdi:pencil"></ha-icon>` : nothing}${bar.badge}
-            </span>`
-          : nothing
-      }`;
+      ${bar?.badge && !this.narrow ? html`<span class="badge">${bar.badge}</span>` : nothing}`;
   }
 
   static styles = css`
@@ -64,10 +57,6 @@ class MlEditorTitle extends LitElement {
       background: rgba(var(--rgb-primary-color), 0.15);
       font-size: var(--ha-font-size-s);
       line-height: 20px;
-      --mdc-icon-size: 14px;
-    }
-    .badge.edited {
-      background: var(--ha-color-fill-warning-quiet-resting, rgba(255, 152, 0, 0.18));
     }
   `;
 }

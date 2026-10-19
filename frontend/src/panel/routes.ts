@@ -5,59 +5,58 @@ import { navigate } from "../shared/util";
 
 export const PANEL_PATH = "/magic_lights";
 
-export type HomeTab = "rooms" | "scenes";
-
 export type TargetTab = "scenes" | "lights" | "settings";
 
-/** The editor is target-free; `targetId` only picks the room it previews and tries in. */
+/** The editor belongs to its scene's room; a new scene starts from a part, or from a blank one. */
 export type Page =
-  | { name: "home"; tab: HomeTab }
+  | { name: "home" }
   | { name: "settings" }
   | { name: "target"; targetId: string; tab: TargetTab }
-  | { name: "editor"; sceneId: string; targetId?: string }
-  | { name: "new_scene"; targetId?: string }
+  | { name: "editor"; targetId: string; sceneId: string }
+  | { name: "new_scene"; targetId: string; partId?: string }
   | { name: "redirect"; path: string }
   | { name: "not_found" };
 
 const TABS: readonly TargetTab[] = ["scenes", "lights", "settings"];
 
-/** Not a scene id (those are slugs or "s_…"), so it never shadows one. */
+/** Not a scene id (those are "s_…"), so it never shadows one. */
 const NEW = "new";
 
-export const homePath = (tab: HomeTab = "rooms"): string =>
-  tab === "rooms" ? PANEL_PATH : `${PANEL_PATH}/scenes`;
+export const homePath = (): string => PANEL_PATH;
 export const settingsPath = (): string => `${PANEL_PATH}/settings`;
 export const targetPath = (targetId: string, tab: TargetTab = "scenes"): string =>
   `${PANEL_PATH}/t/${targetId}${tab === "scenes" ? "" : `/${tab}`}`;
-export const editorPath = (sceneId: string, targetId?: string): string =>
-  `${PANEL_PATH}/scene/${sceneId}${targetId ? `/in/${targetId}` : ""}`;
-/** Opens a fresh draft, set up in `targetId` when given. */
-export const newScenePath = (targetId?: string): string => editorPath(NEW, targetId);
+export const editorPath = (targetId: string, sceneId: string): string =>
+  `${targetPath(targetId)}/scene/${sceneId}`;
+/** A fresh draft in the target: the whole room playing `partId`, else a blank part. */
+export const newScenePath = (targetId: string, partId?: string): string =>
+  `${editorPath(targetId, NEW)}${partId ? `?part=${encodeURIComponent(partId)}` : ""}`;
 
-const parseScene = (rest: string[]): Page => {
-  const [sceneId, sub, targetId] = rest;
-  if (!sceneId || (rest.length > 1 && (rest.length !== 3 || sub !== "in" || !targetId))) {
-    return { name: "not_found" };
-  }
-  if (sceneId === NEW) return targetId ? { name: "new_scene", targetId } : { name: "new_scene" };
-  return targetId ? { name: "editor", sceneId, targetId } : { name: "editor", sceneId };
-};
-
-const parseTarget = (rest: string[]): Page => {
+const parseTarget = (rest: string[], query: URLSearchParams): Page => {
   const [targetId, sub, sceneId] = rest;
   if (!targetId) return { name: "not_found" };
   if (rest.length === 1) return { name: "target", targetId, tab: "scenes" };
   if (rest.length === 2 && TABS.includes(sub as TargetTab)) {
     return { name: "target", targetId, tab: sub as TargetTab };
   }
-  // Links from before the editor was target-free.
   if (rest.length === 3 && sub === "scene" && sceneId) {
-    return { name: "redirect", path: editorPath(sceneId, targetId) };
+    if (sceneId !== NEW) return { name: "editor", targetId, sceneId };
+    const partId = query.get("part");
+    return partId ? { name: "new_scene", targetId, partId } : { name: "new_scene", targetId };
   }
   return { name: "not_found" };
 };
 
-export const parseRoute = (path: string | undefined): Page => {
+/** Old bookmarks lead to the room, else home. */
+const parseOldScene = (rest: string[]): Page => {
+  const [, sub, targetId] = rest;
+  if (rest.length === 3 && sub === "in" && targetId) return { name: "redirect", path: targetPath(targetId) };
+  if (rest.length === 1) return { name: "redirect", path: homePath() };
+  return { name: "not_found" };
+};
+
+/** `search` is the location's query string ("?part=relax"). */
+export const parseRoute = (path: string | undefined, search = ""): Page => {
   let parts: string[];
   try {
     parts = (path ?? "").split("/").filter(Boolean).map(decodeURIComponent);
@@ -66,11 +65,11 @@ export const parseRoute = (path: string | undefined): Page => {
     return { name: "not_found" };
   }
   const [first, ...rest] = parts;
-  if (first === undefined) return { name: "home", tab: "rooms" };
-  if (parts.length === 1 && first === "scenes") return { name: "home", tab: "scenes" };
+  if (first === undefined) return { name: "home" };
+  if (parts.length === 1 && first === "scenes") return { name: "redirect", path: homePath() };
   if (parts.length === 1 && first === "settings") return { name: "settings" };
-  if (first === "t") return parseTarget(rest);
-  if (first === "scene") return parseScene(rest);
+  if (first === "t") return parseTarget(rest, new URLSearchParams(search));
+  if (first === "scene" && rest.length) return parseOldScene(rest);
   return { name: "not_found" };
 };
 
@@ -81,7 +80,7 @@ export const parentPath = (page: Page): string | undefined => {
       return undefined;
     case "editor":
     case "new_scene":
-      return page.targetId ? targetPath(page.targetId) : homePath("scenes");
+      return targetPath(page.targetId);
     default:
       return homePath();
   }

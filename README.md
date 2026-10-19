@@ -9,9 +9,10 @@
 
 Scenes for whole rooms, the way the Hue app does them, for every light in Home Assistant.
 
-- **Every area with lights is a room.** It gets a scene select (`select.living_room_scene`) on its area page, with Off, the scenes you pick for the room, and Manual.
+- **Every area with lights is a room.** It gets a scene select (`select.living_room_scene`) on its area page, with Off, the room's scenes, and Manual.
 - **Zones** combine rooms ("Downstairs" = living room + kitchen), and each zone gets a select too.
-- **48 built-in scenes**: Energize, Read, Relax, Nightlight, Savanna sunset, Tokyo, Cozy candle, Fireplace, Adaptive and more. Pick the ones a room needs, edit one for every room, or build your own from layers and share it between rooms.
+- **Parts and scenes.** A part is a named look, such as "Hell" (adaptive, 40–100 %). A room's scene says which of its lights play which part. Edit a part once and every scene that uses it follows; copy it when one scene should differ.
+- **48 built-in parts**: Energize, Read, Relax, Nightlight, Savanna sunset, Tokyo, Cozy candle, Fireplace, Adaptive and more. Add the ones a room needs as its scenes, or edit one for every room.
 - **Hands off when you take over.** A lamp you dim in another app or switch off at the wall becomes *manual*: the scene stops sending to it until you reclaim it.
 - **Adaptive lighting**: colour temperature (and, if you like, brightness) follows the sun, and a room can start it when a light is switched on.
 - **Dynamic colours**: palette scenes can drift through their colours, paced so your Zigbee network keeps up. Hue lights on Zigbee2MQTT run candle, fireplace and sunrise in firmware, and gradient strips show the whole palette.
@@ -45,8 +46,8 @@ The repository itself has no built frontend; see [Development](#development) for
 ## Quick start
 
 1. **Settings → Devices & services → Add integration → Magic Lights.** There is nothing to configure.
-2. Every area with lights now has a select named after it, for example `select.living_room_scene`. Its menu holds the scenes you pick for the room, so it starts with only Off and Manual.
-3. Open **Magic Lights** in the sidebar. The home screen lists your rooms and zones with what is running. Open a room, open **Hidden scenes** and tap **Relax**: the room fades to warm white in under a second. **Show in menu** puts a scene in the room's select and cards; **New scene** makes your own. The room's page also lists its lights and settings.
+2. Every area with lights now has a select named after it, for example `select.living_room_scene`. Its menu holds the room's scenes, so it starts with only Off and Manual.
+3. Open **Magic Lights** in the sidebar. The home screen lists your rooms and zones with what is running. Open a room, tap **New scene**, pick **Relax** and **Add 1 scene**, then tap the new tile: the room fades to warm white in under a second. The room's page also lists its lights and settings.
 4. Add the card to a dashboard: **Edit dashboard → Add card → Magic Lights**.
 
 ## Concepts
@@ -59,11 +60,13 @@ A **zone** is a set of rooms plus extra lights, created in the panel (**New zone
 
 Each light belongs to at most one running scene. Starting a scene on a room takes that room's lights from the zone scene, and the zone shows the parts of it that still run.
 
-### Scenes
+### Parts and scenes
 
-A scene is an ordered list of **layers**. Each layer runs one **effect** on some lights (every room, whole rooms, or chosen lights), and later layers win. A scene also has an overall brightness, a fade time (empty: the **Fade** in the panel settings), and what happens to lights no layer covers: they turn off, or they are left alone.
+A **part** is a named look: one **effect** with its settings, such as "Hell" (adaptive, 40–100 %, 2200–5000 K). Parts are shared: every scene that uses "Hell" plays the same look, and editing it changes all of them at once. The editor says so ("Used by 4 scenes — changes apply to all"). To make one scene differ, tap **Copy**: you get "Hell copy" for this scene only, and the others keep "Hell".
 
-A scene is **shared by every room**: there is one "Evening", and editing it changes it in every room that uses it. Each room keeps its own lights in it, and a layer can hold one room only, for example a warmer white in the bedroom. A scene is **set up** in a room when its layers reach at least one of the room's lights. Elsewhere it is not in the menu, and starting it there is refused instead of switching the lights off. A running scene that an edit takes out of a room stops there, and the lights stay as they are. In the editor, a layer's lights are those of the room you opened it from; the other rooms' lights in it stay as they are.
+A **scene** belongs to one room or zone. It says which of the room's lights play which part, for example the ceiling on "Hell" and the shelf on "Hell · Living Room"; a later part wins for a light. A scene also has a fade time (empty: the **Fade** in the panel settings), and what happens to lights in no part: they turn off, or they are left alone. A room's scenes are its menu, in the order **Arrange** puts them; scene names are unique within the room.
+
+A scene whose lights have all left the room cannot run: it is not in the menu, starting it is refused, and its tile asks you to choose lights.
 
 The effects are:
 
@@ -76,9 +79,9 @@ The effects are:
 | Light effect | A firmware effect (Hue: candle, fireplace, sunrise, …); candle and fireplace are emulated on other lights |
 | Adaptive | Colour temperature follows the sun; brightness holds one level or follows it too |
 
-The **built-in scenes** cover whites, 35 colour palettes, two candle scenes and three adaptive ones. A room's menu starts with your own scenes only: the built-in ones wait under **Hidden scenes** until you show them, and the room's settings switch them on and reorder the menu. Hidden scenes still run by name or id through the services and in a card's `scenes:` list.
+The **built-in parts** cover whites, 35 colour palettes, two candle looks and three adaptive ones. New rooms start without scenes. In a room, **New scene** opens the part picker: each part you pick becomes a scene of all the room's lights, all in one save. With one pick, **Choose lights…** opens the editor instead; **New part** starts from a blank white one. Nothing is saved before you save.
 
-**Edit** a built-in scene to change it in every room. It keeps its name and id, so automations keep working, and shows as **Edited**. **Reset to preset** brings the original back everywhere; saving it unchanged does the same. **New scene** starts from scratch, set up in the room you are in, or from a copy; its name must be free among the built-in scenes and the scenes set up in each of its rooms. The editor previews the scene and can **Try** it on the room; **Stop trying** brings back what ran before.
+A built-in part can be **edited** for every scene that uses it. It keeps its name and id, so automations keep working, and shows as **Edited**, with the changed settings marked. **Reset** brings its own look back; saving it unchanged does the same. The editor previews the scene and can **Try** it on the room; **Stop trying** brings back what ran before.
 
 ### Manual lights and overrides
 
@@ -97,7 +100,7 @@ Magic Lights tells its own commands apart from yours by what it last sent, not b
 
 The **Adaptive** scenes follow the sun like [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting): cool white at noon, warm in the evening, with optional sunrise and sunset clamps. Their brightness stays at one level by default; set **Brightness curve** to dim them after sunset or ramp them around sunrise and sunset. They update every 90 seconds and glide 45 seconds between updates, at low priority. Switching to one fades like any other scene.
 
-To get adaptive light without touching anything, set **When a light is switched on** in the panel settings to Adaptive. A light switched on in a room that is off then gets Adaptive. Only that light: the others join as they are switched on. Each room can override this or turn it off.
+To get adaptive light without touching anything, set **When a light is switched on** in the panel settings to the Adaptive part. A light switched on in a room that is off then gets Adaptive (the room's whole-room scene of it, if it has one). Only that light: the others join as they are switched on. Each room can pick one of its own scenes instead, or nothing.
 
 ### Dynamic scenes
 
@@ -109,7 +112,7 @@ Lights on one radio network or bridge share its message budget. Magic Lights gro
 
 ## Services
 
-All services target a room or zone select. Scenes are given by id (`savanna_sunset`) or name (`Savanna sunset`).
+All services target a room or zone select. A scene is given by id or name: one of the room's own scenes, else a built-in part (`savanna_sunset` or `Savanna sunset`), which runs on all the room's lights. Parts of your own are not found by the services, so renaming one breaks no automation.
 
 | Service | Fields | What it does |
 |---|---|---|
@@ -156,7 +159,7 @@ type: custom:magic-lights-card
 entity: select.living_room_scene   # required
 name: Living room                  # optional
 show_scenes: true
-scenes: [relax, honolulu]          # optional: ids or names, hidden scenes too; default is the room's menu
+scenes: [Relax, Honolulu]          # optional: ids or names of the room's scenes; default is its menu
 columns: 3
 show_lights: false
 show_controls: true                # Off, Stop scene, ▶ and brightness −/+
@@ -167,6 +170,12 @@ The card is also in the card picker, with a visual editor. It reads everything f
 ## Upgrading from version 1
 
 Version 2 is a rewrite and does not convert the v1 configuration. Remove the `magic_lights:` block from `configuration.yaml`, then set up your scenes in the panel. The v1 per-zone sensors are gone; use the selects instead.
+
+## Upgrading from version 2.1
+
+Version 3.0 splits scenes into parts and room scenes. On the first start every room keeps its menu: the same names in the same order, the same lights doing the same thing, and calls by name keep working. Looks that several rooms shared under one name become one part ("Hell"); a room whose look differed gets its own part, named after the room ("Hell · Bedroom"). Built-in scenes in a room's menu become scenes of that room; an edited built-in stays edited. Hidden scenes and separate menus are gone: a room's scenes are its menu. A scene's overall brightness is dropped (the room's brightness still dims). Running scenes keep running. Calls by a scene's old id stop working; calls by name do not.
+
+The old files stay next to the new ones as `.storage/magic_lights.v3.bak` and `.storage/magic_lights.runtime.v3.bak`; version 2.1 refuses the new file instead of overwriting it. To go back, stop Home Assistant, install 2.1, copy both `.bak` files back over `magic_lights` and `magic_lights.runtime`, and start it.
 
 ## Upgrading from version 2.0
 
@@ -203,7 +212,7 @@ The end-to-end tests boot Home Assistant with fake lights (`tests/harness.py`). 
 
 ## Credits
 
-The built-in scenes' colours come from [Hypfer/hass-scene_presets](https://github.com/Hypfer/hass-scene_presets) (Apache-2.0, see `custom_components/magic_lights/presets/NOTICE`). The adaptive curve follows [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting) (Apache-2.0).
+The built-in parts' colours come from [Hypfer/hass-scene_presets](https://github.com/Hypfer/hass-scene_presets) (Apache-2.0, see `custom_components/magic_lights/presets/NOTICE`). The adaptive curve follows [Adaptive Lighting](https://github.com/basnijholt/adaptive-lighting) (Apache-2.0).
 
 ## Contributions are welcome!
 

@@ -1,54 +1,34 @@
-// The shared look of a scene: its name and icon, the part being edited, what that part's
-// lights do (the effect) and the effect's form. For an effect of the adaptive category
-// the form carries the day curve of the preview room. Edits go up as ml-scene-edit.
+// The part card: the look the selected layer plays, edited in place for every scene that
+// uses it. Its name (a built-in keeps its own), what its lights do (the effect) and the
+// effect's form; for an effect of the adaptive category the form carries the day curve.
+// Copy forks the part for this scene. Edits go up as ml-part-edit, Copy as ml-part-copy.
 
-import { LitElement, css, html, nothing } from "lit";
+import { LitElement, css, html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
-import { styleMap } from "lit/directives/style-map.js";
-import type { EffectInfo, HomeAssistant, Layer, PreviewFrame, StoredScene } from "../../shared/types";
-import { defineElement, fire } from "../../shared/util";
+import type { EffectInfo, HomeAssistant, Part, PartInfo, PreviewFrame } from "../../shared/types";
+import { defineElement, fire, plural } from "../../shared/util";
 import "../components/ml-swatch";
 import type { MlStore } from "../store";
-import { changedParams, effectOrder, layerSwatches, type Problem } from "./editor-model";
-import type { PartOption, PartSelect, SceneEdit, TimeSelect } from "./editor-events";
+import { changedParams, effectOrder, layerSwatches, partUsers, type Problem } from "./editor-model";
+import type { PartEdit, TimeSelect } from "./editor-events";
 import "./ml-day-curve";
 import "./ml-plugin-form";
 
 /** More effects than this read better as a dropdown. */
 const MAX_EFFECT_SEGMENTS = 8;
 
-/** What an edited or untouched preset tells the user. */
-export interface PresetNote {
-  edited: boolean;
-  /** Rooms whose menu shows it. */
-  rooms: string[];
-  /** The preset's own look, one line. */
-  original: string;
-}
-
 class MlLookCard extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
 
   @property({ attribute: false }) store!: MlStore;
 
-  @property({ attribute: false }) scene!: StoredScene;
+  /** The part as the draft has it (`part` is HTMLElement's). */
+  @property({ attribute: false }) draftPart!: Part;
 
-  @property({ type: Number }) selected = 0;
-
-  @property({ attribute: false }) parts: PartOption[] = [];
-
-  /** The preset this scene edits, to mark what changed. */
-  @property({ attribute: false }) original?: StoredScene;
-
-  @property({ attribute: false }) preset?: PresetNote;
-
-  /** Under the name: what kind of scene this is. */
-  @property() caption = "";
+  /** The scene being edited, which counts as a user whether saved or not. */
+  @property({ attribute: false }) sceneId = "";
 
   @property({ attribute: false }) problems: Problem[] = [];
-
-  /** Parts that took over the last edit. */
-  @property({ attribute: false }) followed: string[] = [];
 
   /** A day of the preview room, for an adaptive part. */
   @property({ attribute: false }) day?: { frames: PreviewFrame[]; t: number; lights: string[]; room: string };
@@ -57,59 +37,67 @@ class MlLookCard extends LitElement {
 
   @state() private _naming = false;
 
-  @state() private _iconOpen = false;
-
-  /** Params a part had under an effect it was switched away from, by "index:effect". */
+  /** Params a part had under an effect it was switched away from, by "part:effect". */
   private _stash = new Map<string, Record<string, unknown>>();
 
-  private get _layer(): Layer {
-    return this.scene.layers[Math.min(this.selected, this.scene.layers.length - 1)];
+  /** Opens the name for typing, its text selected: after Copy. */
+  async focusName(): Promise<void> {
+    this._naming = true;
+    await this.updateComplete;
+    const input = this.renderRoot.querySelector<HTMLElement & { select(): void; updateComplete: Promise<unknown> }>(
+      ".name-input",
+    );
+    // Its inner field exists only once it has rendered.
+    await input?.updateComplete;
+    input?.focus();
+    input?.select();
+  }
+
+  protected willUpdate(changed: PropertyValues<this>): void {
+    // Another part selected: its name is not being typed.
+    if (changed.has("draftPart") && changed.get("draftPart")?.id !== this.draftPart.id) this._naming = false;
+  }
+
+  private get _info(): PartInfo | undefined {
+    return this.store.part(this.draftPart.id);
   }
 
   protected render() {
-    const layer = this._layer;
-    const effect = this.store.effect(layer.effect);
-    const original = this.original?.layers[this.selected];
-    const changed = changedParams(effect, layer, original);
-    const names = this.problems.filter((p) => p.layer === undefined);
-    const own = this.problems.filter((p) => p.layer === this.selected);
+    const part = this.draftPart;
+    const effect = this.store.effect(part.effect);
+    const original = this._info?.original;
+    const changed = changedParams(effect, part, original);
     return html`<ha-card>
       <div class="card-content">
         <div class="head">
-          ${this._renderIdentity()} ${this.narrow ? nothing : this._renderParts()}
+          ${this._renderIdentity(effect)}
+          <ha-button appearance="outlined" size="s" @click=${() => fire(this, "ml-part-copy")}>
+            <ha-icon slot="start" icon="mdi:content-copy"></ha-icon>
+            Copy
+          </ha-button>
         </div>
-        ${names.map((p) => html`<p class="problem">${p.message}</p>`)}
-        ${this.narrow ? html`<div class="field"><span class="label">Part</span>${this._renderParts()}</div>` : nothing}
-        ${
-          this.followed.length
-            ? html`<p class="hint followed" role="status">
-                <ha-icon icon="mdi:link-variant"></ha-icon>
-                Also changed in ${this.followed.map((name) => `“${name}”`).join(", ")}
-              </p>`
-            : nothing
-        }
-        ${this._renderPresetNote()}
+        ${this.problems.map((p) => html`<p class="problem">${p.message}</p>`)}
+        ${this._renderUsers()}
         <div class="field">
           <span class="label">
             What the lights do
-            ${original && original.effect !== layer.effect ? html`<span class="dot" title="Changed"></span>` : nothing}
+            ${original && original.effect !== part.effect ? html`<span class="dot" title="Changed"></span>` : nothing}
           </span>
-          ${this._renderEffects(layer)}
+          ${this._renderEffects(part)}
           ${effect?.description ? html`<span class="hint">${effect.description}</span>` : nothing}
         </div>
-        ${own.map((p) => html`<ha-alert alert-type="warning">${p.message}</ha-alert>`)}
         ${
           effect
             ? html`<ml-plugin-form
                 .hass=${this.hass}
                 .schema=${effect.schema}
-                .data=${layer.params}
+                .data=${part.params}
                 .defaults=${effect.defaults}
                 .palettes=${this.store.config.palettes}
                 .changed=${changed}
                 @value-changed=${(ev: CustomEvent<{ value: Record<string, unknown> }>) => {
                   ev.stopPropagation();
-                  this._setLayer({ ...layer, params: ev.detail.value }, true);
+                  this._edit({ ...part, params: ev.detail.value });
                 }}
               >
                 ${this._renderDay(effect)}
@@ -117,91 +105,94 @@ class MlLookCard extends LitElement {
             : nothing
         }
       </div>
-    </ha-card>
-    ${this._renderIconDialog()}`;
+    </ha-card>`;
   }
 
-  private _renderIdentity() {
-    const scene = this.scene;
-    const swatches = scene.layers
-      .flatMap((l) => layerSwatches(this.store.effect(l.effect), l.params))
-      .slice(0, 5);
-    const locked = !!scene.preset;
+  private _renderIdentity(effect: EffectInfo | undefined) {
+    const part = this.draftPart;
+    const info = this._info;
     return html`<div class="identity">
-      <button class="swatch" aria-label="Change icon" title="Change icon" @click=${() => (this._iconOpen = true)}>
-        <ml-swatch size="56" .swatches=${swatches} .icon=${scene.icon ?? "mdi:palette-outline"}></ml-swatch>
-      </button>
+      <ml-swatch size="48" .swatches=${layerSwatches(effect, part.params)} .icon=${info?.icon ?? undefined}></ml-swatch>
       <div class="naming">
         ${
           this._naming
             ? html`<ha-input
                 class="name-input"
-                label="Name"
-                autofocus
-                .value=${scene.name}
+                label="Part name"
+                .value=${part.name}
                 @keydown=${(ev: KeyboardEvent) => {
                   if (ev.key === "Enter" || ev.key === "Escape") (ev.target as HTMLElement).blur();
                 }}
-                @input=${(ev: Event) =>
-                  this._edit({ ...scene, name: (ev.target as HTMLInputElement).value ?? "" })}
+                @input=${(ev: Event) => this._edit({ ...part, name: (ev.target as HTMLInputElement).value ?? "" })}
                 @blur=${() => (this._naming = false)}
               ></ha-input>`
             : html`<div class="name-row">
-                <h2 class="name">${scene.name || "Unnamed scene"}</h2>
+                <h2 class="name">${part.name || "Unnamed part"}</h2>
                 ${
-                  locked
+                  info?.builtin
                     ? html`<ha-icon
                         class="lock"
                         icon="mdi:lock-outline"
-                        title="A preset keeps its name, so automations that call it keep working."
+                        title="A built-in keeps its name, so automations that call it keep working."
                       ></ha-icon>`
-                    : html`<ha-icon-button .label=${"Rename"} @click=${() => (this._naming = true)}>
+                    : html`<ha-icon-button .label=${"Rename part"} @click=${() => this.focusName()}>
                         <ha-icon icon="mdi:pencil"></ha-icon>
                       </ha-icon-button>`
                 }
               </div>`
         }
-        <span class="hint">${locked ? "Preset · its name stays, for automations" : this.caption}</span>
+        ${this._renderKind()}
       </div>
     </div>`;
   }
 
-  private _renderParts() {
-    return html`<ha-control-select
-      class="parts"
-      style=${styleMap({ "--parts": String(this.parts.length) })}
-      .options=${this.parts.map((p) => ({ value: String(p.index), label: p.label }))}
-      .value=${String(this.selected)}
-      .label=${"Part"}
-      @value-changed=${(ev: CustomEvent<{ value: string }>) => {
-        ev.stopPropagation();
-        fire<PartSelect>(this, "ml-part-select", { index: Number(ev.detail.value) });
-      }}
-    ></ha-control-select>`;
+  /** "Part", "New part", or "Built-in" with "Edited · Reset". */
+  private _renderKind() {
+    const info = this._info;
+    if (!info) return html`<span class="hint">New part · saved with the scene</span>`;
+    if (!info.builtin) return html`<span class="hint">Part</span>`;
+    const original = info.original;
+    const effect = this.store.effect(this.draftPart.effect);
+    const edited = !!original && changedParams(effect, this.draftPart, original).size > 0;
+    return html`<span class="kind">
+      <span class="chip">Built-in</span>
+      ${
+        edited && original
+          ? html`<span class="chip edited">Edited</span>
+              <ha-button
+                appearance="plain"
+                size="s"
+                @click=${() => this._edit({ ...this.draftPart, effect: original.effect, params: structuredClone(original.params) })}
+              >
+                <ha-icon slot="start" icon="mdi:restore"></ha-icon>
+                Reset
+              </ha-button>`
+          : nothing
+      }
+    </span>`;
   }
 
-  private _renderPresetNote() {
-    const note = this.preset;
-    if (!note) return nothing;
-    const rooms = note.rooms.length ? ` (${note.rooms.join(", ")})` : "";
-    if (!note.edited) {
-      return html`<ha-alert alert-type="info">
-        <b>Preset.</b> Your changes apply in every room that shows it${rooms}.
-      </ha-alert>`;
+  /** "Used by 7 scenes — changes apply to all", the scenes folded under it. */
+  private _renderUsers() {
+    const users = partUsers(this.store.usesOf(this.draftPart.id), this.sceneId);
+    if (users.length <= 1) {
+      return html`<p class="usage hint">
+        <ha-icon icon="mdi:link-variant-off"></ha-icon>
+        Only this scene uses this part.
+      </p>`;
     }
-    return html`<ha-alert alert-type="warning">
-      <b>Edited preset.</b> Your values apply in every room that shows it${rooms}.
-      <div class="original">
-        <span>Original: ${note.original}</span>
-        <ha-button appearance="plain" size="s" @click=${() => fire(this, "ml-reset")}>
-          <ha-icon slot="start" icon="mdi:restore"></ha-icon>
-          Reset to original
-        </ha-button>
-      </div>
-    </ha-alert>`;
+    return html`<ha-expansion-panel outlined class="usage-panel">
+      <span slot="header" class="usage">
+        <ha-icon icon="mdi:link-variant"></ha-icon>
+        <span><b>Used by ${plural(users.length, "scene")}</b> — changes apply to all</span>
+      </span>
+      <ul class="users">
+        ${users.map((scene) => html`<li>${scene && scene.id !== this.sceneId ? this.store.sceneLabel(scene) : "This scene"}</li>`)}
+      </ul>
+    </ha-expansion-panel>`;
   }
 
-  private _renderEffects(layer: Layer) {
+  private _renderEffects(part: Part) {
     const effects = effectOrder(this.store.config.effects);
     const options = effects.map((e) => ({
       value: e.key,
@@ -209,11 +200,11 @@ class MlLookCard extends LitElement {
       ariaLabel: e.name,
       icon: html`<ha-icon .icon=${e.icon}></ha-icon>`,
     }));
-    if (!this.store.effect(layer.effect)) {
+    if (!this.store.effect(part.effect)) {
       options.push({
-        value: layer.effect,
-        label: `${layer.effect} (not installed)`,
-        ariaLabel: `${layer.effect} (not installed)`,
+        value: part.effect,
+        label: `${part.effect} (not installed)`,
+        ariaLabel: `${part.effect} (not installed)`,
         icon: html`<ha-icon icon="mdi:help-circle-outline"></ha-icon>`,
       });
     }
@@ -225,14 +216,14 @@ class MlLookCard extends LitElement {
       return html`<ha-select
         .label=${"Effect"}
         .options=${options.map(({ value, label }) => ({ value, label }))}
-        .value=${layer.effect}
+        .value=${part.effect}
         @selected=${changed}
       ></ha-select>`;
     }
     return html`<ha-control-select
       class="effects"
       .options=${options}
-      .value=${layer.effect}
+      .value=${part.effect}
       .label=${"What the lights do"}
       ?hide-option-label=${this.narrow}
       @value-changed=${changed}
@@ -256,48 +247,17 @@ class MlLookCard extends LitElement {
     ></ml-day-curve>`;
   }
 
-  private _renderIconDialog() {
-    return html`<ha-dialog
-      .open=${this._iconOpen}
-      width="small"
-      header-title="Scene icon"
-      @closed=${(ev: Event) => {
-        if (ev.target === ev.currentTarget) this._iconOpen = false;
-      }}
-    >
-      ${
-        this._iconOpen
-          ? html`<ha-icon-picker
-              .hass=${this.hass}
-              .label=${"Icon"}
-              .value=${this.scene.icon ?? undefined}
-              @value-changed=${(ev: CustomEvent<{ value?: string }>) =>
-                this._edit({ ...this.scene, icon: ev.detail.value || null })}
-            ></ha-icon-picker>`
-          : nothing
-      }
-      <ha-dialog-footer slot="footer">
-        <ha-button slot="primaryAction" data-dialog="close">Done</ha-button>
-      </ha-dialog-footer>
-    </ha-dialog>`;
-  }
-
   private _switchEffect(key: string): void {
-    const layer = this._layer;
+    const part = this.draftPart;
     const effect = this.store.effect(key);
-    if (!effect || key === layer.effect) return;
-    this._stash.set(`${this.selected}:${layer.effect}`, layer.params);
-    const params = this._stash.get(`${this.selected}:${key}`) ?? structuredClone(effect.defaults);
-    this._setLayer({ ...layer, effect: key, params }, false);
+    if (!effect || key === part.effect) return;
+    this._stash.set(`${part.id}:${part.effect}`, part.params);
+    const params = this._stash.get(`${part.id}:${key}`) ?? structuredClone(effect.defaults);
+    this._edit({ ...part, effect: key, params });
   }
 
-  private _setLayer(layer: Layer, follow: boolean): void {
-    const layers = this.scene.layers.map((l, i) => (i === this.selected ? layer : l));
-    this._edit({ ...this.scene, layers }, follow);
-  }
-
-  private _edit(scene: StoredScene, follow = false): void {
-    fire<SceneEdit>(this, "ml-scene-edit", { scene, follow });
+  private _edit(part: Part): void {
+    fire<PartEdit>(this, "ml-part-edit", { part });
   }
 
   static styles = css`
@@ -316,7 +276,11 @@ class MlLookCard extends LitElement {
       display: flex;
       align-items: flex-start;
       justify-content: space-between;
-      gap: var(--ha-space-4);
+      gap: var(--ha-space-3);
+    }
+    .head > ha-button {
+      flex: none;
+      margin-top: var(--ha-space-2);
     }
     .identity {
       display: flex;
@@ -324,18 +288,6 @@ class MlLookCard extends LitElement {
       gap: var(--ha-space-3);
       min-width: 0;
       flex: 1;
-    }
-    .swatch {
-      flex: none;
-      display: flex;
-      padding: 4px;
-      border: none;
-      border-radius: 50%;
-      background: none;
-      cursor: pointer;
-    }
-    .swatch:focus-visible {
-      outline: 2px solid var(--ha-color-focus, var(--primary-color));
     }
     .naming {
       display: flex;
@@ -348,6 +300,7 @@ class MlLookCard extends LitElement {
       align-items: center;
       gap: var(--ha-space-1);
       min-height: 48px;
+      min-width: 0;
     }
     .name {
       margin: 0;
@@ -370,9 +323,41 @@ class MlLookCard extends LitElement {
     .name-input {
       --ha-input-padding-bottom: 0;
     }
-    .head .parts {
-      flex: 0 1 calc(var(--parts) * 150px);
-      min-width: 0;
+    .kind {
+      display: flex;
+      flex-wrap: wrap;
+      align-items: center;
+      gap: var(--ha-space-2);
+    }
+    .chip {
+      padding: 0 var(--ha-space-2);
+      border-radius: var(--ha-border-radius-pill);
+      background: rgba(var(--rgb-primary-color), 0.15);
+      font-size: var(--ha-font-size-s);
+      line-height: 22px;
+    }
+    .chip.edited {
+      background: var(--ha-color-fill-warning-quiet-resting, rgba(255, 152, 0, 0.18));
+    }
+    .usage {
+      display: flex;
+      align-items: center;
+      gap: var(--ha-space-2);
+      --mdc-icon-size: 18px;
+    }
+    p.usage {
+      margin: calc(-1 * var(--ha-space-2)) 0 0;
+    }
+    .usage-panel {
+      display: block;
+      --expansion-panel-summary-padding: 0 var(--ha-space-3);
+      --expansion-panel-content-padding: 0 var(--ha-space-3);
+    }
+    .users {
+      margin: 0 0 var(--ha-space-3);
+      padding-inline-start: var(--ha-space-6);
+      font-size: var(--ha-font-size-s);
+      color: var(--secondary-text-color);
     }
     ha-control-select {
       --control-select-thickness: 52px;
@@ -408,37 +393,15 @@ class MlLookCard extends LitElement {
       font-size: var(--ha-font-size-s);
       color: var(--secondary-text-color);
     }
-    .followed {
-      margin-top: calc(-1 * var(--ha-space-3));
-      display: flex;
-      align-items: center;
-      gap: var(--ha-space-2);
-      --mdc-icon-size: 16px;
-    }
     .problem {
       margin: calc(-1 * var(--ha-space-3)) 0 0;
       font-size: var(--ha-font-size-s);
       color: var(--error-color);
     }
-    .original {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      justify-content: space-between;
-      gap: var(--ha-space-2);
-      font-size: var(--ha-font-size-s);
-    }
-    ha-alert {
-      display: block;
-    }
     ha-select {
-      display: block;
-    }
-    ha-icon-picker {
       display: block;
     }
   `;
 }
 
 defineElement("ml-look-card", MlLookCard);
-

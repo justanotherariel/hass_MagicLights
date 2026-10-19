@@ -136,8 +136,9 @@ LIVING_HELL = [
     "light.living_tv_strip",
 ]
 
-# Each room's scenes, in menu order. The office has none; the living room's
-# Nachtlicht has no lights there any more: it needs setting up.
+# Each room's scenes, in menu order: Hell shared by three rooms, a room-only
+# part, built-ins as scenes, the edited Savanna sunset. The office has none;
+# the living room's Nachtlicht plays on a light that is no longer there.
 SCENES = {
     "room:living_room": [
         _scene("s_12186051", "Hell", SUN, (LIVING_HELL, "p_12186051"),
@@ -163,6 +164,11 @@ SCENES = {
     "room:hallway": [
         _scene("s_12186054", "Hell", SUN, ("all", "p_12186051")),
         _scene("s_0a915dec", "Nachtlicht", MOON, ("all", "p_0a915dea")),
+    ],
+    "zone:downstairs": [
+        _scene("s_5a7a0003", "Savanna sunset", "mdi:weather-sunset", ("all", "savanna_sunset")),
+        _scene("s_254d2fd0", "Abend", NIGHT, (["room:living_room"], "p_254d2fcd"),
+               (["room:kitchen"], "p_12186051")),
     ],
 }  # fmt: skip
 

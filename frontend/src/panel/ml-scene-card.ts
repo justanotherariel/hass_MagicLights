@@ -1,5 +1,5 @@
 // One scene of a room as a tile card: the body runs it, the swatch (its own button) edits
-// it. A scene in the menu without lights here is a ghost whose whole tile opens set-up.
+// it. A scene without lights here is a ghost whose whole tile opens the editor.
 // Fires ml-scene-action with "activate" or "edit".
 
 import { LitElement, css, html, nothing } from "lit";
@@ -26,7 +26,7 @@ class MlSceneCard extends LitElement {
   /** Its colours can move. */
   @property({ type: Boolean }) animated = false;
 
-  /** In the menu, but without lights here. */
+  /** Without lights here. */
   @property({ type: Boolean }) ghost = false;
 
   /** The room cannot run scenes now (its select is unavailable); editing still works. */

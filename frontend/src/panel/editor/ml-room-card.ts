@@ -1,38 +1,29 @@
-// "In <room>": which of the room's lights each part of the scene sets. The room is the
-// preview room, picked from chips; its parts are boxes holding its bulbs in the preview's
-// colours. A bulb moves between parts by drag or from its menu; "+ Part" makes a part for
-// this room only. Every change edits only this room's entries of the layers (parts.ts).
+// The lights card: the room's bulbs grouped by the part they play, in the preview's
+// colours. A group's header selects its part for the part card. A bulb moves between
+// parts by drag or from its menu; "+ Part" picks a part (or a blank one) and the lights
+// that play it. Edits go up as ml-scene-edit.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
-import type { HomeAssistant, PreviewFrame, StoredScene, TargetInfo } from "../../shared/types";
+import type { HomeAssistant, Part, PreviewFrame, StoredScene, TargetInfo } from "../../shared/types";
 import { defineElement, fire, plural } from "../../shared/util";
 import "../components/ml-bulb";
-import { menuId, menuIds, type MlStore } from "../store";
+import "../components/ml-swatch";
+import "../ml-part-picker";
+import type { PartPicked } from "../ml-part-picker";
+import type { MlStore } from "../store";
 import { lookLine } from "../scene-facts";
-import { layerCaption, layerOwners } from "./editor-model";
-import type { PartSelect, RoomSelect, SceneEdit } from "./editor-events";
-import {
-  addPart,
-  assignLight,
-  lightsInNoPart,
-  partLabel,
-  partsIn,
-  setUpHere,
-  switcherParts,
-  type RoomContext,
-} from "./parts";
+import { layerOwners, layerSwatches } from "./editor-model";
+import type { PartSelect, SceneEdit } from "./editor-events";
+import { addPart, assignLights, lightsInNoPart, type RoomContext } from "./parts";
 
+const NONE = "none";
 const NEW = "new";
 
-/** layerCaption's "also Kitchen" as the box reads it. */
-const sharedLine = (caption: string): string =>
-  caption.startsWith("also ") ? `Shared with ${caption.slice(5)}` : `Elsewhere: ${caption}`;
-const NONE = "none";
-
 interface Choosing {
-  /** The part the picked lights join; NEW makes one after the selected part. */
-  into: number | typeof NEW;
+  /** The part the new layer plays; a blank one is created with it. */
+  part: Part;
+  added: boolean;
   picked: Set<string>;
 }
 
@@ -43,6 +34,12 @@ class MlRoomCard extends LitElement {
 
   @property({ attribute: false }) scene!: StoredScene;
 
+  /** A part as the draft has it, else as saved. */
+  @property({ attribute: false }) partOf: (id: string) => Part | undefined = () => undefined;
+
+  /** Names of the draft's own parts, so a blank part gets a free one. */
+  @property({ attribute: false }) draftNames: readonly string[] = [];
+
   @property({ attribute: false }) target!: TargetInfo;
 
   @property({ type: Number }) selected = 0;
@@ -52,148 +49,91 @@ class MlRoomCard extends LitElement {
 
   @property({ type: Boolean, reflect: true }) narrow = false;
 
+  /** "+ Part" is choosing a part; these lights join it. */
+  @state() private _picking?: string[];
+
   @state() private _choosing?: Choosing;
 
   @state() private _dialogOpen = false;
 
   private get _ctx(): RoomContext {
-    return {
-      target: this.target,
-      roomLights: (id) => this.store.target(id)?.lights,
-      everyRoom: this.store.targets.filter((t) => t.kind === "room").map((t) => t.id),
-    };
+    return { target: this.target, roomLights: (id) => this.store.target(id)?.lights };
   }
 
-  private _label(index: number): string {
-    return partLabel(this.scene.layers[index], index, {
-      light: (e) => this.store.lightName(e),
-      room: (ref) => this.store.targetName(ref),
-    });
+  private _name(index: number): string {
+    const id = this.scene.layers[index]?.part ?? "";
+    return this.partOf(id)?.name ?? id;
   }
 
   protected render() {
-    const ctx = this._ctx;
     const layers = this.scene.layers;
-    const setUp = partsIn(layers, this.target, ctx.roomLights).length > 0;
-    const parts = switcherParts(layers, this.target, ctx.roomLights);
-    const owners = layerOwners(layers, this.target, ctx.roomLights);
+    const owners = layerOwners(layers, this.target, this._ctx.roomLights);
     const loose = lightsInNoPart(owners, this.target);
     return html`<ha-card>
-      <div class="card-content">
-        <div class="title">
-          <h2>In ${this.target.name}</h2>
-          <span class="hint">
-            ${plural(this.target.lights.length, "light")}${setUp ? ` · ${plural(parts.length, "part")}` : ""}
-          </span>
-        </div>
-        ${this._renderRooms()}
-        ${
-          setUp
-            ? html`${parts.map((i) => this._renderPart(i, owners))}
-                ${
-                  loose.length
-                    ? html`<section class="part loose" aria-label="Not in this scene">
-                        <div class="part-head static"><span class="part-name">Not in this scene</span></div>
-                        ${this._renderBulbs(loose, null, parts)}
-                      </section>`
-                    : nothing
-                }
-                <p class="hint">
-                  Drag a bulb between parts, or tap it to move it. Every part is shared by the scene; only
-                  ${this.target.name}'s bulbs change here.
-                </p>`
-            : this._renderNotSetUp()
-        }
-        <div class="others">
-          <div class="field">
-            <span class="label">Lights in no part</span>
-            <ha-control-select
-              .options=${[
-                { value: "off", label: "Turn off" },
-                { value: "keep", label: "Leave as they are" },
-              ]}
-              .value=${this.scene.others}
-              .label=${"Lights in no part"}
-              @value-changed=${(ev: CustomEvent<{ value: StoredScene["others"] }>) => {
-                ev.stopPropagation();
-                this._edit({ ...this.scene, others: ev.detail.value });
-              }}
-            ></ha-control-select>
+        <div class="card-content">
+          <div class="title">
+            <h2>Lights</h2>
+            <span class="hint">${plural(this.target.lights.length, "light")} · ${plural(layers.length, "part")}</span>
           </div>
+          ${layers.map((_, i) => this._renderPart(i, owners))}
           ${
-            setUp
-              ? html`<ha-button appearance="plain" @click=${() => this._choose(NEW, [])}>
-                  <ha-icon slot="start" icon="mdi:plus"></ha-icon>
-                  Part
-                </ha-button>`
+            loose.length
+              ? html`<section class="part loose" aria-label="Not in this scene">
+                  <div class="part-head static"><span class="part-name">Not in this scene</span></div>
+                  ${this._renderBulbs(loose, null)}
+                </section>`
               : nothing
           }
+          <div class="foot">
+            <p class="hint">
+              Drag a bulb between parts, or tap it to move it. Tap a part's name to edit its look.
+            </p>
+            <ha-button appearance="plain" @click=${() => (this._picking = [])}>
+              <ha-icon slot="start" icon="mdi:plus"></ha-icon>
+              Part
+            </ha-button>
+          </div>
         </div>
-      </div>
-    </ha-card>
-    ${this._renderDialog()}`;
-  }
-
-  /** The rooms that show the scene or where it has lights, then the others in a menu. */
-  private _renderRooms() {
-    const id = menuId(this.scene);
-    const roomLights = this._ctx.roomLights;
-    const near = (t: TargetInfo) =>
-      t.id === this.target.id || menuIds(t).includes(id) || partsIn(this.scene.layers, t, roomLights).length > 0;
-    const chips = this.store.targets.filter(near);
-    const others = this.store.targets.filter((t) => !near(t));
-    return html`<div class="rooms" role="group" aria-label="Preview in">
-      ${chips.map(
-        (t) => html`<ha-filter-chip
-          no-leading-icon
-          .selected=${t.id === this.target.id}
-          .label=${t.name}
-          @click=${(ev: Event) => {
-            ev.preventDefault();
-            this._room(t.id);
-          }}
-        ></ha-filter-chip>`,
-      )}
+      </ha-card>
       ${
-        others.length
-          ? html`<ha-dropdown placement="bottom-start" @wa-select=${(ev: CustomEvent<{ item: { value: string } }>) =>
-              this._room(ev.detail.item.value)}>
-              <ha-button slot="trigger" appearance="plain" size="s">
-                ${plural(others.length, "other room")}
-                <ha-icon slot="end" icon="mdi:menu-down"></ha-icon>
-              </ha-button>
-              ${others.map((t) => html`<ha-dropdown-item value=${t.id}>${t.name}</ha-dropdown-item>`)}
-            </ha-dropdown>`
+        this._picking
+          ? html`<ml-part-picker
+              .hass=${this.hass}
+              .store=${this.store}
+              .targetId=${this.target.id}
+              .inScene=${layers.map((layer) => layer.part)}
+              mode="pick"
+              @ml-part-picked=${this._picked}
+              @ml-dialog-closed=${() => (this._picking = undefined)}
+            ></ml-part-picker>`
           : nothing
       }
-    </div>`;
+      ${this._renderDialog()}`;
   }
 
   private _renderPart(index: number, owners: Map<string, number>) {
-    const layer = this.scene.layers[index];
+    const part = this.partOf(this.scene.layers[index].part);
     const lights = this.target.lights.filter((e) => owners.get(e) === index);
     const selected = index === this.selected;
-    const ctx = this._ctx;
-    const rooms = this.store.targets.filter((t) => t.kind === "room");
-    const caption = layerCaption(layer.lights, this.target, rooms, ctx.roomLights);
-    const parts = switcherParts(this.scene.layers, this.target, ctx.roomLights);
-    return html`<section class="part ${selected ? "selected" : ""}" aria-label=${this._label(index)}>
+    const effect = part ? this.store.effect(part.effect) : undefined;
+    const swatches = part ? layerSwatches(effect, part.params) : [];
+    return html`<section class="part ${selected ? "selected" : ""}" aria-label=${this._name(index)}>
       <button
         class="part-head"
         aria-pressed=${selected ? "true" : "false"}
         @click=${() => fire<PartSelect>(this, "ml-part-select", { index })}
       >
-        <span class="part-name">${this._label(index)}</span>
+        <ml-swatch size="24" .swatches=${swatches}></ml-swatch>
+        <span class="part-name">${this._name(index)}</span>
         ${selected ? html`<span class="editing">editing</span>` : nothing}
-        <span class="part-look">${lookLine(this.store.effect(layer.effect), layer)}</span>
+        <span class="part-look">${part ? lookLine(effect, part) : "Missing part"}</span>
       </button>
-      ${caption ? html`<span class="caption">${sharedLine(caption)}</span>` : nothing}
-      ${this._renderBulbs(lights, index, parts)}
+      ${this._renderBulbs(lights, index)}
     </section>`;
   }
 
   /** The bulbs of one part (null: in none), a drop target for the others. */
-  private _renderBulbs(lights: string[], part: number | null, parts: number[]) {
+  private _renderBulbs(lights: string[], part: number | null) {
     return html`<ha-sortable
       group="ml-parts"
       draggable-selector=".bulb"
@@ -205,7 +145,7 @@ class MlRoomCard extends LitElement {
       @item-removed=${(ev: Event) => ev.stopPropagation()}
     >
       <div class="bulbs">
-        ${lights.map((e) => this._renderBulb(e, part, parts))}
+        ${lights.map((e) => this._renderBulb(e, part))}
         ${
           part !== null && !lights.length
             ? html`<div class="empty"><span class="drop"><ha-icon icon="mdi:plus"></ha-icon></span>drop a light here</div>`
@@ -215,7 +155,7 @@ class MlRoomCard extends LitElement {
     </ha-sortable>`;
   }
 
-  private _renderBulb(entityId: string, part: number | null, parts: number[]) {
+  private _renderBulb(entityId: string, part: number | null) {
     const light = this.frame?.lights[entityId];
     const on = !!light?.on;
     return html`<ha-dropdown
@@ -224,7 +164,7 @@ class MlRoomCard extends LitElement {
       placement="bottom"
       @wa-select=${(ev: CustomEvent<{ item: { value: string } }>) => {
         const value = ev.detail.item.value;
-        if (value === NEW) this._choose(NEW, [entityId]);
+        if (value === NEW) this._picking = [entityId];
         else this._assign(entityId, value === NONE ? null : Number(value));
       }}
     >
@@ -236,15 +176,15 @@ class MlRoomCard extends LitElement {
         .brightness=${on ? Math.round((light?.brightness ?? 1) * 100) : 100}
         .unavailable=${this.hass.states[entityId]?.state === "unavailable"}
       ></ml-bulb>
-      ${parts.map(
-        (i) => html`<ha-dropdown-item value=${String(i)} .selected=${i === part}>
+      ${this.scene.layers.map(
+        (_, i) => html`<ha-dropdown-item value=${String(i)} .selected=${i === part}>
           <ha-icon slot="icon" .icon=${i === part ? "mdi:check" : "mdi:circle-small"}></ha-icon>
-          ${this._label(i)}
+          ${this._name(i)}
         </ha-dropdown-item>`,
       )}
       <ha-dropdown-item value=${NEW}>
         <ha-icon slot="icon" icon="mdi:plus"></ha-icon>
-        New part for ${this.target.name}
+        Another part…
       </ha-dropdown-item>
       <ha-dropdown-item value=${NONE} .selected=${part === null}>
         <ha-icon slot="icon" .icon=${part === null ? "mdi:check" : "mdi:lightbulb-off-outline"}></ha-icon>
@@ -253,43 +193,20 @@ class MlRoomCard extends LitElement {
     </ha-dropdown>`;
   }
 
-  private _renderNotSetUp() {
-    return html`<section class="unset">
-      <span class="part-name">Not set up here</span>
-      <span class="hint">
-        ${this.scene.name || "This scene"} has no lights in ${this.target.name} yet, so it cannot run here.
-      </span>
-      <div class="actions">
-        <ha-button @click=${() => this._edit({ ...this.scene, layers: setUpHere(this.scene.layers, this._ctx) }, 0)}>
-          Use all lights here
-        </ha-button>
-        <ha-button appearance="outlined" @click=${() => this._choose(0, [])}>Choose lights</ha-button>
-      </div>
-    </section>`;
-  }
-
   private _renderDialog() {
     const choosing = this._choosing;
     if (!choosing) return nothing;
-    const title =
-      choosing.into === NEW ? `New part for ${this.target.name}` : `Lights for ${this._label(choosing.into)}`;
     return html`<ha-dialog
       .open=${this._dialogOpen}
       width="small"
-      .headerTitle=${title}
+      .headerTitle=${`Lights for ${choosing.part.name}`}
       @closed=${(ev: Event) => {
         if (ev.target !== ev.currentTarget) return;
         this._choosing = undefined;
         this._dialogOpen = false;
       }}
     >
-      <p class="hint">
-        ${
-          choosing.into === NEW
-            ? `The new part starts with the look of ${this._label(this.selected)} and sets only the lights you pick.`
-            : "The lights you pick join this part."
-        }
-      </p>
+      <p class="hint">The lights you pick play ${choosing.part.name}; they leave the parts they are in.</p>
       <div class="bulbs choose">
         ${this.target.lights.map(
           (e) => html`<ml-bulb
@@ -306,15 +223,22 @@ class MlRoomCard extends LitElement {
       </div>
       <ha-dialog-footer slot="footer">
         <ha-button slot="secondaryAction" appearance="plain" data-dialog="close">Cancel</ha-button>
-        <ha-button slot="primaryAction" .disabled=${!choosing.picked.size} @click=${this._chosen}>
-          ${choosing.into === NEW ? "Add part" : "Done"}
-        </ha-button>
+        <ha-button slot="primaryAction" .disabled=${!choosing.picked.size} @click=${this._chosen}>Add part</ha-button>
       </ha-dialog-footer>
     </ha-dialog>`;
   }
 
-  private _choose(into: Choosing["into"], picked: string[]): void {
-    this._choosing = { into, picked: new Set(picked) };
+  private _picked(ev: CustomEvent<PartPicked>): void {
+    ev.stopPropagation();
+    const { partId } = ev.detail;
+    const index = this.scene.layers.findIndex((layer) => layer.part === partId);
+    if (index >= 0) {
+      this._joinPart(index);
+      return;
+    }
+    const part = partId === null ? this.store.newPart(this.draftNames) : this.partOf(partId);
+    if (!part) return;
+    this._choosing = { part, added: partId === null, picked: new Set(this._picking) };
     this._dialogOpen = true;
   }
 
@@ -322,34 +246,30 @@ class MlRoomCard extends LitElement {
     const choosing = this._choosing;
     this._dialogOpen = false;
     if (!choosing) return;
-    const ctx = this._ctx;
     const lights = this.target.lights.filter((e) => choosing.picked.has(e));
-    if (choosing.into === NEW) {
-      const { layers, index } = addPart(this.scene.layers, this.selected, lights, ctx);
-      this._edit({ ...this.scene, layers }, index);
+    const { layers, index } = addPart(this.scene.layers, choosing.part.id, lights, this._ctx);
+    fire<SceneEdit>(this, "ml-scene-edit", {
+      scene: { ...this.scene, layers },
+      select: index,
+      ...(choosing.added ? { added: choosing.part } : {}),
+    });
+  }
+
+  /** A part the scene plays already: the picked lights join its layer, which is selected. */
+  private _joinPart(index: number): void {
+    const lights = this._picking ?? [];
+    if (!lights.length) {
+      fire<PartSelect>(this, "ml-part-select", { index });
       return;
     }
-    let layers = this.scene.layers;
-    let select = choosing.into;
-    for (const e of lights) {
-      const result = assignLight(layers, e, select, ctx);
-      layers = result.layers;
-      select = Math.max(0, result.moved[select]);
-    }
-    this._edit({ ...this.scene, layers }, select);
+    const { layers, moved } = assignLights(this.scene.layers, lights, index, this._ctx);
+    fire<SceneEdit>(this, "ml-scene-edit", { scene: { ...this.scene, layers }, select: Math.max(0, moved[index]) });
   }
 
   private _assign(entityId: string, part: number | null): void {
-    const { layers, moved } = assignLight(this.scene.layers, entityId, part, this._ctx);
-    this._edit({ ...this.scene, layers }, Math.max(0, moved[this.selected] ?? 0));
-  }
-
-  private _room(targetId: string): void {
-    if (targetId !== this.target.id) fire<RoomSelect>(this, "ml-room-select", { targetId });
-  }
-
-  private _edit(scene: StoredScene, select?: number): void {
-    fire<SceneEdit>(this, "ml-scene-edit", { scene, select });
+    const { layers, moved } = assignLights(this.scene.layers, [entityId], part, this._ctx);
+    const select = Math.max(0, moved[this.selected] ?? 0);
+    fire<SceneEdit>(this, "ml-scene-edit", { scene: { ...this.scene, layers }, select });
   }
 
   static styles = css`
@@ -380,17 +300,6 @@ class MlRoomCard extends LitElement {
       font-size: var(--ha-font-size-s);
       color: var(--secondary-text-color);
     }
-    .rooms {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: var(--ha-space-2);
-    }
-    /* 44 px touch targets. */
-    ha-filter-chip {
-      --ha-button-height: 44px;
-      --md-filter-chip-selected-container-color: rgba(var(--rgb-primary-color), 0.2);
-    }
     .part {
       display: flex;
       flex-direction: column;
@@ -411,6 +320,7 @@ class MlRoomCard extends LitElement {
       align-items: center;
       gap: var(--ha-space-2);
       min-height: 44px;
+      min-width: 0;
       margin: 0;
       padding: 0;
       border: none;
@@ -427,10 +337,19 @@ class MlRoomCard extends LitElement {
     .part-head:focus-visible {
       outline: 2px solid var(--ha-color-focus, var(--primary-color));
     }
+    .part-head ml-swatch {
+      flex: none;
+    }
     .part-name {
+      flex: none;
+      max-width: 60%;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
       font-weight: var(--ha-font-weight-medium);
     }
     .editing {
+      flex: none;
       padding: 0 var(--ha-space-2);
       border-radius: var(--ha-border-radius-pill);
       background: rgba(var(--rgb-primary-color), 0.15);
@@ -446,11 +365,6 @@ class MlRoomCard extends LitElement {
       overflow: hidden;
       text-overflow: ellipsis;
       white-space: nowrap;
-    }
-    .caption {
-      margin-top: calc(-1 * var(--ha-space-2));
-      font-size: var(--ha-font-size-s);
-      color: var(--secondary-text-color);
     }
     .bulbs {
       display: flex;
@@ -482,39 +396,13 @@ class MlRoomCard extends LitElement {
       border-radius: 50%;
       --mdc-icon-size: 20px;
     }
-    .unset {
+    .foot {
       display: flex;
-      flex-direction: column;
-      gap: var(--ha-space-2);
-      padding: var(--ha-space-3);
-      border: 1px dashed var(--secondary-text-color);
-      border-radius: var(--ha-border-radius-lg, 12px);
-    }
-    .actions {
-      display: flex;
-      flex-wrap: wrap;
-      gap: var(--ha-space-2);
-    }
-    .others {
-      display: flex;
-      align-items: flex-end;
+      align-items: center;
       gap: var(--ha-space-3);
     }
-    .others .field {
+    .foot .hint {
       flex: 1;
-    }
-    .field {
-      display: flex;
-      flex-direction: column;
-      gap: var(--ha-space-2);
-    }
-    .label {
-      font-size: var(--ha-font-size-s);
-      color: var(--secondary-text-color);
-    }
-    ha-control-select {
-      --control-select-thickness: 48px;
-      --control-select-border-radius: var(--ha-border-radius-lg, 12px);
     }
     .choose {
       margin-top: var(--ha-space-3);

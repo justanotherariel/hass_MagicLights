@@ -3,7 +3,6 @@
 import "./editor/ml-scene-editor";
 import "./magic-lights-panel";
 import "./ml-home";
-import "./ml-scenes";
 import "./ml-settings";
 import "./ml-target-page";
 import "./ml-zone-dialog";

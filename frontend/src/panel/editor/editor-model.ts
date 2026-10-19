@@ -1,6 +1,5 @@
-// Pure logic of the scene editor: which lights a layer sets, the part of a layer one
-// room edits, room-only layers following shared edits, draft
-// comparison and the checks that gate Try and Save.
+// Pure logic of the scene editor: which lights a layer sets, draft comparison and the
+// checks that gate Try and Save.
 
 import { colorToHex } from "../../shared/color";
 import { getHiddenFields } from "../../shared/conditions";
@@ -9,11 +8,14 @@ import type {
   EffectInfo,
   HaFormSchema,
   LayerLights,
+  Look,
+  Part,
   PreviewFrame,
-  StoredScene,
+  SceneInfo,
   TargetInfo,
 } from "../../shared/types";
-import { humanise, plural } from "../../shared/util";
+import { humanise } from "../../shared/util";
+import type { Draft } from "../store";
 import { parseColor } from "./colors";
 
 /** The lights of a room target ("room:<area_id>"), as the backend's LightIndex.expand reads them. */
@@ -28,55 +30,6 @@ export const expandLights = (lights: LayerLights, target: TargetInfo, roomLights
     else picked.add(item);
   }
   return target.lights.filter((e) => picked.has(e));
-};
-
-/** The `room:` refs and lights that stand for the whole target. */
-export const wholeTarget = (target: TargetInfo, roomLights: RoomLights): string[] => {
-  const refs = target.rooms.map((area) => `room:${area}`);
-  const covered = new Set(refs.flatMap((ref) => roomLights(ref) ?? []));
-  return [...refs, ...target.lights.filter((e) => !covered.has(e))];
-};
-
-/** Whether an entry of a layer's lights belongs to the target: one of its rooms or lights. */
-const inTarget = (entry: string, target: TargetInfo): boolean =>
-  entry.startsWith("room:") ? target.rooms.includes(entry.slice(5)) : target.lights.includes(entry);
-
-/** The entries of a layer the target edits; "all" counts as the whole target. */
-export const roomSlice = (lights: LayerLights, target: TargetInfo, roomLights: RoomLights): string[] =>
-  lights === "all" ? wholeTarget(target, roomLights) : lights.filter((e) => inTarget(e, target));
-
-/**
- * A layer's lights with the target's slice replaced and every other room's entries kept.
- * `everyRoom` lists the `room:` refs that "all" stands for elsewhere.
- */
-export const setRoomSlice = (
-  lights: LayerLights,
-  target: TargetInfo,
-  slice: readonly string[],
-  everyRoom: readonly string[],
-): string[] => {
-  const others = (lights === "all" ? everyRoom : lights).filter((e) => !inTarget(e, target));
-  return [...others, ...slice.filter((e) => !others.includes(e))];
-};
-
-/** "Ankleide only", "3 rooms", "also Kitchen": the rooms a layer reaches besides `here`. */
-export const layerCaption = (
-  lights: LayerLights,
-  here: TargetInfo,
-  rooms: readonly TargetInfo[],
-  roomLights: RoomLights,
-): string | undefined => {
-  if (lights === "all") return undefined;
-  const elsewhere = rooms.filter(
-    (room) =>
-      room.id !== here.id &&
-      !here.rooms.includes(room.area_id ?? "") &&
-      expandLights(lights, room, roomLights).length > 0,
-  );
-  if (!elsewhere.length) return undefined;
-  const reach = elsewhere.length === 1 ? elsewhere[0].name : plural(elsewhere.length, "room");
-  if (expandLights(lights, here, roomLights).length) return `also ${reach}`;
-  return elsewhere.length === 1 ? `${reach} only` : reach;
 };
 
 /** Light -> index of the layer that sets it; later layers win. */
@@ -168,101 +121,108 @@ export const stableJson = (value: unknown): string =>
       : v,
   );
 
-/** Whether the editor's scene differs from what it is measured against. */
-export const isDirty = (scene: StoredScene, baseline: StoredScene): boolean =>
-  stableJson(scene) !== stableJson(baseline);
+/** The draft's parts that differ from the saved ones: edits and new parts, by id. */
+export const changedParts = (parts: readonly Part[], saved: SavedPart): Part[] =>
+  parts
+    .filter((part) => {
+      const before = saved(part.id);
+      return !before || stableJson(storedPart(before)) !== stableJson(storedPart(part));
+    })
+    .sort((a, b) => (a.id < b.id ? -1 : a.id > b.id ? 1 : 0));
+
+const storedPart = ({ id, name, effect, params }: Part): Part => ({ id, name, effect, params });
+
+/** A saved part by id. */
+export type SavedPart = (id: string) => Part | undefined;
+
+/** Whether the draft differs from what it is measured against; parts equal to the saved ones do not count. */
+export const isDirty = (draft: Draft, baseline: Draft, saved: SavedPart): boolean =>
+  stableJson(draft.scene) !== stableJson(baseline.scene) ||
+  stableJson(changedParts(draft.parts, saved)) !== stableJson(changedParts(baseline.parts, saved));
+
+/** Save needs a change, except for a new scene: an unchanged stored one would store nothing. */
+export const canSave = (draft: Draft, baseline: Draft, stored: boolean, saved: SavedPart): boolean =>
+  !stored || isDirty(draft, baseline, saved);
+
+/** The draft with `part` edited in place: every scene using it gets the change on Save. */
+export const withPart = (draft: Draft, part: Part): Draft => ({
+  scene: draft.scene,
+  parts: draft.parts.some((p) => p.id === part.id)
+    ? draft.parts.map((p) => (p.id === part.id ? part : p))
+    : [...draft.parts, part],
+});
 
 /**
- * Save needs a change, except for a new scene of your own: an untouched preset would
- * only store a copy of itself, an unchanged stored scene nothing at all.
+ * Copy: the scene's layers playing `sourceId` play `copy` instead, which carries the
+ * pending edits; the shared part goes back to how it is saved.
  */
-export const canSave = (scene: StoredScene, baseline: StoredScene, stored: boolean): boolean =>
-  isDirty(scene, baseline) || (!stored && !scene.preset);
+export const forkPart = (draft: Draft, sourceId: string, copy: Part): Draft => ({
+  scene: {
+    ...draft.scene,
+    layers: draft.scene.layers.map((l) => (l.part === sourceId ? { ...l, part: copy.id } : l)),
+  },
+  parts: [...draft.parts.filter((p) => p.id !== sourceId), copy],
+});
 
-export interface Followed {
-  scene: StoredScene;
-  /** Later layers that took over a changed value, for an "Also changed in …" caption. */
-  layers: number[];
-}
-
-/** Whether a layer is shared: the first, "all", or one reaching more than one room. */
-export const isSharedLayer = (
-  lights: LayerLights,
-  index: number,
-  rooms: readonly TargetInfo[],
-  roomLights: RoomLights,
-): boolean =>
-  index === 0 ||
-  lights === "all" ||
-  rooms.filter((room) => expandLights(lights, room, roomLights).length > 0).length > 1;
-
-/**
- * A room-only layer follows edits to an earlier shared layer of the same effect for the
- * values the two had in common: when layer i's param changes old → new, every later
- * layer of that effect still holding old gets new. Values that differ stay. Only a
- * params edit of a `shared` layer follows, so one room's variant never reaches another
- * room's; adding, removing or reordering layers changes nothing.
- */
-export const variantsFollow = (
-  before: StoredScene,
-  after: StoredScene,
-  shared: (index: number) => boolean,
-): Followed => {
-  const n = after.layers.length;
-  if (before.layers.length !== n) return { scene: after, layers: [] };
-  const same = (a: unknown, b: unknown) => stableJson(a) === stableJson(b);
-  const layers = after.layers.map((layer) => ({ ...layer, params: { ...layer.params } }));
-  const followed = new Set<number>();
-  before.layers.forEach((old, i) => {
-    const edited = after.layers[i];
-    if (!shared(i) || old.effect !== edited.effect || same(old.params, edited.params)) return;
-    const keys = new Set([...Object.keys(old.params), ...Object.keys(edited.params)]);
-    for (const key of keys) {
-      const from = old.params[key];
-      const to = edited.params[key];
-      if (same(from, to)) continue;
-      for (let j = i + 1; j < n; j++) {
-        const later = layers[j];
-        // A layer edited in the same step keeps its own value.
-        if (later.effect !== edited.effect || !same(before.layers[j].params[key], from)) continue;
-        if (!same(after.layers[j].params[key], from)) continue;
-        if (to === undefined) delete later.params[key];
-        else later.params[key] = structuredClone(to);
-        followed.add(j);
-      }
-    }
-  });
-  if (!followed.size) return { scene: after, layers: [] };
-  return { scene: { ...after, layers }, layers: [...followed].sort((a, b) => a - b) };
+/** The draft without parts that no layer plays any more: their edits are not saved. */
+export const withoutUnusedParts = (draft: Draft): Draft => {
+  const used = new Set(draft.scene.layers.map((l) => l.part));
+  return { scene: draft.scene, parts: draft.parts.filter((p) => used.has(p.id)) };
 };
 
 export interface Problem {
   /** Layer index, or undefined for the scene itself. */
   layer?: number;
+  /** A part's own problem (its name). */
+  part?: string;
   message: string;
 }
 
+const nameProblem = (name: string, what: string): string | undefined => {
+  const trimmed = name.trim();
+  if (!trimmed) return `Give the ${what} a name.`;
+  if (trimmed.length > 64) return "The name is longer than 64 characters.";
+  return undefined;
+};
+
 /** What the backend would reject before it gets the chance; Try and Save wait for none. */
 export const sceneProblems = (
-  scene: StoredScene,
+  draft: Draft,
+  saved: SavedPart,
   effectOf: (key: string) => EffectInfo | undefined,
 ): Problem[] => {
   const problems: Problem[] = [];
-  const name = scene.name.trim();
-  if (!name) problems.push({ message: "Give the scene a name." });
-  else if (name.length > 64) problems.push({ message: "The name is longer than 64 characters." });
-  else if (["off", "manual"].includes(name.toLowerCase())) {
-    problems.push({ message: `"${name}" is reserved for the scene menu.` });
+  const { scene } = draft;
+  const named = nameProblem(scene.name, "scene");
+  if (named) problems.push({ message: named });
+  else if (["off", "manual"].includes(scene.name.trim().toLowerCase())) {
+    problems.push({ message: `"${scene.name.trim()}" is reserved for the scene menu.` });
   }
+  const partOf = (id: string) => draft.parts.find((p) => p.id === id) ?? saved(id);
   scene.layers.forEach((layer, i) => {
     if (layer.lights !== "all" && layer.lights.length === 0) {
       problems.push({ layer: i, message: "Pick at least one light." });
     }
-    if (!effectOf(layer.effect)) {
-      problems.push({ layer: i, message: `The effect "${layer.effect}" is not installed.` });
+    const part = partOf(layer.part);
+    if (!part) problems.push({ layer: i, message: `The part "${layer.part}" no longer exists.` });
+    else if (!effectOf(part.effect)) {
+      problems.push({ layer: i, message: `The effect "${part.effect}" is not installed.` });
     }
   });
+  for (const part of draft.parts) {
+    const problem = nameProblem(part.name, "part");
+    if (problem) problems.push({ part: part.id, message: problem });
+  }
   return problems;
+};
+
+/**
+ * Who a part's edits reach: the edited scene first (undefined while it is unsaved or does
+ * not use the part yet), then the other saved scenes that use it.
+ */
+export const partUsers = (saved: readonly SceneInfo[], sceneId: string): (SceneInfo | undefined)[] => {
+  const here = saved.find((s) => s.id === sceneId);
+  return [here, ...saved.filter((s) => s !== here)];
 };
 
 /** The last frame at or before t. */
@@ -279,17 +239,13 @@ export const frameAt = (frames: readonly PreviewFrame[], t: number): PreviewFram
 };
 
 /**
- * The params of a layer that differ from the same layer of the original (an edited
- * preset's preset), defaults filled on both sides. Another effect counts as all changed.
+ * The params of a look that differ from the original (a built-in as it ships), defaults
+ * filled on both sides. Another effect counts as all changed.
  */
-export const changedParams = (
-  effect: EffectInfo | undefined,
-  layer: { effect: string; params: Record<string, unknown> },
-  original: { effect: string; params: Record<string, unknown> } | undefined,
-): Set<string> => {
+export const changedParams = (effect: EffectInfo | undefined, look: Look, original: Look | null | undefined): Set<string> => {
   if (!original) return new Set();
-  const now = withDefaults(effect?.defaults, layer.params);
-  if (original.effect !== layer.effect) return new Set(Object.keys(now));
+  const now = withDefaults(effect?.defaults, look.params);
+  if (original.effect !== look.effect) return new Set(Object.keys(now));
   const before = withDefaults(effect?.defaults, original.params);
   const keys = new Set([...Object.keys(now), ...Object.keys(before)]);
   return new Set([...keys].filter((key) => stableJson(now[key]) !== stableJson(before[key])));

@@ -1,136 +1,134 @@
-// The scene's own settings beside its look: its fade, its overall brightness and the
-// rooms whose menu shows it. Menus belong to the rooms, not to the scene's draft, so a
-// chip writes them at once (as the Scenes list does); a scene that was never saved has
-// no menus yet and gets them on its first save, in every room it is set up in.
+// The scene card: the scene's name and icon, its fade and what its lights in no part do.
+// Edits go up as ml-scene-edit.
 
 import { LitElement, css, html, nothing } from "lit";
-import { property } from "lit/decorators.js";
-import type { StoredScene, TargetInfo } from "../../shared/types";
-import { defineElement, fire, plural, toastOnError } from "../../shared/util";
+import { property, state } from "lit/decorators.js";
+import type { HomeAssistant, StoredScene } from "../../shared/types";
+import { defineElement, fire } from "../../shared/util";
 import "../components/ml-fade-select";
-import "../components/ml-value-bar";
+import "../components/ml-swatch";
 import { fadeLabel } from "../fade";
-import { menuId, menuIds, type MlStore } from "../store";
+import { SCENE_ICON, type MlStore } from "../store";
+import type { Problem } from "./editor-model";
 import type { SceneEdit } from "./editor-events";
-import { expandLights } from "./editor-model";
 
 class MlSceneOptions extends LitElement {
+  @property({ attribute: false }) hass!: HomeAssistant;
+
   @property({ attribute: false }) store!: MlStore;
 
   @property({ attribute: false }) scene!: StoredScene;
 
-  /** The scene is stored, so menus can hold it. */
-  @property({ type: Boolean }) stored = false;
+  /** Colours of its parts in this room. */
+  @property({ attribute: false }) swatches: readonly string[] = [];
 
-  /** The preset this scene edits, to mark what changed. */
-  @property({ attribute: false }) original?: StoredScene;
+  /** Under the name: where the scene is. */
+  @property() caption = "";
+
+  /** The scene's own problems (its name). */
+  @property({ attribute: false }) problems: Problem[] = [];
 
   @property({ type: Boolean, reflect: true }) narrow = false;
 
+  @state() private _naming = false;
+
+  @state() private _iconOpen = false;
+
   protected render() {
     const scene = this.scene;
-    const original = this.original;
+    const fade = this.store.config.settings.transition;
     return html`<ha-card>
-      <div class="card-content">
-        <div class="field">
-          <span class="label">
-            Fade <span class="hint">for this scene</span>
-            ${original && original.transition !== scene.transition ? html`<span class="dot"></span>` : nothing}
-          </span>
-          <ml-fade-select
-            .value=${scene.transition}
-            .fallback=${this.store.config.settings.transition}
-            @value-changed=${(ev: CustomEvent<{ value: number | null }>) => {
-              ev.stopPropagation();
-              this._edit({ ...scene, transition: ev.detail.value });
-            }}
-          ></ml-fade-select>
-          <span class="hint">Default follows the Magic Lights settings: ${fadeLabel(this.store.config.settings.transition)}.</span>
+        <div class="card-content">
+          ${this._renderIdentity()}
+          ${this.problems.map((p) => html`<p class="problem">${p.message}</p>`)}
+          <div class="field">
+            <span class="label">Fade <span class="hint">for this scene</span></span>
+            <ml-fade-select
+              .value=${scene.transition}
+              .fallback=${fade}
+              @value-changed=${(ev: CustomEvent<{ value: number | null }>) => {
+                ev.stopPropagation();
+                this._edit({ ...scene, transition: ev.detail.value });
+              }}
+            ></ml-fade-select>
+            <span class="hint">Default follows the Magic Lights settings: ${fadeLabel(fade)}.</span>
+          </div>
+          <div class="field">
+            <span class="label">Lights in no part</span>
+            <ha-control-select
+              .options=${[
+                { value: "off", label: "Turn off" },
+                { value: "keep", label: "Leave as they are" },
+              ]}
+              .value=${scene.others}
+              .label=${"Lights in no part"}
+              @value-changed=${(ev: CustomEvent<{ value: StoredScene["others"] }>) => {
+                ev.stopPropagation();
+                this._edit({ ...scene, others: ev.detail.value });
+              }}
+            ></ha-control-select>
+          </div>
         </div>
-        <div class="field">
-          <span class="label">
-            Overall brightness <span class="hint">scales every part</span>
-            ${original && original.brightness !== scene.brightness ? html`<span class="dot"></span>` : nothing}
-          </span>
-          <ml-value-bar
-            size="compact"
-            .value=${scene.brightness}
-            .min=${1}
-            .max=${100}
-            unit="%"
-            .label=${"Overall brightness"}
-            @value-changed=${(ev: CustomEvent<{ value: number }>) => {
-              ev.stopPropagation();
-              this._edit({ ...scene, brightness: Math.round(ev.detail.value) });
-            }}
-          ></ml-value-bar>
-        </div>
-        ${this._renderShown()}
-      </div>
-    </ha-card>`;
+      </ha-card>
+      ${this._renderIconDialog()}`;
   }
 
-  private _renderShown() {
-    const id = menuId(this.scene);
-    const shown = this.store.targets.filter((t) => menuIds(t).includes(id));
-    const others = this.store.targets.filter((t) => !shown.includes(t));
-    const rooms = shown.filter((t) => t.kind === "room").length;
-    if (!this.stored && !this.scene.preset) {
-      return html`<div class="field">
-        <span class="label">Shown in</span>
-        <span class="hint">Once saved, the scene shows in every room it is set up in.</span>
-      </div>`;
-    }
-    return html`<div class="field">
-      <span class="label">Shown in <span class="hint">${plural(rooms, "room")}</span></span>
-      <div class="chips">
-        ${shown.map(
-          (t) => html`<ha-filter-chip
-            selected
-            .label=${t.name}
-            title=${`Shown in ${t.name}; tap to hide it there`}
-            @click=${(ev: Event) => {
-              ev.preventDefault();
-              this._show(t, false);
-            }}
-          ></ha-filter-chip>`,
-        )}
+  private _renderIdentity() {
+    const scene = this.scene;
+    return html`<div class="identity">
+      <button class="swatch" aria-label="Change icon" title="Change icon" @click=${() => (this._iconOpen = true)}>
+        <ml-swatch size="56" .swatches=${this.swatches} .icon=${scene.icon ?? SCENE_ICON}></ml-swatch>
+      </button>
+      <div class="naming">
         ${
-          others.length
-            ? html`<ha-dropdown
-                placement="bottom-start"
-                @wa-select=${(ev: CustomEvent<{ item: { value: string } }>) => {
-                  const target = this.store.target(ev.detail.item.value);
-                  if (target) this._show(target, true);
+          this._naming
+            ? html`<ha-input
+                class="name-input"
+                label="Scene name"
+                autofocus
+                .value=${scene.name}
+                @keydown=${(ev: KeyboardEvent) => {
+                  if (ev.key === "Enter" || ev.key === "Escape") (ev.target as HTMLElement).blur();
                 }}
-              >
-                <ha-button slot="trigger" appearance="outlined" size="s">
-                  <ha-icon slot="start" icon="mdi:plus"></ha-icon>
-                  Add
-                </ha-button>
-                ${others.map(
-                  (t) => html`<ha-dropdown-item value=${t.id}>
-                    ${t.name}${this._fits(t) ? "" : " · needs setting up"}
-                  </ha-dropdown-item>`,
-                )}
-              </ha-dropdown>`
-            : nothing
+                @input=${(ev: Event) => this._edit({ ...scene, name: (ev.target as HTMLInputElement).value ?? "" })}
+                @blur=${() => (this._naming = false)}
+              ></ha-input>`
+            : html`<div class="name-row">
+                <h2 class="name">${scene.name || "Unnamed scene"}</h2>
+                <ha-icon-button .label=${"Rename scene"} @click=${() => (this._naming = true)}>
+                  <ha-icon icon="mdi:pencil"></ha-icon>
+                </ha-icon-button>
+              </div>`
         }
+        <span class="hint">${this.caption}</span>
       </div>
     </div>`;
   }
 
-  private _fits(target: TargetInfo): boolean {
-    const roomLights = (id: string) => this.store.target(id)?.lights;
-    return this.scene.layers.some((l) => expandLights(l.lights, target, roomLights).length > 0);
-  }
-
-  private _show(target: TargetInfo, shown: boolean): void {
-    toastOnError(
-      this,
-      this.store.setInMenus(menuId(this.scene), [target.id], shown),
-      shown ? `Could not add it to ${target.name}` : `Could not hide it in ${target.name}`,
-    );
+  private _renderIconDialog() {
+    return html`<ha-dialog
+      .open=${this._iconOpen}
+      width="small"
+      header-title="Scene icon"
+      @closed=${(ev: Event) => {
+        if (ev.target === ev.currentTarget) this._iconOpen = false;
+      }}
+    >
+      ${
+        this._iconOpen
+          ? html`<ha-icon-picker
+              .hass=${this.hass}
+              .label=${"Icon"}
+              .value=${this.scene.icon ?? undefined}
+              @value-changed=${(ev: CustomEvent<{ value?: string }>) =>
+                this._edit({ ...this.scene, icon: ev.detail.value || null })}
+            ></ha-icon-picker>`
+          : nothing
+      }
+      <ha-dialog-footer slot="footer">
+        <ha-button slot="primaryAction" data-dialog="close">Done</ha-button>
+      </ha-dialog-footer>
+    </ha-dialog>`;
   }
 
   private _edit(scene: StoredScene): void {
@@ -149,6 +147,53 @@ class MlSceneOptions extends LitElement {
       flex-direction: column;
       gap: var(--ha-space-5);
     }
+    .identity {
+      display: flex;
+      align-items: center;
+      gap: var(--ha-space-3);
+      min-width: 0;
+    }
+    .swatch {
+      flex: none;
+      display: flex;
+      padding: 4px;
+      border: none;
+      border-radius: 50%;
+      background: none;
+      cursor: pointer;
+    }
+    .swatch:focus-visible {
+      outline: 2px solid var(--ha-color-focus, var(--primary-color));
+    }
+    .naming {
+      display: flex;
+      flex-direction: column;
+      min-width: 0;
+      flex: 1;
+    }
+    .name-row {
+      display: flex;
+      align-items: center;
+      gap: var(--ha-space-1);
+      min-height: 48px;
+      min-width: 0;
+    }
+    .name {
+      margin: 0;
+      font-size: var(--ha-font-size-xl, 22px);
+      font-weight: var(--ha-font-weight-normal);
+      line-height: var(--ha-line-height-condensed);
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    ha-icon-button {
+      flex: none;
+      color: var(--secondary-text-color);
+    }
+    .name-input {
+      --ha-input-padding-bottom: 0;
+    }
     .field {
       display: flex;
       flex-direction: column;
@@ -166,23 +211,17 @@ class MlSceneOptions extends LitElement {
       font-weight: var(--ha-font-weight-normal);
       color: var(--secondary-text-color);
     }
-    .dot {
-      align-self: center;
-      width: 8px;
-      height: 8px;
-      border-radius: 50%;
-      background: var(--primary-color);
+    .problem {
+      margin: calc(-1 * var(--ha-space-3)) 0 0;
+      font-size: var(--ha-font-size-s);
+      color: var(--error-color);
     }
-    .chips {
-      display: flex;
-      flex-wrap: wrap;
-      align-items: center;
-      gap: var(--ha-space-2);
+    ha-control-select {
+      --control-select-thickness: 48px;
+      --control-select-border-radius: var(--ha-border-radius-lg, 12px);
     }
-    /* 44 px touch targets. */
-    ha-filter-chip {
-      --ha-button-height: 44px;
-      --md-filter-chip-selected-container-color: rgba(var(--rgb-primary-color), 0.15);
+    ha-icon-picker {
+      display: block;
     }
   `;
 }

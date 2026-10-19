@@ -5,7 +5,7 @@ import { styleMap } from "lit/directives/style-map.js";
 import { swatchBackground } from "../shared/color";
 import { isPlayable } from "../shared/scene-actions";
 import { activeScene, activeSwatches, isMoving, isOn, runningScene, type TargetStatusView } from "../shared/status";
-import type { HomeAssistant, SceneInfo, TargetInfo } from "../shared/types";
+import type { HomeAssistant, PartInfo, SceneInfo, TargetInfo } from "../shared/types";
 import "./components/ml-swatch";
 import type { SwatchSize } from "./components/ml-swatch";
 import { roomLine } from "./room-facts";
@@ -20,9 +20,9 @@ export interface TargetVisuals {
   on: boolean;
   /** Lights an activation gave up; Reclaim brings them back. */
   manual: string[];
-  /** The scene running here, own or via another target, resolved. */
-  running: SceneInfo | undefined;
-  /** Menu id of the running scene when it stands for the whole target (activeScene). */
+  /** What runs here: a scene, own or via another target, or a part run on its own. */
+  running: SceneInfo | PartInfo | undefined;
+  /** Id of the running scene when it stands for the whole target (activeScene). */
   active: string | null;
   /** Hold / Play switches the running scene's colours. */
   playable: boolean;
@@ -35,7 +35,7 @@ export const targetVisuals = (store: MlStore, hass: HomeAssistant, target: Targe
   const view = store.status(hass, target.id);
   const attrs = view?.attrs;
   const sceneId = runningScene(attrs);
-  const running = sceneId ? store.resolveScene(sceneId) : undefined;
+  const running = sceneId && attrs ? store.running(attrs.via ?? target.id, sceneId) : undefined;
   return {
     view,
     available: !!view?.available,
@@ -86,7 +86,8 @@ export const renderStrip = (visuals: TargetVisuals): TemplateResult => {
  * in white mode. Undefined for other scenes, whose whites do not change.
  */
 export const kelvinNow = (store: MlStore, hass: HomeAssistant, visuals: TargetVisuals): number | undefined => {
-  const effect = visuals.running?.layers[0] && store.effect(visuals.running.layers[0].effect);
+  const look = visuals.running && store.looksOf(visuals.running)[0];
+  const effect = look && store.effect(look.effect);
   const lights = visuals.view?.attrs?.lights;
   if (effect?.category !== "adaptive" || !lights) return undefined;
   for (const [entityId, status] of Object.entries(lights)) {

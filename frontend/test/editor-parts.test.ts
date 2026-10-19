@@ -8,108 +8,105 @@ import {
 } from "../src/panel/editor/editor-model";
 import { controlFor } from "../src/panel/editor/form-rules";
 import { lookLine } from "../src/panel/scene-facts";
-import {
-  addPart,
-  assignLight,
-  lightsInNoPart,
-  partLabel,
-  partsIn,
-  setUpHere,
-  switcherParts,
-  type RoomContext,
-} from "../src/panel/editor/parts";
-import type { EffectInfo, Layer, PreviewFrame, TargetInfo } from "../src/shared/types";
+import { addPart, assignLights, lightsInNoPart, partsIn, type RoomContext } from "../src/panel/editor/parts";
+import type { EffectInfo, PartLayer, PreviewFrame, TargetInfo } from "../src/shared/types";
 
-const room = (area: string, lights: string[], name: string): TargetInfo => ({
-  id: `room:${area}`,
-  kind: "room",
+const target = (id: TargetInfo["id"], lights: string[], rooms: string[], name: string): TargetInfo => ({
+  id,
+  kind: id.startsWith("room:") ? "room" : "zone",
   name,
   icon: null,
-  area_id: area,
-  rooms: [area],
+  area_id: id.startsWith("room:") ? id.slice(5) : null,
+  rooms,
   lights,
   options: {
     excluded_lights: [],
     extra_lights: [],
-    visible_scenes: null,
     default_scene: null,
     reclaim_on_turn_on: true,
     detect_changes: true,
   },
   scenes: [],
-  hidden: [],
-  swatches: {},
-  select_entity_id: `select.${area}_scene`,
+  select_entity_id: `select.${name.toLowerCase()}_scene`,
 });
 
-const LIVING = room("living", ["light.ceiling", "light.floor", "light.sofa"], "Living room");
-const BEDROOM = room("bedroom", ["light.bed"], "Bedroom");
+const LIVING = target("room:living", ["light.ceiling", "light.floor", "light.sofa"], ["living"], "Living");
+const BEDROOM = target("room:bedroom", ["light.bed", "light.desk"], ["bedroom"], "Bedroom");
+const UPSTAIRS = target("zone:upstairs", [...LIVING.lights, ...BEDROOM.lights, "light.stairs"], ["living", "bedroom"], "Upstairs");
 const HOUSE = [LIVING, BEDROOM];
 const roomLights = (id: string) => HOUSE.find((t) => t.id === id)?.lights;
-const ctx = (target: TargetInfo): RoomContext => ({ target, roomLights, everyRoom: HOUSE.map((t) => t.id) });
-const names = { light: (e: string) => e.slice(6), room: (ref: string) => ref.slice(5) };
+const ctx = (t: TargetInfo): RoomContext => ({ target: t, roomLights });
 
-const layer = (lights: Layer["lights"], params: Record<string, unknown> = {}): Layer => ({
-  lights,
-  effect: "adaptive",
-  params,
+// Hell as the live home has it: the room on Hell, the sofa lamp on a part of its own.
+const HELL: PartLayer[] = [
+  { lights: "all", part: "p_he11" },
+  { lights: ["light.sofa"], part: "p_50fa" },
+];
+
+test("the layers that reach a target", () => {
+  const stale = [...HELL, { lights: ["light.hall"], part: "p_0001" }];
+  assert.deepEqual(partsIn(stale, LIVING, roomLights), [0, 1]);
+  assert.deepEqual(partsIn([{ lights: ["room:bedroom"], part: "x" }], UPSTAIRS, roomLights), [0]);
 });
 
-// Hell as the demo has it: shared by both rooms, the sofa lamp a part of its own.
-const HELL = [layer(["light.ceiling", "light.floor", "room:bedroom"]), layer(["light.sofa"], { max: 30 })];
-
-test("parts are named by what they are for", () => {
-  assert.equal(partLabel(HELL[0], 0, names), "Main");
-  assert.equal(partLabel(HELL[1], 1, names), "sofa");
-  assert.equal(partLabel(layer(["room:bedroom"]), 2, names), "bedroom only");
-  assert.equal(partLabel(layer(["light.a", "light.b", "light.c"]), 1, names), "a +2");
-  assert.equal(partLabel(layer([]), 3, names), "Part 4");
-});
-
-test("a room's switcher offers the first part and its own", () => {
-  const layers = [layer(["room:bedroom"]), ...HELL.slice(1), layer(["room:bedroom"])];
-  assert.deepEqual(partsIn(layers, LIVING, roomLights), [1]);
-  assert.deepEqual(switcherParts(layers, LIVING, roomLights), [0, 1]);
-  assert.deepEqual(switcherParts(layers, BEDROOM, roomLights), [0, 2]);
-});
-
-test("moving a light changes only this room's entries", () => {
-  // Into the later part: the first keeps it, the later one wins.
-  const intoSofa = assignLight(HELL, "light.floor", 1, ctx(LIVING));
-  assert.deepEqual(intoSofa.layers[0].lights, HELL[0].lights);
+test("moving a light: the later part wins, the earlier keeps it", () => {
+  const intoSofa = assignLights(HELL, ["light.floor"], 1, ctx(LIVING));
+  assert.equal(intoSofa.layers[0].lights, "all");
   assert.deepEqual(intoSofa.layers[1].lights, ["light.floor", "light.sofa"]);
-  // Back to Main: it leaves the later part.
-  const back = assignLight(intoSofa.layers, "light.floor", 0, ctx(LIVING));
+  // Back to the first part: it leaves the later one.
+  const back = assignLights(intoSofa.layers, ["light.floor"], 0, ctx(LIVING));
   assert.deepEqual(back.layers[1].lights, ["light.sofa"]);
-  // All of the room's lights in one part: the room as a whole.
-  const whole = assignLight(HELL, "light.sofa", 0, ctx(LIVING));
-  assert.deepEqual(whole.layers[0].lights, ["room:bedroom", "room:living"]);
-  assert.equal(whole.layers.length, 1, "the emptied part is dropped");
+  // The last light of a part leaves it: the part goes.
+  const whole = assignLights(HELL, ["light.sofa"], 0, ctx(LIVING));
+  assert.deepEqual(whole.layers, [HELL[0]]);
   assert.deepEqual(whole.moved, [0, -1]);
 });
 
-test("a light leaves a whole-room entry without touching other rooms", () => {
-  const layers = [layer(["room:living", "room:bedroom"])];
-  const { layers: next } = assignLight(layers, "light.sofa", null, ctx(LIVING));
-  assert.deepEqual(next[0].lights, ["room:bedroom", "light.ceiling", "light.floor"]);
-  const all = assignLight([layer("all")], "light.bed", null, ctx(BEDROOM));
-  assert.deepEqual(all.layers[0].lights, ["room:living"]);
+test("a part of every light reads all, so it follows the room", () => {
+  const some: PartLayer[] = [{ lights: ["light.ceiling", "light.floor"], part: "p_1" }];
+  assert.equal(assignLights(some, ["light.sofa"], 0, ctx(LIVING)).layers[0].lights, "all");
+  const out = assignLights([{ lights: "all", part: "p_1" }], ["light.sofa"], null, ctx(LIVING));
+  assert.deepEqual(out.layers[0].lights, ["light.ceiling", "light.floor"]);
 });
 
-test("a new part takes the look of its source and the picked lights", () => {
-  const { layers, index } = addPart(HELL, 0, ["light.ceiling"], ctx(LIVING));
-  assert.equal(index, 1);
-  assert.deepEqual(layers[1], { ...HELL[0], lights: ["light.ceiling"] });
-  assert.deepEqual(layers[2], HELL[1]);
-  // Taking the last light of a later part drops that part.
-  const taken = addPart(HELL, 0, ["light.sofa"], ctx(LIVING));
-  assert.equal(taken.layers.length, 2);
-  assert.deepEqual(taken.layers[1].lights, ["light.sofa"]);
+test("a part whose lights all moved to a later part goes", () => {
+  const two: PartLayer[] = [
+    { lights: ["light.ceiling", "light.floor"], part: "p_a" },
+    { lights: ["light.sofa"], part: "p_b" },
+  ];
+  const first = assignLights(two, ["light.ceiling"], 1, ctx(LIVING));
+  assert.equal(first.layers.length, 2, "p_a still plays on the floor lamp");
+  const both = assignLights(first.layers, ["light.floor"], 1, ctx(LIVING));
+  assert.deepEqual(both.layers, [{ lights: "all", part: "p_b" }]);
+  assert.deepEqual(both.moved, [-1, 0]);
+  // An "all" layer under a later one that holds every light plays nowhere either.
+  const over = assignLights(HELL, ["light.ceiling", "light.floor"], 1, ctx(LIVING));
+  assert.deepEqual(over.layers, [{ lights: "all", part: "p_50fa" }]);
 });
 
-test("setting a scene up in a room adds the room to the first part", () => {
-  const layers = [layer(["room:bedroom"])];
-  assert.deepEqual(setUpHere(layers, ctx(LIVING))[0].lights, ["room:bedroom", "room:living"]);
+test("a zone keeps its whole rooms as refs", () => {
+  const out = assignLights([{ lights: "all", part: "p_1" }], ["light.stairs"], null, ctx(UPSTAIRS));
+  assert.deepEqual(out.layers[0].lights, ["room:living", "room:bedroom"]);
+  const desk = assignLights(out.layers, ["light.desk"], null, ctx(UPSTAIRS));
+  assert.deepEqual(desk.layers[0].lights, ["room:living", "light.bed"]);
+});
+
+test("the last light out keeps the only part, so the scene keeps a part to fill", () => {
+  const one: PartLayer[] = [{ lights: ["light.bed"], part: "p_1" }];
+  const out = assignLights(one, ["light.bed"], null, ctx(BEDROOM));
+  assert.deepEqual(out.layers, [{ lights: [], part: "p_1" }]);
+  assert.deepEqual(out.moved, [0]);
+});
+
+test("a picked part plays on the picked lights, last so it wins there", () => {
+  const { layers, index } = addPart(HELL, "relax", ["light.ceiling"], ctx(LIVING));
+  assert.equal(index, 2);
+  assert.deepEqual(layers, [...HELL, { lights: ["light.ceiling"], part: "relax" }]);
+  assert.deepEqual(addPart([], "relax", LIVING.lights, ctx(LIVING)).layers, [{ lights: "all", part: "relax" }]);
+  const every = addPart(HELL, "relax", LIVING.lights, ctx(LIVING));
+  assert.deepEqual(every, { layers: [{ lights: "all", part: "relax" }], index: 0 }, "the parts it covers go");
+  const some = addPart(HELL, "relax", ["light.sofa"], ctx(LIVING));
+  assert.deepEqual(some, { layers: [HELL[0], { lights: ["light.sofa"], part: "relax" }], index: 1 });
   const owners = new Map([["light.ceiling", 0]]);
   assert.deepEqual(lightsInNoPart(owners, LIVING), ["light.floor", "light.sofa"]);
 });
@@ -129,13 +126,13 @@ const ADAPTIVE: EffectInfo = {
   defaults: { brightness_mode: "static", brightness: 100 },
 };
 
-test("an edited preset marks the values that differ, defaults filled", () => {
-  const preset = { effect: "adaptive", params: { brightness: 100 } };
-  assert.deepEqual([...changedParams(ADAPTIVE, { effect: "adaptive", params: {} }, preset)], []);
-  assert.deepEqual([...changedParams(ADAPTIVE, { effect: "adaptive", params: { brightness: 60 } }, preset)], [
+test("an edited built-in marks the values that differ, defaults filled", () => {
+  const builtin = { effect: "adaptive", params: { brightness: 100 } };
+  assert.deepEqual([...changedParams(ADAPTIVE, { effect: "adaptive", params: {} }, builtin)], []);
+  assert.deepEqual([...changedParams(ADAPTIVE, { effect: "adaptive", params: { brightness: 60 } }, builtin)], [
     "brightness",
   ]);
-  assert.equal(changedParams(ADAPTIVE, { effect: "adaptive", params: {} }, undefined).size, 0);
+  assert.equal(changedParams(ADAPTIVE, { effect: "adaptive", params: {} }, null).size, 0, "a part of yours");
   const other = changedParams(ADAPTIVE, { effect: "adaptive", params: {} }, { effect: "white", params: {} });
   assert.deepEqual([...other].sort(), ["brightness", "brightness_mode"]);
 });

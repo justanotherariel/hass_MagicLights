@@ -19,7 +19,7 @@ const LABELS: Record<string, string> = {
 };
 
 const HELPERS: Record<string, string> = {
-  scenes: "Ids or names of the room's scenes, also ones hidden from its menu; leave empty for the whole menu",
+  scenes: "Ids or names of the room's scenes, in the order to show them; leave empty for the whole menu",
   show_controls: "Off, Stop scene, play colours and brightness",
 };
 

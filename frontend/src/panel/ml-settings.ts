@@ -6,7 +6,7 @@ import { property, state } from "lit/decorators.js";
 import type { BusInfo, BusLimits, HomeAssistant, Settings } from "../shared/types";
 import { defineElement, plural, saveSwitch, showToast, toastOnError } from "../shared/util";
 import "./components/ml-fade-select";
-import { menuId, type MlStore, type Update } from "./store";
+import { type MlStore, partOptions, type Update } from "./store";
 import { pageStyles } from "./styles";
 
 const NONE = "__none__";
@@ -101,13 +101,13 @@ class MlSettings extends LitElement {
       <ha-settings-row .narrow=${this.narrow}>
         <span slot="heading">When a light is switched on</span>
         <span slot="description">
-          Scene for a light switched on in a room that is off. Rooms can override this.
+          The part a light switched on in a room that is off plays. Rooms can pick one of their scenes instead.
         </span>
         <ha-select
-          .label=${"Scene when a light is switched on"}
+          .label=${"Part when a light is switched on"}
           .options=${[
             { value: NONE, label: "Nothing" },
-            ...this.store.sceneOptions(this.store.menuScenes(), menuId),
+            ...partOptions(this.store.parts()),
           ]}
           .value=${settings.default_scene ?? NONE}
           @selected=${(ev: CustomEvent<{ value: string }>) =>

@@ -1,27 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { heroText, lightsCount, roomLine } from "../src/panel/room-facts";
-import {
-  lookParts,
-  lookSummary,
-  matchesFilter,
-  matchesQuery,
-  movedBy,
-  pickLine,
-  sceneEntries,
-  sceneSections,
-  tileLine,
-} from "../src/panel/scene-facts";
-import { MlStore } from "../src/panel/store";
-import type { ConfigDto, EffectInfo, HaFormSchema, SceneInfo } from "../src/shared/types";
-import { attrs, CONFIG, fakeHass } from "./fixtures";
-
-const load = async (edit: (config: ConfigDto) => void = () => undefined) => {
-  const config = structuredClone(CONFIG);
-  edit(config);
-  const hass = { ...fakeHass(), callWS: async () => structuredClone(config) } as unknown as ReturnType<typeof fakeHass>;
-  return MlStore.load({ hass, storeChanged: () => undefined });
-};
+import { layerLook, matchesQuery, movedBy, tileLine } from "../src/panel/scene-facts";
+import type { EffectInfo, HaFormSchema, Look, StoredScene } from "../src/shared/types";
+import { attrs } from "./fixtures";
 
 const pct = (name: string, extra: Partial<HaFormSchema> = {}): HaFormSchema => ({
   name,
@@ -61,88 +43,52 @@ const PALETTE: EffectInfo = {
   schema: [{ name: "colours", selector: { magic_lights_palette: {} } }, pct("level")],
 };
 
-const sceneOf = (layers: SceneInfo["layers"]): SceneInfo => ({ ...CONFIG.scenes[3], layers });
 const effects = (key: string) => [ADAPTIVE, PALETTE].find((e) => e.key === key);
 
-test("a look is read from the schema: visible levels, whites, colours and parts", () => {
+/** A scene whose layers play the given looks, one part each. */
+const sceneOf = (...looks: Look[]): [StoredScene, (id: string) => Look | undefined] => [
+  {
+    id: "s_00000001",
+    name: "Hell",
+    icon: null,
+    layers: looks.map((_, i) => ({ lights: i ? [`light.${i}`] : "all", part: `p_${i}` })),
+    others: "off",
+    transition: null,
+  },
+  (id) => looks[Number(id.slice(2))],
+];
+
+test("a look is read from the schema: visible levels, whites and colours", () => {
   const curve = { mode: "curve", night: 40, day: 100, warm: 2200, cool: 5000, brightness: 80, every: 9 };
-  assert.deepEqual(
-    lookParts(sceneOf([{ lights: "all", effect: "sunny", params: curve }, { lights: ["light.a"], effect: "sunny", params: curve }]), effects),
-    ["Sunny", "40–100%", "2200–5000 K", "2 parts"],
-  );
-  const flat = sceneOf([{ lights: "all", effect: "sunny", params: { ...curve, mode: "static" } }]);
-  assert.deepEqual(lookParts(flat, effects), ["Sunny", "80%", "2200–5000 K"]);
-  assert.equal(tileLine(flat, effects), "Sunny · 80%");
-  const dots = sceneOf([{ lights: "all", effect: "dots", params: { colours: [{}, {}, {}], level: 50 } }]);
-  assert.deepEqual(lookParts(dots, effects), ["Dots", "50%", "3 colours"]);
-  assert.deepEqual(lookParts(sceneOf([{ lights: "all", effect: "gone", params: {} }]), effects), ["Gone"]);
+  assert.deepEqual(layerLook(ADAPTIVE, { effect: "sunny", params: curve }), ["Sunny", "40–100%", "2200–5000 K"]);
+  const flat = { effect: "sunny", params: { ...curve, mode: "static" } };
+  assert.deepEqual(layerLook(ADAPTIVE, flat), ["Sunny", "80%", "2200–5000 K"]);
+  assert.deepEqual(layerLook(PALETTE, { effect: "dots", params: { colours: [{}, {}, {}], level: 50 } }), [
+    "Dots",
+    "50%",
+    "3 colours",
+  ]);
+  assert.deepEqual(layerLook(undefined, { effect: "gone", params: {} }), ["Gone"]);
 });
 
-test("a scene of mixed parts names what the others do", () => {
-  const curve = { mode: "static", warm: 2200, cool: 5000, brightness: 30, every: 9 };
-  const dots = { lights: ["light.tv"], effect: "dots", params: { colours: [{}, {}], level: 50 } };
-  const mixed = sceneOf([{ lights: "all", effect: "sunny", params: curve }, dots, { ...dots, lights: ["light.b"] }]);
-  assert.deepEqual(lookParts(mixed, effects), ["Sunny", "30%", "2200–5000 K"]);
-  assert.equal(tileLine(mixed, effects), "Sunny · 30% + Dots");
-  assert.equal(lookSummary(mixed, effects), "Sunny · 30% · 2200–5000 K + Dots");
-});
-
-test("the Scenes tab lists yours, the presets in use, and folds the rest", async () => {
-  const store = await load((c) => {
-    c.scenes.push({ ...c.scenes[0], id: "read", name: "Read" });
-    c.settings.default_scene = "read";
-    c.scenes.push({ ...c.scenes[0], id: "tokyo", name: "Tokyo", category: "color" });
-    // Movie is picked in the kitchen, which has none of its lights.
-    c.targets[2].options = { ...c.targets[2].options, visible_scenes: ["relax", "s_22222222"] };
+test("a tile names the first part's look and what the others do", () => {
+  const sunny = (params: Record<string, unknown>) => ({
+    effect: "sunny",
+    params: { mode: "static", warm: 2200, cool: 5000, every: 9, ...params },
   });
-  const entries = sceneEntries(store);
-  const { own, presets, more } = sceneSections(entries);
-  assert.deepEqual(own.map((e) => e.id), ["s_22222222"]);
-  assert.deepEqual(presets.map((e) => e.id), ["relax", "savanna_sunset", "read"], "shown, edited or switch-on");
-  assert.deepEqual(more.map((e) => e.id), ["tokyo"]);
-  const ids = (filter: Parameters<typeof matchesFilter>[1]) =>
-    entries.filter((e) => matchesFilter(e, filter)).map((e) => e.id);
-  assert.deepEqual(ids("edited"), ["savanna_sunset"]);
-  assert.deepEqual(ids("setup"), ["s_22222222"]);
-  assert.deepEqual(ids("color"), ["savanna_sunset", "tokyo"]);
-  assert.deepEqual(ids("custom"), ["s_22222222"]);
-  const movie = own[0];
-  assert.deepEqual(
-    movie.shown.map((a) => [a.target.id, a.needsSetUp]),
-    [
-      ["room:kitchen", true],
-      ["room:living", false],
-    ],
-  );
+  assert.equal(tileLine(...sceneOf(sunny({ brightness: 80 })), effects), "Sunny · 80%");
+  const dots = { effect: "dots", params: { colours: [{}, {}], level: 50 } };
+  assert.equal(tileLine(...sceneOf(sunny({ brightness: 30 }), dots, dots), effects), "Sunny · 30% + Dots");
+  // Parts of one kind: how many there are, after the first fact.
+  assert.equal(tileLine(...sceneOf({ effect: "gone", params: {} }, { effect: "gone", params: {} }), effects), "Gone · 2 parts");
+  const [missing] = sceneOf(sunny({}));
+  assert.equal(tileLine(missing, () => undefined, effects), "", "its part is gone");
 });
 
-test("a search matches part of a name, in any case; a blank one matches all", async () => {
-  const entries = sceneEntries(await load());
-  const names = (query: string) => entries.filter((e) => matchesQuery(e, query)).map((e) => e.scene.name);
-  assert.deepEqual(names("  SUNS "), ["Savanna sunset"]);
-  assert.equal(names(" ").length, entries.length);
-  assert.deepEqual(names("nothing like it"), []);
-});
-
-test("a scene of yours that fits no room is still listed", async () => {
-  const store = await load((c) => {
-    c.scenes[3].fits = [];
-  });
-  assert.deepEqual(sceneSections(sceneEntries(store)).own.map((e) => e.id), ["s_22222222"]);
-});
-
-test("pick tiles say where a scene runs or what a preset is", async () => {
-  const store = await load((c) => {
-    c.settings.default_scene = "savanna_sunset";
-  });
-  const entry = (id: string) => sceneEntries(store).find((e) => e.id === id)!;
-  const kitchen = store.target("room:kitchen")!;
-  const living = store.target("room:living")!;
-  assert.deepEqual(pickLine(store, entry("s_22222222"), kitchen, true), { text: "Needs set-up here", warn: true });
-  assert.deepEqual(pickLine(store, entry("s_22222222"), kitchen, false), { text: "Set up for Living room", warn: false });
-  assert.deepEqual(pickLine(store, entry("s_22222222"), living, true), { text: "White · here only", warn: false });
-  assert.equal(pickLine(store, entry("savanna_sunset"), living, true).text, "Edited · switch-on default");
-  assert.equal(pickLine(store, entry("relax"), living, false).text, "White");
+test("a search matches part of a name, in any case; a blank one matches all", () => {
+  assert.equal(matchesQuery("Savanna sunset", "  SUNS "), true);
+  assert.equal(matchesQuery("Relax", " "), true);
+  assert.equal(matchesQuery("Relax", "nothing like it"), false);
 });
 
 test("arrange moves a scene and keeps it inside the menu", () => {

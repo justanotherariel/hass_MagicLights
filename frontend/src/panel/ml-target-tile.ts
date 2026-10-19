@@ -1,5 +1,5 @@
 // Home tile: a swatch glowing in what runs, the live facts, a strip, the menu's scenes as
-// chips (the active one first) and the target menu. An empty menu offers "Add scenes".
+// chips (the active one first) and the target menu. An empty menu offers "New scene".
 
 import { LitElement, css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
@@ -7,8 +7,8 @@ import { swatchBackground } from "../shared/color";
 import type { HomeAssistant, SceneInfo, TargetInfo } from "../shared/types";
 import { defineElement, plural, toastOnError } from "../shared/util";
 import { go, targetPath } from "./routes";
-import { menuId, type MlStore } from "./store";
-import "./ml-scene-picker";
+import type { MlStore } from "./store";
+import "./ml-part-picker";
 import { chipStyles, dotStyles, tileStyles } from "./styles";
 import { renderStrip, renderTargetSwatch, targetVisuals, type TargetVisuals } from "./target-ui";
 
@@ -26,9 +26,9 @@ class MlTargetTile extends LitElement {
   protected render() {
     const target = this.target;
     const visuals = targetVisuals(this.store, this.hass, target);
-    const menu = this.store.scenesFor(target.id);
-    const first = visuals.active ? visuals.running : undefined;
-    const chips = first ? [first, ...menu.filter((scene) => menuId(scene) !== visuals.active)] : menu;
+    const menu = this.store.scenesOf(target.id).filter((scene) => scene.fits);
+    const first = menu.find((scene) => scene.id === visuals.active);
+    const chips = first ? [first, ...menu.filter((scene) => scene !== first)] : menu;
     return html`
       <ha-card>
         <div class="header">
@@ -45,7 +45,7 @@ class MlTargetTile extends LitElement {
         <div class="chips">
           ${chips
             .slice(0, CHIPS)
-            .map((scene) => this._renderChip(scene, menuId(scene) === visuals.active, visuals.available))}
+            .map((scene) => this._renderChip(scene, scene.id === visuals.active, visuals.available))}
           ${
             chips.length > CHIPS
               ? html`<ha-assist-chip
@@ -61,19 +61,20 @@ class MlTargetTile extends LitElement {
               ? nothing
               : html`<button class="add" @click=${() => (this._picking = true)}>
                   <ha-icon icon="mdi:plus"></ha-icon>
-                  Add scenes
+                  New scene
                 </button>`
           }
         </div>
       </ha-card>
       ${
         this._picking
-          ? html`<ml-scene-picker
+          ? html`<ml-part-picker
               .hass=${this.hass}
               .store=${this.store}
               .targetId=${target.id}
+              mode="add"
               @ml-dialog-closed=${() => (this._picking = false)}
-            ></ml-scene-picker>`
+            ></ml-part-picker>`
           : nothing
       }
     `;
@@ -86,7 +87,7 @@ class MlTargetTile extends LitElement {
       .active=${active}
       .disabled=${!available}
       .label=${scene.name}
-      @click=${() => this._activate(menuId(scene))}
+      @click=${() => this._activate(scene.id)}
     >
       <span slot="icon" class="dot" style="background: ${swatchBackground(scene.swatches)}"></span>
     </ha-assist-chip>`;
@@ -97,7 +98,7 @@ class MlTargetTile extends LitElement {
     if (!visuals.playable || !running) return nothing;
     return html`<ha-icon-button
       .label=${visuals.moving ? "Hold colours" : "Play colours"}
-      @click=${() => this._toggleMotion(menuId(running))}
+      @click=${() => this._toggleMotion(running.id)}
     >
       <ha-icon .icon=${visuals.moving ? "mdi:pause" : "mdi:play"}></ha-icon>
     </ha-icon-button>`;

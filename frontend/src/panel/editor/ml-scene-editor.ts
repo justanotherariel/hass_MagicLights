@@ -1,42 +1,50 @@
-// Scene editor. A scene is one look shared by every room that shows it: the look card
-// edits it, the room card sets which of the preview room's lights each part sets, the
-// options card its fade, brightness and menus. Try runs the draft in the preview room;
-// Save stores it for every room. The working copy lives in sessionStorage under the
-// scene id until it is saved or discarded, so leaving the editor or switching the
-// preview room loses nothing.
+// Scene editor of one room's scene. The scene card names it; the lights card sets which
+// of the room's lights play which part; the part card edits the selected part in place,
+// for every scene that uses it, or Copy forks it for this scene. Try runs the draft in
+// the room; Save stores the scene and its changed parts at once. The working copy lives
+// in sessionStorage under the scene id until it is saved or discarded, so leaving the
+// editor loses nothing.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property, state } from "lit/decorators.js";
-import type { HomeAssistant, PreviewFrame, StoredScene, TargetId, TargetInfo } from "../../shared/types";
-import { confirmAction, confirmRemoveScene, debounce, defineElement, errorMessage, fire, plural, showToast } from "../../shared/util";
-import { editorPath, goBack, homePath, replaceWith } from "../routes";
-import { menuId, menuIds, toStored, type MlStore } from "../store";
-import { lookLine } from "../scene-facts";
+import type { HomeAssistant, Part, PreviewFrame, TargetId, TargetInfo } from "../../shared/types";
+import {
+  confirmAction,
+  confirmRemoveScene,
+  debounce,
+  defineElement,
+  errorMessage,
+  fire,
+  showToast,
+} from "../../shared/util";
+import { goBack, targetPath } from "../routes";
+import { type Draft, type MlStore, toStoredPart, toStoredScene } from "../store";
 import { pageStyles } from "../styles";
-import type { PartSelect, RoomSelect, SceneEdit, TimeSelect } from "./editor-events";
+import type { PartEdit, PartSelect, SceneEdit, TimeSelect } from "./editor-events";
 import {
   canSave,
+  changedParts,
+  forkPart,
   frameAt,
-  isSharedLayer,
+  isDirty,
   layerOwners,
+  layerSwatches,
   sceneProblems,
-  stableJson,
-  variantsFollow,
+  withPart,
+  withoutUnusedParts,
   type Problem,
 } from "./editor-model";
 import type { EditorTitle } from "./ml-editor-bar";
-import type { PresetNote } from "./ml-look-card";
-import { partLabel, partsIn, switcherParts } from "./parts";
-import { dropWorkingCopy, openWorkingCopy, type WorkingCopy } from "./working-copy";
+import { partsIn } from "./parts";
+import { dropWorkingCopy, keepWorkingCopy, openWorkingCopy, type WorkingCopy } from "./working-copy";
 import "./ml-look-card";
 import "./ml-room-card";
 import "./ml-scene-options";
 
 const LIVE_DELAY = 400;
 const STALE_NOTE: Record<NonNullable<WorkingCopy["stale"]>, string> = {
-  saved: "The scene was saved elsewhere since; saving these changes replaces that.",
+  saved: "The scene or its parts were saved elsewhere since; saving these changes replaces that.",
   deleted: "The scene was deleted since; saving these changes brings it back.",
-  reset: "The preset was reset since; saving these changes edits it again.",
 };
 const MOTION_PREVIEW = { duration: 60, samples: 120 };
 const DAY_PREVIEW = { duration: 86400, samples: 96 };
@@ -57,17 +65,14 @@ class MlSceneEditor extends LitElement {
 
   @property({ attribute: false }) store!: MlStore;
 
-  /** The room the editor previews and tries in. */
+  /** The scene's room or zone, where it previews and tries. */
   @property({ attribute: false }) targetId = "";
 
   @property({ attribute: false }) sceneId = "";
 
-  /** Where Back, Save and Delete lead when there is no in-panel history. */
-  @property({ attribute: false }) parent = homePath("scenes");
-
   @property({ type: Boolean, reflect: true }) narrow = false;
 
-  @state() private _scene?: StoredScene;
+  @state() private _draft?: Draft;
 
   @state() private _missing = false;
 
@@ -90,19 +95,16 @@ class MlSceneEditor extends LitElement {
   /** The working copy came back from an earlier visit with unsaved changes. */
   @state() private _restored = false;
 
-  /** The restored changes are older than the scene's last save. */
+  /** The restored changes are older than what was saved since. */
   @state() private _stale: WorkingCopy["stale"];
 
-  /** Parts that followed the last edit of the look. */
-  @state() private _followed: string[] = [];
+  /** The scene and target the working copy belongs to. */
+  private _open?: { sceneId: string; targetId: string };
 
-  /** The scene the working copy belongs to. */
-  private _openScene?: string;
+  private _baseline?: Draft;
 
-  /** The room the preview and Try are for. */
-  private _room?: string;
-
-  private _baseline = "";
+  /** The scene was saved when the editor opened it. */
+  private _stored = false;
 
   private _previewSeq = 0;
 
@@ -141,15 +143,13 @@ class MlSceneEditor extends LitElement {
 
   protected willUpdate(): void {
     if (!this.store || !this.sceneId || !this.targetId) return;
-    if (this._openScene !== this.sceneId) {
+    if (this._open?.sceneId !== this.sceneId || this._open.targetId !== this.targetId) {
       this._close();
-      this._open();
-    } else if (this._room !== this.targetId) {
-      this._roomChanged();
+      this._openCopy();
     }
   }
 
-  /** The panel's top bar shows the name, what kind of scene it is, Try and Save. */
+  /** The panel's top bar shows the name, the room, Try and Save. */
   protected updated(): void {
     this._play();
     const bar = this._bar();
@@ -162,19 +162,18 @@ class MlSceneEditor extends LitElement {
 
   // ---- working copy
 
-  private _open(): void {
-    const copy = openWorkingCopy(this.store, this.sceneId);
-    this._openScene = this.sceneId;
-    this._room = this.targetId;
+  private _openCopy(): void {
+    const copy = openWorkingCopy(this.store, this.targetId, this.sceneId);
+    this._open = { sceneId: this.sceneId, targetId: this.targetId };
     this._frames = undefined;
     this._error = undefined;
-    this._followed = [];
     this._selected = 0;
     this._leaving = false;
     this._missing = !copy;
-    this._scene = copy?.scene;
+    this._draft = copy?.draft;
     if (!copy) return;
-    this._baseline = stableJson(copy.baseline);
+    this._baseline = copy.baseline;
+    this._stored = !!this.store.scene(this.sceneId);
     this._restored = copy.restored && this._dirty;
     this._stale = this._restored ? copy.stale : undefined;
     // A draft running here is this editor's from before a reload.
@@ -183,30 +182,16 @@ class MlSceneEditor extends LitElement {
   }
 
   private _close(): void {
-    const sceneId = this._openScene;
-    if (!sceneId) return;
+    const open = this._open;
+    if (!open) return;
     this._live.cancel();
-    this._stopTrying();
-    if (!this._dirty) dropWorkingCopy(this.store, sceneId);
-    this._openScene = undefined;
-    this._room = undefined;
+    this._stopTrying(open.targetId);
+    if (!this._dirty) dropWorkingCopy(this.store, open.sceneId);
+    this._open = undefined;
   }
 
-  /** Try belongs to the room it ran in; the preview follows the new one. */
-  private _roomChanged(): void {
-    this._stopTrying();
-    this._room = this.targetId;
-    const scene = this._scene;
-    const target = this.store.target(this.targetId);
-    if (scene && target && !switcherParts(scene.layers, target, this._roomLights).includes(this._selected)) {
-      this._selected = 0;
-    }
-    this._refreshPreview();
-  }
-
-  private _stopTrying(): void {
-    const room = this._room;
-    if (!this._trying || !room) return;
+  private _stopTrying(room: string): void {
+    if (!this._trying) return;
     this._trying = false;
     this._stopping = true;
     this._queueTry(() => this.store.stopTry(room))
@@ -214,89 +199,109 @@ class MlSceneEditor extends LitElement {
       .finally(() => (this._stopping = false));
   }
 
-  /** The config's copy of the scene being edited (a user scene or an edited preset). */
-  private _storedScene(scene: StoredScene) {
-    const stored = this.store.scene(scene.id);
-    return stored && !stored.builtin ? stored : undefined;
-  }
+  private _saved = (id: string): Part | undefined => {
+    const part = this.store.part(id);
+    return part && toStoredPart(part);
+  };
 
-  /** The scene as opened, or its stored copy. */
-  private get _original(): StoredScene {
-    return JSON.parse(this._baseline) as StoredScene;
-  }
+  /** A part as the draft has it, else as saved. */
+  private _partOf = (id: string): Part | undefined => this._draft?.parts.find((p) => p.id === id) ?? this._saved(id);
 
   private get _dirty(): boolean {
-    return !!this._scene && stableJson(this._scene) !== this._baseline;
+    return !!this._draft && !!this._baseline && isDirty(this._draft, this._baseline, this._saved);
   }
 
   private get _problems(): Problem[] {
-    return this._scene ? sceneProblems(this._scene, (key) => this.store.effect(key)) : [];
+    return this._draft ? sceneProblems(this._draft, this._saved, (key) => this.store.effect(key)) : [];
   }
 
   private _roomLights = (id: string) => this.store.target(id)?.lights;
 
-  private _partName(scene: StoredScene, index: number): string {
-    return partLabel(scene.layers[index], index, {
-      light: (e) => this.store.lightName(e),
-      room: (ref) => this.store.targetName(ref),
-    });
-  }
-
-  private _update(scene: StoredScene): void {
-    this._scene = scene;
+  private _update(draft: Draft, select?: number): void {
+    const next = withoutUnusedParts(draft);
+    this._draft = next;
+    if (select !== undefined) this._selected = select;
+    this._selected = Math.max(0, Math.min(this._selected, next.scene.layers.length - 1));
     this._restored &&= this._dirty;
     if (!this._restored) this._stale = undefined;
-    if (this._openScene) this.store.setDraft(this._openScene, scene);
+    keepWorkingCopy(this.store, next);
     this._live();
   }
 
-  private _onEdit(ev: CustomEvent<SceneEdit>): void {
+  private _onSceneEdit(ev: CustomEvent<SceneEdit>): void {
     ev.stopPropagation();
-    const before = this._scene;
-    if (!before) return;
-    let scene = ev.detail.scene;
-    this._followed = [];
-    if (ev.detail.follow) {
-      const rooms = this.store.targets.filter((t) => t.kind === "room");
-      const followed = variantsFollow(before, scene, (i) =>
-        isSharedLayer(before.layers[i].lights, i, rooms, this._roomLights),
-      );
-      scene = followed.scene;
-      this._followed = followed.layers.map((i) => this._partName(scene, i));
-    }
-    if (ev.detail.select !== undefined) this._selected = ev.detail.select;
-    this._selected = Math.min(this._selected, scene.layers.length - 1);
-    this._update(scene);
+    const draft = this._draft;
+    if (!draft) return;
+    const { scene, select, added } = ev.detail;
+    this._update({ scene, parts: added ? [...draft.parts, added] : draft.parts }, select);
   }
 
-  private _payload(scene: StoredScene): StoredScene {
-    return { ...toStored(scene), name: scene.name.trim() };
+  /** The part changes for every scene that uses it. */
+  private _onPartEdit(ev: CustomEvent<PartEdit>): void {
+    ev.stopPropagation();
+    const draft = this._draft;
+    if (!draft) return;
+    this._update(withPart(draft, ev.detail.part));
+  }
+
+  /**
+   * The selected part, with its pending changes, becomes "<name> copy" for this scene
+   * only; the shared part goes back to how it is saved.
+   */
+  private async _onCopy(ev: Event): Promise<void> {
+    ev.stopPropagation();
+    const draft = this._draft;
+    const sourceId = draft?.scene.layers[this._selected]?.part;
+    const source = sourceId ? this._partOf(sourceId) : undefined;
+    if (!draft || !source) return;
+    const copy = this.store.copyPart(
+      source,
+      draft.parts.map((p) => p.name),
+    );
+    this._update(forkPart(draft, source.id, copy));
+    await this.updateComplete;
+    await this.renderRoot.querySelector<HTMLElement & { focusName(): Promise<void> }>("ml-look-card")?.focusName();
+  }
+
+  /** What preview, Try and Save send: the scene and the parts that differ from the saved ones. */
+  private _payload(draft: Draft): Draft {
+    return {
+      scene: { ...toStoredScene(draft.scene), name: draft.scene.name.trim() },
+      parts: changedParts(draft.parts, this._saved).map((p) => ({ ...p, name: p.name.trim() })),
+    };
   }
 
   private _discard(): void {
+    const baseline = this._baseline;
+    if (!baseline) return;
     this._restored = false;
     this._stale = undefined;
-    this._update(this._original);
+    this._update(structuredClone(baseline));
   }
 
   // ---- live preview and try
 
-  private _isDay(scene: StoredScene): boolean {
-    return scene.layers.some((layer) => this.store.effect(layer.effect)?.category === "adaptive");
+  private _isDay(draft: Draft): boolean {
+    return draft.scene.layers.some((layer) => {
+      const part = this._partOf(layer.part);
+      return !!part && this.store.effect(part.effect)?.category === "adaptive";
+    });
   }
 
   private async _refreshPreview(): Promise<void> {
-    const scene = this._scene;
-    const room = this._room;
-    if (!scene || !room || this._problems.length) return;
+    const draft = this._draft;
+    const room = this._open?.targetId;
+    if (!draft || !room || this._problems.length) return;
     const seq = ++this._previewSeq;
-    const day = this._isDay(scene);
+    const day = this._isDay(draft);
     const start = new Date();
     start.setHours(0, 0, 0, 0);
+    const { scene, parts } = this._payload(draft);
     try {
       const frames = await this.store.preview({
         target_id: room as TargetId,
-        scene: this._payload(scene),
+        scene,
+        parts,
         ...(day ? { ...DAY_PREVIEW, start: start.toISOString() } : MOTION_PREVIEW),
       });
       if (seq !== this._previewSeq) return;
@@ -332,11 +337,11 @@ class MlSceneEditor extends LitElement {
 
   /** While trying, the room follows the edits. */
   private _refreshTry(): void {
-    const room = this._room;
+    const room = this._open?.targetId;
     if (!room || !this._trying) return;
     this._queueTry(async () => {
-      if (!this._trying || !this._scene || this._problems.length) return;
-      await this.store.tryScene(room, this._payload(this._scene));
+      if (!this._trying || !this._draft || this._problems.length) return;
+      await this.store.tryScene(room, this._payload(this._draft));
     }).catch((err) => (this._error = `Could not update the lights: ${errorMessage(err)}`));
   }
 
@@ -349,13 +354,13 @@ class MlSceneEditor extends LitElement {
   // ---- actions
 
   private _try = async (): Promise<void> => {
-    const scene = this._scene;
-    const room = this._room;
-    if (!scene || !room) return;
+    const draft = this._draft;
+    const room = this._open?.targetId;
+    if (!draft || !room) return;
     this._busy = "try";
     this._error = undefined;
     try {
-      await this._queueTry(() => this.store.tryScene(room, this._payload(scene)));
+      await this._queueTry(() => this.store.tryScene(room, this._payload(draft)));
       this._trying = true;
     } catch (err) {
       this._error = `Could not try the scene: ${errorMessage(err)}`;
@@ -365,7 +370,7 @@ class MlSceneEditor extends LitElement {
   };
 
   private _stopTry = async (): Promise<void> => {
-    const room = this._room;
+    const room = this._open?.targetId;
     if (!room) return;
     this._busy = "try";
     this._trying = false;
@@ -379,13 +384,13 @@ class MlSceneEditor extends LitElement {
   };
 
   private _save = async (): Promise<void> => {
-    const scene = this._scene;
-    if (!scene) return;
+    const draft = this._draft;
+    if (!draft) return;
+    const { scene, parts } = this._payload(draft);
     this._busy = "save";
     this._error = undefined;
     try {
-      // An edit equal to its preset is not kept: the backend removes it.
-      await this.store.saveScene(this._payload(scene));
+      await this.store.saveLibrary({ parts, scenes: [{ target: this.targetId as TargetId, scene }] });
     } catch (err) {
       this._error = errorMessage(err);
       this._busy = undefined;
@@ -394,23 +399,22 @@ class MlSceneEditor extends LitElement {
     // Saving turns a running draft of this scene into the scene itself.
     this._trying = false;
     this._busy = undefined;
-    showToast(this, `Saved ${scene.name.trim()}`);
+    showToast(this, `Saved ${scene.name}`);
     this._leave();
   };
 
-  private async _delete(reset: boolean): Promise<void> {
-    const scene = this._scene;
-    if (!scene) return;
-    if (!(await confirmRemoveScene(this, scene, reset))) return;
+  private async _delete(): Promise<void> {
+    const draft = this._draft;
+    if (!draft) return;
+    if (!(await confirmRemoveScene(this, draft.scene, this.store.targetName(this.targetId)))) return;
     this._busy = "delete";
     this._error = undefined;
     try {
-      const room = this._room;
-      if (this._trying && room) {
+      if (this._trying) {
         this._trying = false;
-        await this._queueTry(() => this.store.stopTry(room));
+        await this._queueTry(() => this.store.stopTry(this.targetId));
       }
-      await this.store.deleteScene(scene.id);
+      await this.store.deleteScene(draft.scene.id);
     } catch (err) {
       this._error = errorMessage(err);
       this._busy = undefined;
@@ -422,65 +426,45 @@ class MlSceneEditor extends LitElement {
 
   private _leave(): void {
     this._leaving = true;
-    if (this._openScene) dropWorkingCopy(this.store, this._openScene);
-    goBack(this.parent);
+    if (this._open) dropWorkingCopy(this.store, this._open.sceneId);
+    goBack(targetPath(this.targetId));
   }
 
   /** The panel's back arrow asks before unsaved changes are dropped. */
   private _guardBack = async (ev: MouseEvent): Promise<void> => {
-    const sceneId = this._openScene;
-    if (!sceneId || this._leaving || !this._dirty) return;
+    const open = this._open;
+    if (!open || this._leaving || !this._dirty) return;
     if (!ev.composedPath().some((el) => (el as Element).localName === "ha-icon-button-arrow-prev")) return;
     ev.stopPropagation();
     ev.preventDefault();
-    const isNew = !this._storedScene(this._original);
     const discard = await confirmAction(this, {
       title: "Discard changes?",
-      text: isNew ? "This new scene has not been saved." : "Your changes to this scene have not been saved.",
+      text: this._stored ? "Your changes to this scene have not been saved." : "This new scene has not been saved.",
       confirmText: "Discard",
       destructive: true,
     });
-    if (discard && this._openScene === sceneId) this._leave();
+    if (discard && this._open === open) this._leave();
   };
 
   private _beforeUnload = (ev: BeforeUnloadEvent): void => {
     if (this._dirty && !this._leaving) ev.preventDefault();
   };
 
-  // ---- what the scene is
-
-  /** Rooms (and zones) whose menu shows the scene. */
-  private _shownIn(scene: StoredScene): TargetInfo[] {
-    const id = menuId(scene);
-    return this.store.targets.filter((t) => menuIds(t).includes(id));
-  }
-
-  private _badge(scene: StoredScene): string {
-    if (scene.preset) return this._storedScene(scene) ? "Preset · Edited" : "Preset";
-    if (!this._storedScene(scene)) return "New scene";
-    const rooms = this._shownIn(scene).filter((t) => t.kind === "room").length;
-    return `Your scene · ${plural(rooms, "room")}`;
-  }
-
-  private _setUpIn(scene: StoredScene, target: TargetInfo): boolean {
-    return partsIn(scene.layers, target, this._roomLights).length > 0;
-  }
+  // ---- rendering
 
   private _bar(): EditorTitle | undefined {
-    const scene = this._scene;
+    const draft = this._draft;
     const target = this.store?.target(this.targetId);
-    if (!scene || !target) return undefined;
-    const stored = !!this._storedScene(scene);
+    if (!draft || !target || !this._baseline) return undefined;
     const valid = this._problems.length === 0;
     return {
       sceneId: this.sceneId,
-      title: scene.name.trim(),
-      badge: this._badge(scene),
-      edited: !!scene.preset && stored,
+      title: draft.scene.name.trim(),
+      badge: this._stored ? target.name : `New scene · ${target.name}`,
       room: target.name,
       trying: this._trying,
-      canTry: valid && this._setUpIn(scene, target),
-      canSave: valid && canSave(scene, this._original, stored),
+      canTry: valid && partsIn(draft.scene.layers, target, this._roomLights).length > 0,
+      canSave: valid && canSave(draft, this._baseline, this._stored, this._saved),
       busy: this._busy,
       onTry: this._try,
       onStopTry: this._stopTry,
@@ -488,110 +472,94 @@ class MlSceneEditor extends LitElement {
     };
   }
 
-  private _presetNote(scene: StoredScene): PresetNote | undefined {
-    const preset = scene.preset ? this.store.scene(scene.preset) : undefined;
-    if (!preset) return undefined;
-    const first = preset.layers[0];
-    return {
-      edited: !!this._storedScene(scene),
-      rooms: this._shownIn(scene).map((t) => t.name),
-      original: first ? lookLine(this.store.effect(first.effect), first) : "",
-    };
-  }
-
-  // ---- rendering
-
   protected render() {
     const target = this.store?.target(this.targetId);
     if (!target) return nothing;
-    const scene = this._scene;
-    if (this._missing || !scene) {
+    const draft = this._draft;
+    if (this._missing || !draft) {
       return html`<ha-alert alert-type="warning" title="Scene not found">
-        This scene does not exist (any more).
-        <ha-button slot="action" appearance="plain" @click=${() => goBack(this.parent)}>Back</ha-button>
+        ${target.name} has no such scene (any more).
+        <ha-button slot="action" appearance="plain" @click=${() => goBack(targetPath(this.targetId))}>Back</ha-button>
       </ha-alert>`;
     }
+    const scene = draft.scene;
     const selected = Math.min(this._selected, scene.layers.length - 1);
-    const parts = switcherParts(scene.layers, target, this._roomLights);
-    if (!parts.includes(selected)) parts.push(selected);
-    const preset = scene.preset ? this.store.scene(scene.preset) : undefined;
-    const original = preset ? toStored(preset) : undefined;
+    const part = this._partOf(scene.layers[selected]?.part ?? "");
     const frame = this._frames ? frameAt(this._frames, this._t) : undefined;
     const owners = layerOwners(scene.layers, target, this._roomLights);
     const partLights = target.lights.filter((e) => owners.get(e) === selected);
+    const problems = this._problems;
     return html`
-      ${this._renderNotes(scene, target)}
+      ${this._renderNotes(target)}
       <div class="body">
         <div class="columns">
-          <ml-look-card
+          <ml-scene-options
+            class="scene"
             .hass=${this.hass}
             .store=${this.store}
             .scene=${scene}
-            .selected=${selected}
-            .parts=${parts.map((index) => ({ index, label: this._partName(scene, index) }))}
-            .original=${original}
-            .preset=${this._presetNote(scene)}
-            .caption=${this.narrow ? this._badge(scene) : "Tap the name or the swatch to change them"}
-            .problems=${this._problems}
-            .followed=${this._followed}
-            .day=${this._day && this._frames ? { frames: this._frames, t: this._t, lights: partLights, room: target.name } : undefined}
+            .swatches=${this._swatches(draft)}
+            .caption=${this._caption(target)}
+            .problems=${problems.filter((p) => p.layer === undefined && p.part === undefined)}
             .narrow=${this.narrow}
-            @ml-scene-edit=${this._onEdit}
+            @ml-scene-edit=${this._onSceneEdit}
+          ></ml-scene-options>
+          <ml-room-card
+            class="lights"
+            .hass=${this.hass}
+            .store=${this.store}
+            .scene=${scene}
+            .partOf=${this._partOf}
+            .draftNames=${draft.parts.map((p) => p.name)}
+            .target=${target}
+            .selected=${selected}
+            .frame=${frame}
+            .narrow=${this.narrow}
+            @ml-scene-edit=${this._onSceneEdit}
             @ml-part-select=${this._onPart}
-            @ml-time=${(ev: CustomEvent<TimeSelect>) => (this._t = ev.detail.t)}
-            @ml-reset=${() => this._delete(true)}
-          ></ml-look-card>
-          <div class="side">
-            <ml-room-card
-              .hass=${this.hass}
-              .store=${this.store}
-              .scene=${scene}
-              .target=${target}
-              .selected=${selected}
-              .frame=${frame}
-              .narrow=${this.narrow}
-              @ml-scene-edit=${this._onEdit}
-              @ml-part-select=${this._onPart}
-              @ml-room-select=${(ev: CustomEvent<RoomSelect>) =>
-                replaceWith(editorPath(this.sceneId, ev.detail.targetId))}
-            ></ml-room-card>
-            <ml-scene-options
-              .store=${this.store}
-              .scene=${scene}
-              .stored=${!!this._storedScene(scene)}
-              .original=${original}
-              .narrow=${this.narrow}
-              @ml-scene-edit=${this._onEdit}
-            ></ml-scene-options>
-          </div>
+          ></ml-room-card>
+          ${
+            part
+              ? html`<ml-look-card
+                  class="part"
+                  .hass=${this.hass}
+                  .store=${this.store}
+                  .draftPart=${part}
+                  .sceneId=${scene.id}
+                  .problems=${problems.filter((p) => p.part === part.id || p.layer === selected)}
+                  .day=${this._day && this._frames ? { frames: this._frames, t: this._t, lights: partLights, room: target.name } : undefined}
+                  .narrow=${this.narrow}
+                  @ml-part-edit=${this._onPartEdit}
+                  @ml-part-copy=${this._onCopy}
+                  @ml-time=${(ev: CustomEvent<TimeSelect>) => (this._t = ev.detail.t)}
+                ></ml-look-card>`
+              : nothing
+          }
         </div>
       </div>
-      ${this._renderFooter(scene)}
+      ${this._renderFooter()}
     `;
+  }
+
+  private _swatches(draft: Draft): string[] {
+    const colours = draft.scene.layers.flatMap((layer) => {
+      const part = this._partOf(layer.part);
+      return part ? layerSwatches(this.store.effect(part.effect), part.params) : [];
+    });
+    return [...new Set(colours)].slice(0, 5);
+  }
+
+  private _caption(target: TargetInfo): string {
+    return this._stored ? `Scene in ${target.name}` : `New scene in ${target.name} · saved with Save`;
   }
 
   private _onPart(ev: CustomEvent<PartSelect>): void {
     ev.stopPropagation();
     this._selected = ev.detail.index;
-    this._followed = [];
   }
 
-  private _renderNotes(scene: StoredScene, target: TargetInfo) {
-    const rooms = this._shownIn(scene).filter((t) => t.kind === "room").length;
-    const name = scene.name.trim() || "this scene";
+  private _renderNotes(target: TargetInfo) {
     return html`
-      ${
-        scene.preset
-          ? nothing
-          : html`<ha-alert alert-type="info">
-              ${
-                rooms > 1
-                  ? html`The look is shared: what you change here changes <b>all ${rooms} rooms that show ${name}</b>.`
-                  : html`The look is the same in every room that shows ${name}.`
-              }
-              Which lights do what is set per room.
-            </ha-alert>`
-      }
       ${
         this._error
           ? html`<ha-alert alert-type="error" dismissable @alert-dismissed-clicked=${() => (this._error = undefined)}>
@@ -619,22 +587,21 @@ class MlSceneEditor extends LitElement {
     `;
   }
 
-  private _renderFooter(scene: StoredScene) {
-    const stored = !!this._storedScene(scene);
+  private _renderFooter() {
     const busy = this._busy !== undefined;
-    const remove = stored
+    const remove = this._stored
       ? html`<ha-button
           appearance="plain"
           variant="danger"
           .disabled=${busy}
           .loading=${this._busy === "delete"}
-          @click=${() => this._delete(!!scene.preset)}
+          @click=${() => this._delete()}
         >
-          <ha-icon slot="start" .icon=${scene.preset ? "mdi:restore" : "mdi:delete-outline"}></ha-icon>
-          ${scene.preset ? "Reset to original" : "Delete scene"}
+          <ha-icon slot="start" icon="mdi:delete-outline"></ha-icon>
+          Delete scene
         </ha-button>`
       : nothing;
-    if (this.narrow) return stored ? html`<div class="end">${remove}</div>` : nothing;
+    if (this.narrow) return this._stored ? html`<div class="end">${remove}</div>` : nothing;
     const bar = this._bar();
     if (!bar) return nothing;
     return html`<div class="footer">
@@ -667,17 +634,24 @@ class MlSceneEditor extends LitElement {
       .columns {
         display: grid;
         grid-template-columns: minmax(0, 1fr);
+        grid-template-areas: "scene" "lights" "part";
         gap: var(--ha-space-4);
         align-items: start;
       }
-      .side {
-        display: flex;
-        flex-direction: column;
-        gap: var(--ha-space-4);
+      .scene {
+        grid-area: scene;
+      }
+      .lights {
+        grid-area: lights;
+      }
+      .part {
+        grid-area: part;
       }
       @container (min-width: 900px) {
         .columns {
           grid-template-columns: minmax(0, 11fr) minmax(0, 8fr);
+          grid-template-rows: auto 1fr;
+          grid-template-areas: "scene lights" "part lights";
         }
       }
       .footer {

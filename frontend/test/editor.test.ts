@@ -1,30 +1,29 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { colorToHex, colorToRgb } from "../src/shared/color";
-import type { EffectInfo, HomeAssistant, PaletteInfo, PreviewFrame, StoredScene, TargetInfo } from "../src/shared/types";
-import { MlStore, toStored } from "../src/panel/store";
+import type { EffectInfo, HomeAssistant, PaletteInfo, Part, PreviewFrame, StoredScene, TargetInfo } from "../src/shared/types";
+import { type Draft, MlStore } from "../src/panel/store";
 import { hsToRgb, parseColor, rgbToHs, swatchColors, xyToKelvin } from "../src/panel/editor/colors";
 import {
   canSave,
+  changedParts,
   expandLights,
-  isDirty,
-  isSharedLayer,
+  forkPart,
   frameAt,
+  isDirty,
   labelledSelector,
-  layerCaption,
   layerOwners,
   layerSwatches,
   nextParams,
-  roomSlice,
+  partUsers,
   sceneProblems,
-  setRoomSlice,
   stableJson,
-  variantsFollow,
-  wholeTarget,
   withDefaults,
+  withoutUnusedParts,
+  withPart,
 } from "../src/panel/editor/editor-model";
-import { draftStale, dropWorkingCopy, openWorkingCopy } from "../src/panel/editor/working-copy";
-import { CONFIG, fakeHass } from "./fixtures";
+import { draftStale, dropWorkingCopy, keepWorkingCopy, openWorkingCopy } from "../src/panel/editor/working-copy";
+import { CONFIG, draftStorage, fakeHass } from "./fixtures";
 
 // Schemas as effects/schema.py serialises them (HA 2026.8).
 const pct = { number: { min: 1, max: 100, step: 1, unit_of_measurement: "%", mode: "slider" } };
@@ -131,14 +130,11 @@ const ZONE: TargetInfo = {
   options: {
     excluded_lights: [],
     extra_lights: [],
-    visible_scenes: null,
     default_scene: null,
     reclaim_on_turn_on: true,
     detect_changes: true,
   },
   scenes: [],
-  hidden: [],
-  swatches: {},
   select_entity_id: "select.downstairs_scene",
 };
 // The kitchen room also holds an area-less light the zone does not include.
@@ -221,35 +217,82 @@ test("stable JSON ignores key order and undefined", () => {
 });
 
 const scene = (s: Partial<StoredScene>): StoredScene => ({
-  id: "s_00000001",
+  id: "s_00000002",
   name: "Movie",
   icon: null,
-  preset: null,
-  layers: [{ lights: "all", effect: "white", params: {} }],
+  layers: [{ lights: "all", part: "p_00000001" }],
   others: "off",
-  brightness: 100,
   transition: null,
   ...s,
 });
+const MOVIE: Part = { id: "p_00000001", name: "Movie", effect: "white", params: { kelvin: 2700, brightness: 100 } };
+const SAVED: Record<string, Part> = { p_00000001: MOVIE };
+const saved = (id: string): Part | undefined => SAVED[id];
 
 test("scene problems gate Try and Save", () => {
   const effectOf = (key: string) => (key === "white" ? WHITE : undefined);
-  assert.deepEqual(sceneProblems(scene({}), effectOf), []);
+  const problems = (draft: Partial<Draft>) =>
+    sceneProblems({ scene: scene({}), parts: [], ...draft }, saved, effectOf);
+  assert.deepEqual(problems({}), []);
   assert.deepEqual(
-    sceneProblems(scene({ name: "  " }), effectOf).map((p) => p.layer),
+    problems({ scene: scene({ name: "  " }) }).map((p) => p.layer),
     [undefined],
   );
-  assert.equal(sceneProblems(scene({ name: "manual" }), effectOf).length, 1);
-  assert.equal(sceneProblems(scene({ name: "x".repeat(65) }), effectOf).length, 1);
-  const layers = [
-    { lights: "all" as const, effect: "white", params: {} },
-    { lights: [], effect: "white", params: {} },
-    { lights: ["light.lamp"], effect: "strobe", params: {} },
+  assert.equal(problems({ scene: scene({ name: "manual" }) }).length, 1);
+  assert.equal(problems({ scene: scene({ name: "x".repeat(65) }) }).length, 1);
+  const strobe: Part = { ...MOVIE, id: "p_00000009", effect: "strobe" };
+  const layers: StoredScene["layers"] = [
+    { lights: "all", part: "p_00000001" },
+    { lights: [], part: "p_00000001" },
+    { lights: ["light.lamp"], part: strobe.id },
+    { lights: ["light.lamp"], part: "p_gone0000" },
   ];
   assert.deepEqual(
-    sceneProblems(scene({ layers }), effectOf).map((p) => p.layer),
-    [1, 2],
+    problems({ scene: scene({ layers }), parts: [strobe] }).map((p) => [p.layer, p.message]),
+    [
+      [1, "Pick at least one light."],
+      [2, 'The effect "strobe" is not installed.'],
+      [3, 'The part "p_gone0000" no longer exists.'],
+    ],
   );
+  const unnamed = { ...MOVIE, name: " " };
+  assert.deepEqual(
+    problems({ parts: [unnamed] }).map((p) => [p.part, p.message]),
+    [["p_00000001", "Give the part a name."]],
+  );
+});
+
+test("a part edit is pending for every scene that uses it; Copy forks it for this scene", () => {
+  const two = scene({
+    layers: [
+      { lights: "all", part: "p_00000001" },
+      { lights: ["light.lamp"], part: "relax" },
+    ],
+  });
+  const dimmer = { ...MOVIE, params: { kelvin: 2700, brightness: 30 } };
+  const edited = withPart({ scene: two, parts: [] }, dimmer);
+  assert.deepEqual(edited.parts, [dimmer]);
+  assert.deepEqual(withPart(edited, MOVIE).parts, [MOVIE], "edited again in place");
+  // Copy takes the pending edit along; the shared part is left as saved.
+  const copy: Part = { ...dimmer, id: "p_0000c0de", name: "Movie copy" };
+  const forked = forkPart(edited, "p_00000001", copy);
+  assert.deepEqual(forked.scene.layers, [
+    { lights: "all", part: "p_0000c0de" },
+    { lights: ["light.lamp"], part: "relax" },
+  ]);
+  assert.deepEqual(forked.parts, [copy]);
+  assert.deepEqual(changedParts(forked.parts, saved), [copy], "only the copy is saved");
+  // A part no layer plays any more is not saved either.
+  const dropped = withoutUnusedParts({ scene: scene({ layers: [{ lights: "all", part: "relax" }] }), parts: [dimmer] });
+  assert.deepEqual(dropped.parts, []);
+});
+
+test("Used by counts this scene first, saved or new to the part", async () => {
+  const store = await MlStore.load({ hass: fakeHass(), storeChanged: () => undefined });
+  const ids = (users: ReturnType<typeof partUsers>) => users.map((s) => s?.id);
+  assert.deepEqual(ids(partUsers(store.usesOf("relax"), "s_00000004")), ["s_00000004", "s_00000001"]);
+  assert.deepEqual(ids(partUsers(store.usesOf("relax"), "s_0000beef")), [undefined, "s_00000001", "s_00000004"]);
+  assert.deepEqual(ids(partUsers(store.usesOf("p_00000001"), "s_00000002")), ["s_00000002"], "only this scene");
 });
 
 test("frameAt picks the last frame at or before t", () => {
@@ -305,266 +348,88 @@ test("swatch colours are unique and sorted by hue", () => {
   assert.equal(swatchColors([palette("c", many)], 16).length, 16);
 });
 
-const room = (area: string, lights: string[], name = area): TargetInfo => ({
-  ...ZONE,
-  id: `room:${area}`,
-  kind: "room",
-  name,
-  area_id: area,
-  rooms: [area],
-  lights,
-});
-const LIVING = room("living", ROOMS["room:living"], "Living room");
-const KITCHEN = room("kitchen", ROOMS["room:kitchen"], "Kitchen");
-const CLOSET = room("closet", ["light.closet"], "Closet");
-const HOUSE = [LIVING, KITCHEN, CLOSET];
-const houseLights = (id: string) => HOUSE.find((t) => t.id === id)?.lights;
-const EVERY_ROOM = HOUSE.map((t) => t.id);
-
-test("a room edits only its own part of a layer", () => {
-  // One layer shared by three rooms: the living room by its lights, the others whole.
-  const shared = ["light.ceiling", "light.lamp", "room:kitchen", "room:closet"];
-  assert.deepEqual(roomSlice(shared, LIVING, houseLights), ["light.ceiling", "light.lamp"]);
-  assert.deepEqual(roomSlice(shared, KITCHEN, houseLights), ["room:kitchen"]);
-  assert.deepEqual(roomSlice("all", LIVING, houseLights), ["room:living"]);
-
-  // "All lights" on: the room as a whole instead of its lights.
-  assert.deepEqual(setRoomSlice(shared, LIVING, wholeTarget(LIVING, houseLights), EVERY_ROOM), [
-    "room:kitchen",
-    "room:closet",
-    "room:living",
-  ]);
-  // Off: only this room's entries go.
-  assert.deepEqual(setRoomSlice(shared, KITCHEN, [], EVERY_ROOM), ["light.ceiling", "light.lamp", "room:closet"]);
-  // The picker swaps this room's lights and keeps the other rooms'.
-  assert.deepEqual(setRoomSlice(shared, LIVING, ["light.lamp"], EVERY_ROOM), [
-    "room:kitchen",
-    "room:closet",
-    "light.lamp",
-  ]);
-  // From "all", the other rooms keep their place by name.
-  assert.deepEqual(setRoomSlice("all", CLOSET, [], EVERY_ROOM), ["room:living", "room:kitchen"]);
-  assert.deepEqual(setRoomSlice(["room:closet"], LIVING, [], EVERY_ROOM), ["room:closet"]);
-});
-
-test("a zone's part of a layer is its rooms and its own lights", () => {
-  const zone = { ...ZONE, lights: [...ZONE.lights, "light.porch"] };
-  assert.deepEqual(wholeTarget(zone, roomLights), ["room:living", "room:kitchen", "light.porch"]);
-  const layer = ["room:kitchen", "room:closet", "light.lamp"];
-  assert.deepEqual(roomSlice(layer, zone, roomLights), ["room:kitchen", "light.lamp"]);
-  assert.deepEqual(setRoomSlice(layer, zone, ["room:living"], EVERY_ROOM), ["room:closet", "room:living"]);
-});
-
-test("layer captions name the other rooms a layer reaches", () => {
-  const closetOnly = ["room:closet"];
-  assert.equal(layerCaption(closetOnly, LIVING, HOUSE, houseLights), "Closet only");
-  assert.equal(layerCaption(closetOnly, CLOSET, HOUSE, houseLights), undefined);
-  const spread = ["light.lamp", "room:kitchen", "room:closet"];
-  assert.equal(layerCaption(spread, CLOSET, HOUSE, houseLights), "also 2 rooms");
-  assert.equal(layerCaption(["room:kitchen", "room:closet"], LIVING, HOUSE, houseLights), "2 rooms");
-  assert.equal(layerCaption("all", LIVING, HOUSE, houseLights), undefined);
-  assert.equal(layerCaption(["room:kitchen"], ZONE, HOUSE, houseLights), undefined, "a zone's own rooms");
-});
-
 test("a reload keeps the edits of a scene that was never saved unsaved", async () => {
-  const items = new Map<string, string>();
-  const sessionStorage = {
-    getItem: (key: string) => items.get(key) ?? null,
-    setItem: (key: string, value: string) => void items.set(key, value),
-    removeItem: (key: string) => void items.delete(key),
-  };
-  Object.assign(globalThis, { window: { sessionStorage } });
+  const items = draftStorage();
   const store = await MlStore.load({ hass: fakeHass(), storeChanged: () => undefined });
 
-  // The gallery's New scene writes the draft, then the editor opens it.
-  const created = store.newScene("room:living");
-  store.setDraft(created.id, created);
-  assert.deepEqual(openWorkingCopy(store, created.id)?.baseline, created);
-  store.setDraft(created.id, { ...created, name: "Edited" });
-  const reloaded = openWorkingCopy(store, created.id);
+  // The panel writes a new scene's draft, then the editor opens it.
+  const created = store.newScene("room:living", null);
+  const id = created.scene.id;
+  store.setDraft(id, created);
+  assert.deepEqual(openWorkingCopy(store, "room:living", id)?.baseline, created);
+  const renamed = { ...created, scene: { ...created.scene, name: "Edited" } };
+  keepWorkingCopy(store, renamed);
+  const reloaded = openWorkingCopy(store, "room:living", id);
   assert.equal(reloaded?.restored, true);
   assert.equal(reloaded?.stale, undefined);
-  assert.equal(reloaded?.scene.name, "Edited");
+  assert.equal(reloaded?.draft.scene.name, "Edited");
   assert.deepEqual(reloaded?.baseline, created);
-  dropWorkingCopy(store, created.id);
+  assert.equal(isDirty(reloaded!.draft, reloaded!.baseline, saved), true);
+  dropWorkingCopy(store, id);
   assert.equal(items.size, 0);
 
-  // A preset copy keeps its generated id and its baseline.
-  const copy = openWorkingCopy(store, "relax")!;
-  store.setDraft("relax", { ...copy.scene, brightness: 40 });
-  const again = openWorkingCopy(store, "relax");
-  assert.equal(again?.scene.id, copy.scene.id);
-  assert.deepEqual(again?.baseline, copy.scene);
-
-  // Without its draft, an old baseline is not used.
-  store.setDraft("relax", undefined);
-  const next = openWorkingCopy(store, "relax")!;
-  assert.equal(next.restored, false);
-  assert.deepEqual(next.baseline, next.scene);
-
-  // An edited preset opens its stored edit and is measured against it.
-  const sunset = openWorkingCopy(store, "savanna_sunset")!;
-  assert.equal(sunset.scene.id, "s_11111111");
-  store.setDraft("savanna_sunset", { ...sunset.scene, brightness: 40 });
-  const edited = openWorkingCopy(store, "savanna_sunset");
-  assert.deepEqual(edited?.baseline, toStored(store.scene("s_11111111")!));
-  assert.equal(edited?.stale, undefined);
+  // A saved scene opens as saved, measured against it, in its own room only.
+  const movie = openWorkingCopy(store, "room:living", "s_00000002")!;
+  assert.equal(movie.restored, false);
+  assert.deepEqual(movie.draft, movie.baseline);
+  assert.equal(movie.draft.scene.name, "Movie");
+  assert.equal(openWorkingCopy(store, "room:kitchen", "s_00000002"), undefined);
+  assert.equal(openWorkingCopy(store, "room:living", "s_0000dead"), undefined);
 });
 
-test("a draft of a scene deleted or reset elsewhere says saving brings it back", async () => {
-  const items = new Map<string, string>();
-  const sessionStorage = {
-    getItem: (key: string) => items.get(key) ?? null,
-    setItem: (key: string, value: string) => void items.set(key, value),
-    removeItem: (key: string) => void items.delete(key),
-  };
-  Object.assign(globalThis, { window: { sessionStorage } });
+test("a draft says when its scene or parts were saved or deleted elsewhere", async () => {
+  draftStorage();
   const store = await MlStore.load({ hass: fakeHass(), storeChanged: () => undefined });
-  for (const sceneId of ["savanna_sunset", "s_22222222"]) {
-    const copy = openWorkingCopy(store, sceneId)!;
-    store.setDraft(sceneId, { ...copy.scene, brightness: 40 });
+  for (const sceneId of ["s_00000001", "s_00000002"]) {
+    const { draft } = openWorkingCopy(store, "room:living", sceneId)!;
+    keepWorkingCopy(store, { ...draft, scene: { ...draft.scene, transition: 3 } });
   }
-  // A new preset edit was never stored, so nothing was removed.
-  const fresh = openWorkingCopy(store, "relax")!;
-  store.setDraft("relax", { ...fresh.scene, brightness: 40 });
+  // Relax's built-in is edited in the draft; its saved version is kept as the edit's base.
+  const relax = openWorkingCopy(store, "room:living", "s_00000001")!.draft;
+  const dimmer: Part = { id: "relax", name: "Relax", effect: "white", params: { kelvin: 2700, brightness: 20 } };
+  keepWorkingCopy(store, withPart(relax, dimmer));
 
-  // Another tab resets Savanna sunset and deletes Movie.
+  // Another tab deletes Movie and edits Relax for everyone.
   const config = structuredClone(CONFIG);
-  config.scenes = config.scenes
-    .filter((s) => !["s_11111111", "s_22222222"].includes(s.id))
-    .map((s) => (s.id === "savanna_sunset" ? { ...s, override: null } : s));
+  config.scenes = config.scenes.filter((s) => s.id !== "s_00000002");
+  config.parts = config.parts.map((p) => (p.id === "relax" ? { ...p, params: { kelvin: 2200, brightness: 100 } } : p));
   const hass = { ...fakeHass(), callWS: async <T>() => structuredClone(config) as T } as HomeAssistant;
   const later = await MlStore.load({ hass, storeChanged: () => undefined });
 
-  const sunset = openWorkingCopy(later, "savanna_sunset")!;
-  assert.equal(sunset.scene.id, "s_11111111");
-  assert.equal(sunset.stale, "reset");
-  assert.equal(openWorkingCopy(later, "s_22222222")?.stale, "deleted");
-  assert.equal(openWorkingCopy(later, "relax")?.stale, undefined);
-  dropWorkingCopy(later, "savanna_sunset");
-  assert.equal(items.has("magic_lights.draft.savanna_sunset.base"), false);
+  assert.equal(openWorkingCopy(later, "room:living", "s_00000002")?.stale, "deleted");
+  const stale = openWorkingCopy(later, "room:living", "s_00000001")!;
+  assert.equal(stale.stale, "saved", "the part it edits was saved elsewhere");
+  assert.deepEqual(stale.draft.parts, [dimmer]);
 });
 
-test("one scene has one draft, whichever room opens it", async () => {
-  const items = new Map<string, string>();
-  const sessionStorage = {
-    getItem: (key: string) => items.get(key) ?? null,
-    setItem: (key: string, value: string) => void items.set(key, value),
-    removeItem: (key: string) => void items.delete(key),
-  };
-  Object.assign(globalThis, { window: { sessionStorage } });
-  const store = await MlStore.load({ hass: fakeHass(), storeChanged: () => undefined });
-
-  const relax = openWorkingCopy(store, "relax")!;
-  store.setDraft("relax", { ...relax.scene, brightness: 40 });
-  assert.deepEqual([...items.keys()].sort(), ["magic_lights.draft.relax", "magic_lights.draft.relax.base"]);
-
-  // A preset draft begun before the preset was edited elsewhere saves over that edit, and says so.
-  const preset = { ...toStored(store.scene("savanna_sunset")!), id: "s_99999999", preset: "savanna_sunset" };
-  store.setDraft("savanna_sunset", { ...preset, brightness: 40 });
-  store.setDraft("savanna_sunset.base", { scene: preset, stored: false });
-  const late = openWorkingCopy(store, "savanna_sunset")!;
-  assert.equal(late.scene.id, "s_11111111");
-  assert.equal(late.scene.brightness, 40);
-  assert.equal(late.stale, "saved");
-  assert.deepEqual(late.baseline, toStored(store.scene("s_11111111")!));
-});
-
-const adaptiveLayer = (lights: string[], params: Record<string, unknown>) => ({
-  lights,
-  effect: "adaptive",
-  params: { brightness_mode: "tanh", min_brightness: 40, max_brightness: 100, max_kelvin: 5000, ...params },
-});
-
-const hell = (layers: StoredScene["layers"]): StoredScene => ({
-  id: "s_12186051",
-  name: "Hell",
-  icon: null,
-  preset: null,
-  layers,
-  others: "off",
-  brightness: 100,
-  transition: null,
-});
-
-test("room-only layers follow shared edits to the values they had in common", () => {
-  const before = hell([
-    adaptiveLayer(["room:living", "room:kitchen"], {}),
-    adaptiveLayer(["light.shelf"], { min_brightness: 12, max_brightness: 30 }),
-    adaptiveLayer(["room:closet"], { max_kelvin: 2200 }),
-    { lights: ["light.tv"], effect: "white", params: { max_brightness: 100 } },
-  ]);
-  const edited = structuredClone(before);
-  edited.layers[0].params.max_brightness = 80;
-  edited.layers[0].params.max_kelvin = 4000;
-  const { scene, layers } = variantsFollow(before, edited, (i) => i === 0);
-  assert.deepEqual(layers, [1, 2]);
-  assert.equal(scene.layers[1].params.max_kelvin, 4000, "the shelf follows the white");
-  assert.equal(scene.layers[1].params.max_brightness, 30, "and keeps its own brightness");
-  assert.equal(scene.layers[2].params.max_brightness, 80, "the closet follows the brightness");
-  assert.equal(scene.layers[2].params.max_kelvin, 2200, "and keeps its own white");
-  assert.equal(scene.layers[3].params.max_brightness, 100, "another effect does not follow");
-  assert.equal(before.layers[2].params.max_brightness, 100, "inputs stay untouched");
-});
-
-test("only later layers follow, and only a params edit", () => {
-  const before = hell([adaptiveLayer(["light.a"], {}), adaptiveLayer(["light.b"], {})]);
-  const editLater = structuredClone(before);
-  editLater.layers[1].params.min_brightness = 10;
-  assert.deepEqual(variantsFollow(before, editLater, () => true).layers, [], "an earlier layer keeps its value");
-  const added = { ...before, layers: [...before.layers, adaptiveLayer(["light.c"], { min_brightness: 5 })] };
-  assert.deepEqual(variantsFollow(before, added, () => true), { scene: added, layers: [] });
-  const palette = hell([
-    { lights: ["light.a"], effect: "palette", params: { palette: [{ kelvin: 2000 }] } },
-    { lights: ["light.b"], effect: "palette", params: { palette: [{ kelvin: 2000 }] } },
-  ]);
-  const recoloured = structuredClone(palette);
-  recoloured.layers[0].params.palette = [{ xy: [0.5, 0.4] }];
-  assert.deepEqual(
-    variantsFollow(palette, recoloured, (i) => i === 0).scene.layers[1].params.palette,
-    [{ xy: [0.5, 0.4] }],
-  );
-});
-
-test("a room-only layer's edit stays in its room", () => {
-  // Main, the living room's sofa lamp, the closet's own layer: all on the same white.
-  const before = hell([
-    adaptiveLayer(["room:living", "room:kitchen", "room:closet"], {}),
-    adaptiveLayer(["light.lamp"], { min_kelvin: 2200 }),
-    adaptiveLayer(["room:closet"], { min_kelvin: 2200 }),
-  ]);
-  const shared = (i: number) => isSharedLayer(before.layers[i].lights, i, HOUSE, houseLights);
-  assert.deepEqual([0, 1, 2].map(shared), [true, false, false]);
-  const edited = structuredClone(before);
-  edited.layers[1].params.min_kelvin = 2700;
-  assert.deepEqual(variantsFollow(before, edited, shared), { scene: edited, layers: [] });
-
-  assert.equal(isSharedLayer("all", 3, HOUSE, houseLights), true);
-  assert.equal(isSharedLayer(["light.lamp", "room:closet"], 1, HOUSE, houseLights), true, "two rooms share it");
-  const twoRooms = hell([...before.layers.slice(0, 1), adaptiveLayer(["light.lamp", "room:closet"], {}), before.layers[2]]);
-  const warmer = structuredClone(twoRooms);
-  warmer.layers[1].params.max_kelvin = 4000;
-  const sharedTwo = (i: number) => isSharedLayer(twoRooms.layers[i].lights, i, HOUSE, houseLights);
-  assert.deepEqual(variantsFollow(twoRooms, warmer, sharedTwo).layers, [2], "a part of two rooms leads later ones");
-});
-
-test("save needs a change, except for a new scene of your own", () => {
-  const scene = hell([adaptiveLayer(["light.a"], {})]);
-  assert.equal(isDirty(scene, structuredClone(scene)), false);
-  assert.equal(canSave(scene, scene, true), false, "an unchanged stored scene");
-  assert.equal(canSave({ ...scene, brightness: 50 }, scene, true), true);
-  const preset = { ...scene, preset: "adaptive" };
-  assert.equal(canSave(preset, preset, false), false, "an untouched preset");
-  assert.equal(canSave(scene, scene, false), true, "a new scene saves as it is");
+test("save needs a change, except for a new scene", () => {
+  const draft: Draft = { scene: scene({}), parts: [] };
+  assert.equal(isDirty(draft, structuredClone(draft), saved), false);
+  assert.equal(canSave(draft, draft, true, saved), false, "an unchanged saved scene");
+  assert.equal(canSave({ ...draft, scene: scene({ transition: 2 }) }, draft, true, saved), true);
+  assert.equal(canSave(draft, draft, false, saved), true, "a new scene saves as it is");
+  // A part edit is a change; an edit back to the saved part is none.
+  const dimmer = { ...MOVIE, params: { brightness: 30 } };
+  assert.equal(canSave(withPart(draft, dimmer), draft, true, saved), true);
+  assert.equal(canSave(withPart(draft, MOVIE), draft, true, saved), false);
+  // A new scene's blank part is part of its base.
+  const blank: Part = { ...MOVIE, id: "p_0000b1a4", name: "New part" };
+  const fresh: Draft = { scene: scene({ layers: [{ lights: "all", part: blank.id }] }), parts: [blank] };
+  assert.equal(isDirty(fresh, structuredClone(fresh), saved), false);
+  assert.equal(isDirty(withPart(fresh, { ...blank, name: "Lamp" }), fresh, saved), true);
 });
 
 test("a draft's base tells what changed elsewhere since", () => {
-  const scene = hell([adaptiveLayer(["light.a"], {})]);
-  assert.equal(draftStale({ scene, stored: true }, scene), undefined);
-  assert.equal(draftStale({ scene, stored: true }, { ...scene, brightness: 50 }), "saved");
-  assert.equal(draftStale({ scene, stored: true }, undefined), "deleted");
-  assert.equal(draftStale({ scene: { ...scene, preset: "adaptive" }, stored: true }, undefined), "reset");
-  assert.equal(draftStale({ scene, stored: false }, undefined), undefined);
-  assert.equal(draftStale({ scene, stored: false }, scene), "saved");
-  assert.equal(draftStale({ scene, stored: true }, { ...scene, id: "s_99999999" }), undefined, "ids are not compared");
+  const draft: Draft = { scene: scene({}), parts: [] };
+  const base = { draft, stored: true, parts: {} };
+  assert.equal(draftStale(base, draft.scene, saved), undefined);
+  assert.equal(draftStale(base, scene({ transition: 2 }), saved), "saved");
+  assert.equal(draftStale(base, undefined, saved), "deleted");
+  assert.equal(draftStale({ ...base, stored: false }, undefined, saved), undefined);
+  assert.equal(draftStale({ ...base, stored: false }, draft.scene, saved), "saved");
+  const edit = { ...base, parts: { p_00000001: MOVIE } };
+  assert.equal(draftStale(edit, draft.scene, saved), undefined, "the part is as the edit found it");
+  assert.equal(draftStale(edit, draft.scene, () => ({ ...MOVIE, name: "Film" })), "saved");
+  assert.equal(draftStale(edit, draft.scene, () => undefined), "saved", "deleted since");
+  assert.equal(draftStale({ ...base, parts: { p_0000b1a4: null } }, draft.scene, saved), undefined, "a new part");
 });

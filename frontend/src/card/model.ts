@@ -12,7 +12,7 @@ export interface CardConfig {
   entity: string;
   name?: string;
   show_scenes: boolean;
-  /** Ids or names of the target's scenes, hidden ones too, in display order; empty = the whole menu. */
+  /** Ids or names of the target's scenes, in display order; empty = the whole menu. */
   scenes: string[];
   columns: number;
   show_lights: boolean;
@@ -96,7 +96,7 @@ export const lookup = (hass: HomeAssistant): Lookup => {
   };
   const sceneOf = (sceneId: string, owner: TargetId) => {
     const attrs = selectOf(owner)?.attributes as SelectAttributes | undefined;
-    return attrs && allScenes(attrs).find((s) => s.id === sceneId);
+    return attrs?.scenes?.find((s) => s.id === sceneId);
   };
   return {
     target: (id) => {
@@ -112,9 +112,6 @@ export const lookup = (hass: HomeAssistant): Lookup => {
   };
 };
 
-/** The menu, then the target's scenes it leaves out. */
-const allScenes = (attrs: SelectAttributes): StatusScene[] => [...(attrs.scenes ?? []), ...(attrs.hidden_scenes ?? [])];
-
 export interface CardScenes {
   scenes: StatusScene[];
   /** Configured scenes the target does not have. */
@@ -123,8 +120,8 @@ export interface CardScenes {
 
 /** The scene grid: the target's menu, or the configured subset in its order. */
 export const cardScenes = (attrs: SelectAttributes, wanted: readonly string[]): CardScenes => {
-  if (!wanted.length) return { scenes: attrs.scenes ?? [], missing: [] };
-  const scenes = allScenes(attrs);
+  const scenes = attrs.scenes ?? [];
+  if (!wanted.length) return { scenes, missing: [] };
   const picked = new Set<StatusScene>();
   const missing: string[] = [];
   for (const key of wanted) {

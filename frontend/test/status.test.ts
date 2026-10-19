@@ -23,7 +23,7 @@ test("off, unavailable, not set up", async () => {
 test("own scene with manual lights", async () => {
   const { text, swatches } = await line({
     status: "scene",
-    scene_id: "relax",
+    scene_id: "s_00000001",
     scene_name: "Relax",
     manual: ["light.a", "light.b"],
   });
@@ -31,10 +31,16 @@ test("own scene with manual lights", async () => {
   assert.deepEqual(swatches, ["#ff942b"]);
 });
 
+test("a part run on its own shows the part's swatches", async () => {
+  const { text, swatches } = await line({ status: "scene", scene_id: "savanna_sunset", scene_name: "Savanna sunset" });
+  assert.equal(text, "Savanna sunset");
+  assert.deepEqual(swatches, ["#4000ff", "#ff5c2f"]);
+});
+
 test("via a zone, with the zone's scene swatches", async () => {
   const { text, swatches } = await line({
     status: "scene",
-    scene_id: "savanna_sunset",
+    scene_id: "s_00000006",
     scene_name: "Savanna sunset",
     via: "zone:downstairs",
   });
@@ -45,14 +51,14 @@ test("via a zone, with the zone's scene swatches", async () => {
 test("lights running elsewhere and mixed targets", async () => {
   const elsewhere = await line({
     status: "scene",
-    scene_id: "savanna_sunset",
+    scene_id: "s_00000006",
     scene_name: "Savanna sunset",
-    elsewhere: { "light.lamp": { target_id: "room:living", scene_id: "relax" } },
+    elsewhere: { "light.lamp": { target_id: "room:living", scene_id: "s_00000002" } },
   });
-  assert.equal(elsewhere.text, "Savanna sunset · Living room: Relax");
+  assert.equal(elsewhere.text, "Savanna sunset · Living room: Movie");
   const draft = await line({
     status: "scene",
-    scene_id: "relax",
+    scene_id: "s_00000001",
     scene_name: "Relax",
     elsewhere: { "light.ceiling": { target_id: "room:kitchen", scene_id: null } },
   });
@@ -60,10 +66,10 @@ test("lights running elsewhere and mixed targets", async () => {
   const mixed = await line({
     status: "mixed",
     parts: [
-      { target_id: "room:living", scene_id: "relax", scene_name: "Relax", lights: ["light.lamp"] },
+      { target_id: "room:living", scene_id: "s_00000001", scene_name: "Relax", lights: ["light.lamp"] },
       {
         target_id: "room:kitchen",
-        scene_id: "savanna_sunset",
+        scene_id: "s_00000005",
         scene_name: "Savanna sunset",
         lights: ["light.ceiling"],
       },

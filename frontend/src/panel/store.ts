@@ -6,15 +6,15 @@ import * as api from "../shared/api";
 import { activationOptions, toggleMotion } from "../shared/scene-actions";
 import { statusOf, type StatusNames, type TargetStatusView } from "../shared/status";
 import type {
-  Adjust,
   ConfigDto,
   EffectInfo,
   HomeAssistant,
-  Layer,
   LightInfo,
+  Part,
+  PartCategory,
+  PartInfo,
   PreviewFrame,
   PreviewRequest,
-  SceneCategory,
   SceneInfo,
   Settings,
   StoredScene,
@@ -23,8 +23,7 @@ import type {
   TargetOptions,
   Zone,
 } from "../shared/types";
-import { newSceneId } from "../shared/util";
-import { wholeTarget } from "./editor/editor-model";
+import { newPartId, newSceneId } from "../shared/util";
 
 export interface StoreHost {
   readonly hass: HomeAssistant;
@@ -44,19 +43,27 @@ interface StoreContext {
 /** A change, or how to make it from the latest saved value. */
 export type Update<T, C> = Partial<T> | ((current: C) => Partial<T>);
 
-/** Gallery sections in order; categories outside them count as the user's. */
-export const SCENE_GROUPS: readonly [SceneCategory, string][] = [
-  ["custom", "Yours"],
+/** What the editor changes before Save: the scene, and the parts it adds or edits. */
+export interface Draft {
+  scene: StoredScene;
+  parts: Part[];
+}
+
+export type PartGroupKey = "yours" | PartCategory;
+
+/** Picker and select sections in order. */
+export const PART_GROUPS: readonly [PartGroupKey, string][] = [
+  ["yours", "Your parts"],
   ["white", "Whites"],
   ["color", "Colour palettes"],
   ["dynamic", "Dynamic"],
   ["adaptive", "Adaptive"],
 ];
 
-export interface SceneGroup {
-  category: SceneCategory;
+export interface PartGroup {
+  key: PartGroupKey;
   title: string;
-  scenes: SceneInfo[];
+  parts: PartInfo[];
 }
 
 export interface SelectOption {
@@ -65,7 +72,13 @@ export interface SelectOption {
   disabled?: boolean;
 }
 
+/** Names the scene menu keeps for itself (validation.py RESERVED_NAMES). */
+const RESERVED = new Set(["off", "manual"]);
+
 const DRAFT_PREFIX = "magic_lights.draft.";
+
+/** A new scene's icon when its part has none: your parts carry no icon. */
+export const SCENE_ICON = "mdi:palette-outline";
 
 const storage = (): Storage | undefined => {
   try {
@@ -77,61 +90,56 @@ const storage = (): Storage | undefined => {
 
 const byName = <T extends { name: string }>(a: T, b: T) => a.name.localeCompare(b.name);
 
-/** The stored shape of a scene, without the catalogue fields. */
-export const toStored = (scene: StoredScene): StoredScene => ({
+const fold = (name: string): string => name.trim().toLowerCase();
+
+/** `base`, else "base 2", "base 3" …: the first that is not taken (case-insensitive). */
+const freeName = (base: string, taken: ReadonlySet<string>): string => {
+  let name = base;
+  for (let n = 2; taken.has(fold(name)); n++) name = `${base} ${n}`;
+  return name;
+};
+
+/** The stored shape of a scene, without the DTO fields. */
+export const toStoredScene = (scene: StoredScene): StoredScene => ({
   id: scene.id,
   name: scene.name,
   icon: scene.icon,
-  preset: scene.preset,
   layers: structuredClone(scene.layers),
   others: scene.others,
-  brightness: scene.brightness,
   transition: scene.transition,
 });
 
-/** The id a scene has in menus, services and runtime: an edited preset goes by its preset's id. */
-export const menuId = (scene: StoredScene): string => scene.preset ?? scene.id;
+/** The stored shape of a part: the catalogue keeps icons and categories. */
+export const toStoredPart = (part: Part): Part => ({
+  id: part.id,
+  name: part.name,
+  effect: part.effect,
+  params: structuredClone(part.params),
+});
 
-/** The ids a target's menu holds, fitting or not; a default menu is its fitting user scenes. */
-export const menuIds = (target: TargetInfo): string[] => [...(target.options.visible_scenes ?? target.scenes)];
+/** A part's section: yours, or its built-in category. */
+export const partGroup = (part: PartInfo): PartGroupKey => (part.builtin && part.category) || "yours";
 
-/** A menu with `sceneId` appended (kept in place if there) or removed. */
-export const withScene = (ids: readonly string[], sceneId: string, shown: boolean): string[] => {
-  if (!shown) return ids.filter((id) => id !== sceneId);
-  return ids.includes(sceneId) ? [...ids] : [...ids, sceneId];
-};
+/** The non-empty sections of `parts`, in picker order. */
+export const groupParts = (parts: readonly PartInfo[]): PartGroup[] =>
+  PART_GROUPS.map(([key, title]) => ({ key, title, parts: parts.filter((p) => partGroup(p) === key) })).filter(
+    (group) => group.parts.length,
+  );
 
-/** Where a scene stands in one target. */
-export interface Availability {
-  target: TargetInfo;
-  /** In the target's menu. */
-  shown: boolean;
-  /** It has lights there and can run. */
-  fits: boolean;
-  /** In the menu without lights there: it shows greyed out until it is set up. */
-  needsSetUp: boolean;
-  /** It runs when a light is switched on while the room is off. */
-  isDefault: boolean;
-}
+/** ha-select options of `parts` under a disabled heading per section. */
+export const partOptions = (parts: readonly PartInfo[]): SelectOption[] =>
+  groupParts(parts).flatMap((group) => [
+    { value: `__group_${group.key}`, label: group.title, disabled: true },
+    ...group.parts.map((part) => ({ value: part.id, label: part.name })),
+  ]);
 
-/** `scene` as menus know it (a preset resolved to its edit); `globalDefault` is settings.default_scene. */
-export const availabilityIn = (
-  scene: SceneInfo,
-  target: TargetInfo,
-  globalDefault: string | null,
-): Availability => {
-  const id = menuId(scene);
-  const shown = menuIds(target).includes(id);
-  const fits = scene.fits.includes(target.id);
-  const fallback = target.options.default_scene ?? globalDefault;
-  return {
-    target,
-    shown,
-    fits,
-    needsSetUp: shown && !fits,
-    isDefault: target.kind === "room" && fallback === id,
-  };
-};
+/** The whole target playing one part, as the backend runs a part called there. */
+export const isWholeRoomOf = (scene: StoredScene, partId: string): boolean =>
+  scene.layers.length === 1 &&
+  scene.layers[0].lights === "all" &&
+  scene.layers[0].part === partId &&
+  scene.others === "off" &&
+  scene.transition === null;
 
 export class MlStore {
   static async load(host: StoreHost): Promise<MlStore> {
@@ -143,6 +151,8 @@ export class MlStore {
   readonly targets: readonly TargetInfo[];
 
   private readonly _targets: Map<string, TargetInfo>;
+
+  private readonly _parts: Map<string, PartInfo>;
 
   private readonly _scenes: Map<string, SceneInfo>;
 
@@ -158,6 +168,7 @@ export class MlStore {
     const zones = config.targets.filter((t) => t.kind === "zone").sort(byName);
     this.targets = [...rooms, ...zones];
     this._targets = new Map(config.targets.map((t) => [t.id, t]));
+    this._parts = new Map(config.parts.map((p) => [p.id, p]));
     this._scenes = new Map(config.scenes.map((s) => [s.id, s]));
     this._effects = new Map(config.effects.map((e) => [e.key, e]));
     this._lights = new Map(config.lights.map((l) => [l.entity_id, l]));
@@ -173,9 +184,45 @@ export class MlStore {
     return this._targets.get(id);
   }
 
-  /** A scene by its own id (preset, user scene or the edit of a preset). */
+  /** Built-ins in catalogue order, then yours. */
+  parts(): readonly PartInfo[] {
+    return this.config.parts;
+  }
+
+  part(id: string): PartInfo | undefined {
+    return this._parts.get(id);
+  }
+
+  /** A scene by id; ids are unique over all targets. */
   scene(id: string): SceneInfo | undefined {
     return this._scenes.get(id);
+  }
+
+  /** A target's scenes in menu order, those without lights there included. */
+  scenesOf(targetId: string): SceneInfo[] {
+    return (this._targets.get(targetId)?.scenes ?? []).flatMap((id) => this._scenes.get(id) ?? []);
+  }
+
+  /** The scenes of existing targets that use a part. */
+  usesOf(partId: string): SceneInfo[] {
+    return (this._parts.get(partId)?.used_by ?? []).flatMap((id) => this._scenes.get(id) ?? []);
+  }
+
+  /** The target's scene of the whole room playing the part, if it has one. */
+  wholeRoomScene(targetId: string, partId: string): SceneInfo | undefined {
+    return this.scenesOf(targetId).find((scene) => isWholeRoomOf(scene, partId));
+  }
+
+  /** What a status id names: `owner`'s scene, else a part run on its own. */
+  running(owner: string, id: string): SceneInfo | PartInfo | undefined {
+    const scene = this._scenes.get(id);
+    return scene?.target === owner ? scene : this._parts.get(id);
+  }
+
+  /** The parts a scene's layers play, or the part itself. */
+  looksOf(item: SceneInfo | PartInfo): PartInfo[] {
+    if (!("layers" in item)) return [item];
+    return item.layers.flatMap((layer) => this._parts.get(layer.part) ?? []);
   }
 
   effect(key: string): EffectInfo | undefined {
@@ -203,71 +250,9 @@ export class MlStore {
     );
   }
 
-  /** What a menu id runs, in every room: a preset's edit, else the preset or the stored scene. */
-  resolveScene(sceneId: string): SceneInfo | undefined {
-    const scene = this._scenes.get(sceneId);
-    return (scene?.override && this._scenes.get(scene.override)) || scene;
-  }
-
-  /** The preset an edit replaces, else the scene itself. */
-  origin(scene: SceneInfo): SceneInfo {
-    return (scene.preset && this._scenes.get(scene.preset)) || scene;
-  }
-
-  /** A preset that has an edit for every room (or that edit itself). */
-  edited(sceneId: string): boolean {
-    const scene = this._scenes.get(sceneId);
-    return !!(scene?.override || scene?.preset);
-  }
-
-  /** Per target: whether the scene is in its menu, fits there, needs setting up, is its switch-on scene. */
-  availability(sceneId: string): Availability[] {
-    const scene = this.resolveScene(sceneId);
-    if (!scene) return [];
-    const globalDefault = this.config.settings.default_scene;
-    return this.targets.map((target) => availabilityIn(scene, target, globalDefault));
-  }
-
-  /** The room the target-free editor previews a scene in: the first it fits, else the first room. */
-  previewTarget(sceneId: string): TargetInfo | undefined {
-    const fits = new Set(this.resolveScene(sceneId)?.fits ?? []);
-    const rooms = this.targets.filter((t) => t.kind === "room");
-    return rooms.find((t) => fits.has(t.id)) ?? this.targets.find((t) => fits.has(t.id)) ?? rooms[0];
-  }
-
-  /** Visible (or hidden) scenes of a target, resolved and in menu order. */
-  scenesFor(targetId: string, which: "visible" | "hidden" = "visible"): SceneInfo[] {
-    const target = this._targets.get(targetId);
-    const ids = (which === "visible" ? target?.scenes : target?.hidden) ?? [];
-    return ids.flatMap((id) => this.resolveScene(id) ?? []);
-  }
-
-  /** Every scene once, as menus know it: presets (an edited one as its edit) and the user's. */
-  menuScenes(): SceneInfo[] {
-    return this.config.scenes.flatMap((s) => (s.preset ? [] : (this.resolveScene(s.id) ?? [])));
-  }
-
-  /** The gallery section of a scene; an edited preset sits where its preset does. */
-  groupOf(scene: SceneInfo): SceneCategory {
-    const category = this.origin(scene).category;
-    return SCENE_GROUPS.some(([key]) => key === category) ? category : "custom";
-  }
-
-  /** The non-empty sections of `scenes`, in gallery order. */
-  groupScenes(scenes: readonly SceneInfo[]): SceneGroup[] {
-    return SCENE_GROUPS.map(([category, title]) => ({
-      category,
-      title,
-      scenes: scenes.filter((scene) => this.groupOf(scene) === category),
-    })).filter((group) => group.scenes.length);
-  }
-
-  /** ha-select options of `scenes` under a disabled heading per section. */
-  sceneOptions(scenes: readonly SceneInfo[], valueOf: (scene: SceneInfo) => string): SelectOption[] {
-    return this.groupScenes(scenes).flatMap((group) => [
-      { value: `__group_${group.category}`, label: group.title, disabled: true },
-      ...group.scenes.map((scene) => ({ value: valueOf(scene), label: scene.name })),
-    ]);
+  /** "Living Room · Hell" for a scene, "Unknown room · Hell" once its target is gone. */
+  sceneLabel(scene: SceneInfo): string {
+    return `${scene.dormant ? "Unknown room" : this.targetName(scene.target)} · ${scene.name}`;
   }
 
   status(hass: HomeAssistant, targetId: string): TargetStatusView | undefined {
@@ -276,82 +261,88 @@ export class MlStore {
 
   readonly statusNames: StatusNames = {
     target: (id) => this.targetName(id),
-    scene: (id) => this.resolveScene(id)?.name,
+    scene: (id, owner) => this.running(owner, id)?.name,
   };
 
-  /** A layer for one room only shows in that room. */
-  readonly swatchesOf = (sceneId: string, owner: TargetId): readonly string[] | undefined =>
-    this._targets.get(owner)?.swatches[sceneId] ?? this.resolveScene(sceneId)?.swatches;
+  /** Colours of what runs: the owner's scene where it reaches, else the part's. */
+  readonly swatchesOf = (id: string, owner: TargetId): readonly string[] | undefined =>
+    this.running(owner, id)?.swatches;
 
-  // ---- editor drafts (sessionStorage, keyed by scene: one scene, one draft in every room;
-  // editor/working-copy.ts keeps the draft's base next to it)
+  // ---- names and new things (nothing is stored before Save)
 
-  draft<T = StoredScene>(sceneId: string): T | undefined {
+  /** A name none of the target's scenes has, nor the scene menu's Off and Manual. */
+  uniqueSceneName(targetId: string, base: string, taken: readonly string[] = []): string {
+    const names = [...this.scenesOf(targetId).map((s) => s.name), ...taken, ...RESERVED];
+    return freeName(base, new Set(names.map(fold)));
+  }
+
+  /** A name no part has, built-ins included. */
+  uniquePartName(base: string, taken: readonly string[] = []): string {
+    return freeName(base, new Set([...this.config.parts.map((p) => p.name), ...taken].map(fold)));
+  }
+
+  /**
+   * A new scene of the target: the whole room playing `partId`, or (null) a blank white
+   * part that is created with the scene.
+   */
+  newScene(targetId: string, partId: string | null): Draft {
+    const scene = (part: string, name: string, icon: string): StoredScene => ({
+      id: newSceneId(),
+      name: this.uniqueSceneName(targetId, name),
+      icon,
+      layers: [{ lights: "all", part }],
+      others: "off",
+      transition: null,
+    });
+    if (partId === null) {
+      const blank = this.newPart();
+      return { scene: scene(blank.id, "New scene", SCENE_ICON), parts: [blank] };
+    }
+    const part = this._parts.get(partId);
+    return { scene: scene(partId, part?.name ?? partId, part?.icon ?? SCENE_ICON), parts: [] };
+  }
+
+  /** "<name> copy" with the part's look, under a new id; `taken` are the draft's own names. */
+  copyPart(part: Part, taken: readonly string[] = []): Part {
+    return {
+      id: newPartId(),
+      name: this.uniquePartName(`${part.name} copy`, taken),
+      effect: part.effect,
+      params: structuredClone(part.params),
+    };
+  }
+
+  /** A blank white part; `taken` are the draft's own names. */
+  newPart(taken: readonly string[] = []): Part {
+    const effect = this._effects.get("white") ?? this.config.effects[0];
+    return {
+      id: newPartId(),
+      name: this.uniquePartName("New part", taken),
+      effect: effect?.key ?? "white",
+      params: { ...effect?.defaults },
+    };
+  }
+
+  // ---- editor drafts (sessionStorage, keyed by scene; editor/working-copy.ts keeps
+  // the draft's base next to it)
+
+  draft<T = Draft>(key: string): T | undefined {
     try {
-      const raw = storage()?.getItem(`${DRAFT_PREFIX}${sceneId}`);
+      const raw = storage()?.getItem(`${DRAFT_PREFIX}${key}`);
       return raw ? (JSON.parse(raw) as T) : undefined;
     } catch {
       return undefined;
     }
   }
 
-  setDraft(sceneId: string, scene: object | undefined): void {
-    const key = `${DRAFT_PREFIX}${sceneId}`;
+  setDraft(key: string, value: object | undefined): void {
+    const item = `${DRAFT_PREFIX}${key}`;
     try {
-      if (scene) storage()?.setItem(key, JSON.stringify(scene));
-      else storage()?.removeItem(key);
+      if (value) storage()?.setItem(item, JSON.stringify(value));
+      else storage()?.removeItem(item);
     } catch {
       // Storage full or blocked: the draft lives only in the editor.
     }
-  }
-
-  /**
-   * What the editor opens at /scene/<sceneId>: the draft, else the stored scene (a
-   * preset id opens its edit), else a new edit of the preset for every room, seeded
-   * from the preset. Undefined for unknown ids.
-   */
-  editableScene(sceneId: string): StoredScene | undefined {
-    const draft = this.draft(sceneId);
-    const override = this._scenes.get(sceneId)?.override;
-    // The preset was edited elsewhere since: the draft becomes that edit.
-    if (draft?.preset && override) return { ...draft, id: override };
-    if (draft) return draft;
-    const scene = this.resolveScene(sceneId);
-    if (!scene) return undefined;
-    if (!scene.builtin) return toStored(scene);
-    return { ...toStored(scene), id: newSceneId(), preset: scene.id };
-  }
-
-  /** A new user scene, set up in the target when given (layer 1: its rooms). */
-  newScene(targetId?: string): StoredScene {
-    return {
-      id: newSceneId(),
-      name: this.uniqueName("New scene"),
-      icon: null,
-      preset: null,
-      layers: [this._blankLayer(targetId)],
-      others: "off",
-      brightness: 100,
-      transition: null,
-    };
-  }
-
-  /** A name no scene has: a scene can later be set up in any room. */
-  uniqueName(base: string): string {
-    const taken = new Set(this.config.scenes.map((s) => s.name.toLowerCase()));
-    let name = base;
-    for (let n = 2; taken.has(name.toLowerCase()); n++) name = `${base} ${n}`;
-    return name;
-  }
-
-  private _blankLayer(targetId?: string): Layer {
-    const effect = this._effects.get("white") ?? this.config.effects[0];
-    const target = targetId ? this._targets.get(targetId) : undefined;
-    return {
-      lights: target ? wholeTarget(target, (id) => this._targets.get(id)?.lights) : [],
-      effect: effect?.key ?? "white",
-      params: { ...effect?.defaults },
-    };
   }
 
   // ---- config writes (each refreshes the store)
@@ -381,13 +372,34 @@ export class MlStore {
     return result;
   }
 
-  saveScene(scene: StoredScene): Promise<SceneInfo> {
-    return this._write(() => api.saveScene(this._hass, scene));
+  saveLibrary(library: api.Library): Promise<api.SavedLibrary> {
+    return this._write(() => api.saveLibrary(this._hass, library));
   }
 
-  /** Deleting the edit of a preset resets it in every room. */
+  /** One whole-room scene per part, in one write, named after the parts. */
+  addScenes(targetId: string, partIds: readonly string[]): Promise<api.SavedLibrary> {
+    return this._write((latest) => {
+      const names: string[] = [];
+      const scenes = partIds.map((partId) => {
+        const { scene } = latest.newScene(targetId, partId);
+        scene.name = latest.uniqueSceneName(targetId, latest.part(partId)?.name ?? partId, names);
+        names.push(scene.name);
+        return { target: targetId as TargetId, scene };
+      });
+      return api.saveLibrary(this._hass, { scenes });
+    });
+  }
+
   async deleteScene(sceneId: string): Promise<void> {
     await this._write(() => api.deleteScene(this._hass, sceneId));
+  }
+
+  async deletePart(partId: string): Promise<void> {
+    await this._write(() => api.deletePart(this._hass, partId));
+  }
+
+  orderScenes(targetId: string, sceneIds: string[]): Promise<TargetInfo> {
+    return this._write(() => api.orderScenes(this._hass, targetId as TargetId, sceneIds));
   }
 
   saveZone(zone: Zone): Promise<Zone> {
@@ -421,40 +433,14 @@ export class MlStore {
     return this.saveSettings({ transition: seconds });
   }
 
-  /** Several targets' menus in one write (null: the default menu), built from the latest snapshot. */
-  saveMenus(menus: (latest: MlStore) => Record<string, string[] | null>): Promise<TargetInfo[]> {
-    return this._write((latest) => api.saveMenus(this._hass, menus(latest) as Record<TargetId, string[] | null>));
-  }
-
-  setMenu(targetId: string, ids: string[] | null): Promise<TargetInfo[]> {
-    return this.saveMenus(() => ({ [targetId]: ids }));
-  }
-
-  /** Shows (appends) or hides a scene in the menus of the targets. */
-  setInMenus(sceneId: string, targetIds: readonly string[], shown: boolean): Promise<TargetInfo[]> {
-    return this.saveMenus((latest) =>
-      Object.fromEntries(targetIds.map((id) => [id, withScene(latest._menu(id), sceneId, shown)])),
-    );
-  }
-
-  private _target(id: string): TargetInfo {
-    const target = this._targets.get(id);
-    if (!target) throw new Error(`Unknown target ${id}`);
-    return target;
-  }
-
-  private _menu(id: string): string[] {
-    return menuIds(this._target(id));
-  }
-
   // ---- runtime (no config change)
 
   preview(request: PreviewRequest): Promise<PreviewFrame[]> {
     return api.fetchPreview(this._hass, request);
   }
 
-  async tryScene(targetId: string, scene: StoredScene, adjust?: Adjust): Promise<void> {
-    await api.tryScene(this._hass, targetId as TargetId, scene, adjust);
+  async tryScene(targetId: string, draft: Draft): Promise<void> {
+    await api.tryScene(this._hass, targetId as TargetId, draft.scene, draft.parts);
   }
 
   async stopTry(targetId: string): Promise<void> {
@@ -475,11 +461,10 @@ export class MlStore {
     return entityId;
   }
 
-  /** Activates a scene by menu id; the active one is applied again with its adjustments. */
+  /** Activates one of the target's scenes; the active one is applied again with its adjustments. */
   async activate(targetId: string, sceneId: string): Promise<void> {
     const attrs = this.status(this._hass, targetId)?.attrs;
-    const scene = this.resolveScene(sceneId);
-    const options = activationOptions(attrs, sceneId, scene);
+    const options = activationOptions(attrs, sceneId, this.running(targetId, sceneId));
     await api.activateScene(this._hass, this._select(targetId), sceneId, options);
   }
 

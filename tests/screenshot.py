@@ -64,13 +64,12 @@ VIEWS = [
             ]},
             {"type": "grid", "cards": [
                 {"type": "heading", "heading": "Downstairs"},
-                {"type": CARD, "entity": "select.downstairs_scene",
-                 "scenes": ["tokyo", "savanna_sunset", "relax", "blue_lagoon", "cozy_candle", "nightlight"]},
+                {"type": CARD, "entity": "select.downstairs_scene"},
                 {"type": CARD, "entity": "select.kitchen_scene", "show_scenes": False},
             ]},
             {"type": "grid", "cards": [
                 {"type": "heading", "heading": "Elsewhere"},
-                {"type": CARD, "entity": "select.bedroom_scene", "scenes": ["relax", "dimmed", "nightlight", "adaptive"],
+                {"type": CARD, "entity": "select.bedroom_scene", "scenes": ["Relax", "Gedimmt", "Nachtlicht", "Hell"],
                  "columns": 4},
                 {"type": CARD, "entity": "select.office_scene", "show_scenes": False},
             ]},
@@ -108,7 +107,11 @@ class Browser:
                 f"--window-size={self.width},{self.height}",
                 "about:blank",
             ],
-            env={**os.environ, "FONTCONFIG_FILE": str(fonts)},
+            # The dev shell's library path can carry libraries built for another glibc.
+            env={
+                **{k: v for k, v in os.environ.items() if k != "LD_LIBRARY_PATH"},
+                "FONTCONFIG_FILE": str(fonts),
+            },
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
         )

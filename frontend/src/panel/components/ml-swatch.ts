@@ -7,7 +7,7 @@ import { styleMap } from "lit/directives/style-map.js";
 import { hexAlpha, luminance } from "../../shared/color";
 import { defineElement } from "../../shared/util";
 
-export type SwatchSize = 32 | 48 | 56;
+export type SwatchSize = 24 | 32 | 48 | 56;
 
 /** The orb's fill: one colour lit from the top left, or the colours around it. */
 export const orbBackground = (swatches: readonly string[]): string => {
@@ -50,6 +50,9 @@ class MlSwatch extends LitElement {
       width: var(--ml-swatch-size, 48px);
       height: var(--ml-swatch-size, 48px);
       --mdc-icon-size: calc(var(--ml-swatch-size, 48px) * 0.46);
+    }
+    :host([size="24"]) {
+      --ml-swatch-size: 24px;
     }
     :host([size="32"]) {
       --ml-swatch-size: 32px;

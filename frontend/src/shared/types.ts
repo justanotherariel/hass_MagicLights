@@ -19,8 +19,7 @@ export interface Zone {
 export interface TargetOptions {
   excluded_lights: string[];
   extra_lights: string[];
-  visible_scenes: string[] | null; // ordered scene ids (preset ids for presets); null = defaults
-  default_scene: string | null; // null = inherit settings.default_scene; "none" = no default
+  default_scene: string | null; // one of the target's scenes; null = inherit settings.default_scene; "none" = no default
   reclaim_on_turn_on: boolean;
   detect_changes: boolean;
 }
@@ -28,20 +27,31 @@ export interface TargetOptions {
 /** `"all"` or entity ids / `"room:<area_id>"` entries. */
 export type LayerLights = "all" | string[];
 
-export interface Layer {
-  lights: LayerLights;
+/** What a part's lights do. */
+export interface Look {
   effect: string;
   params: Record<string, unknown>;
 }
 
+/** A named look, shared by every scene that uses it. */
+export interface Part extends Look {
+  id: string; // yours "p_" + 8 hex (client generated); a built-in's slug ("relax")
+  name: string; // unique over all parts
+}
+
+/** Which of the target's lights play a part; a later layer wins. */
+export interface PartLayer {
+  lights: LayerLights;
+  part: string;
+}
+
+/** One target's scene. */
 export interface StoredScene {
-  id: string; // user scenes "s_" + 8 hex (client generated); presets fixed slugs
-  name: string;
+  id: string; // "s_" + 8 hex (client generated)
+  name: string; // unique within its target
   icon: string | null;
-  preset: string | null; // set: the edit of this preset, for every room and zone
-  layers: Layer[];
+  layers: PartLayer[];
   others: "off" | "keep";
-  brightness: number; // 1..100
   transition: number | null; // s; null = settings.transition
 }
 
@@ -90,21 +100,31 @@ export interface TargetInfo {
   rooms: string[];
   lights: string[];
   options: TargetOptions;
-  scenes: string[]; // visible ids, ordered (preset ids for presets)
-  hidden: string[];
-  swatches: Record<string, string[]>; // by menu id: colours of the layers that reach this target
+  scenes: string[]; // its scene ids in menu order
   select_entity_id: string;
 }
 
-export type SceneCategory = "white" | "color" | "dynamic" | "adaptive" | "custom";
+export type PartCategory = "white" | "color" | "dynamic" | "adaptive";
 
-export interface SceneInfo extends StoredScene {
+export interface PartInfo extends Part {
+  icon: string | null; // built-ins only
+  category: PartCategory | null; // built-ins only
   builtin: boolean;
-  category: SceneCategory;
+  edited: boolean;
+  /** A built-in's own look, before any edit. */
+  original: Look | null;
   swatches: string[];
   dynamic: boolean;
-  override: string | null; // presets: the stored id of their edit
-  fits: TargetId[]; // targets that run this scene and where it has lights
+  used_by: string[]; // scene ids of existing targets
+  dormant: string[]; // scene ids of targets that are gone
+}
+
+export interface SceneInfo extends StoredScene {
+  target: TargetId;
+  swatches: string[]; // of the layers that reach its target
+  dynamic: boolean;
+  fits: boolean; // it has lights in its target
+  dormant: boolean; // its target is gone
 }
 
 export type EffectCategory = "white" | "color" | "dynamic" | "adaptive" | "other";
@@ -139,6 +159,7 @@ export interface PaletteInfo {
 export interface ConfigDto {
   zones: Record<string, Zone>;
   targets: TargetInfo[];
+  parts: PartInfo[]; // built-ins in catalogue order, then yours
   scenes: SceneInfo[];
   lights: LightInfo[];
   effects: EffectInfo[];
@@ -169,6 +190,8 @@ export interface PreviewFrame {
 export interface PreviewRequest {
   target_id: TargetId;
   scene: StoredScene;
+  /** Unsaved parts the scene uses, over the saved ones. */
+  parts?: Part[];
   duration?: number;
   samples?: number;
   start?: string; // ISO
@@ -224,8 +247,7 @@ export interface StatusDto {
   errors: string[];
   target_id: TargetId;
   kind: TargetKind;
-  scenes: StatusScene[]; // the visible list
-  hidden_scenes: StatusScene[]; // the target's other scenes
+  scenes: StatusScene[]; // the menu: its scenes that have lights here
 }
 
 export interface SelectAttributes extends StatusDto {

@@ -131,13 +131,17 @@ def part_info(
         for scene in scenes:
             if any(layer.part == part.id for layer in scene.layers):
                 (used_by if live else dormant).append(scene.id)
-    builtin = part.id in coordinator.builtins
+    original = coordinator.builtins.get(part.id)
     return {
         **part.to_dict(),
         "icon": part.icon,
         "category": part.category,
-        "builtin": builtin,
-        "edited": builtin and part.id in coordinator.config.parts,
+        "builtin": original is not None,
+        "edited": original is not None and part.id in coordinator.config.parts,
+        # A built-in's own look, so the editor can mark and reset what an edit changed.
+        "original": None
+        if original is None
+        else {"effect": original.effect, "params": dict(original.params)},
         "swatches": swatches([part], effects),
         "dynamic": playable([part], effects),
         "used_by": used_by,

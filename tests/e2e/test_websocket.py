@@ -116,7 +116,8 @@ class LibraryTest(HarnessCase):
         self.assertEqual(len(info["swatches"]), 1)
         (part_info,) = saved["parts"]
         self.assertEqual(
-            (part_info["used_by"], part_info["builtin"]), (["s_0000e001"], False)
+            {k: part_info[k] for k in ("used_by", "builtin", "original")},
+            {"used_by": ["s_0000e001"], "builtin": False, "original": None},
         )
         self.assertIn("Evening", self.status(LIVING)["options"])
         self.assertNotIn("Evening", self.status(BEDROOM)["options"])
@@ -215,10 +216,16 @@ class LibraryTest(HarnessCase):
         config = await h.ws({"type": "magic_lights/config"})
         relax = next(p for p in config["parts"] if p["id"] == "relax")
         same = {k: relax[k] for k in ("id", "name", "effect", "params")}
+        look = {"effect": relax["effect"], "params": relax["params"]}
+        self.assertEqual(relax["original"], look)
         reply = await save(h, parts=(same,))
         self.assertFalse(reply["parts"][0]["edited"])
         dimmer = same | {"params": same["params"] | {"brightness": 50}}
-        self.assertTrue((await save(h, parts=(dimmer,)))["parts"][0]["edited"])
+        edited = (await save(h, parts=(dimmer,)))["parts"][0]
+        self.assertTrue(edited["edited"])
+        # The edit plays; the built-in's own look stays known, for Reset.
+        self.assertEqual(edited["params"]["brightness"], 50)
+        self.assertEqual(edited["original"], look)
         # Setting it back removes the edit.
         self.assertFalse((await save(h, parts=(same,)))["parts"][0]["edited"])
         stored = h.data().coordinator.config

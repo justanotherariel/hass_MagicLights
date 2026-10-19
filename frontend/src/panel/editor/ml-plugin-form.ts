@@ -3,7 +3,7 @@
 // them or words at their ends, segmented choices, a kelvin gradient, one range for a
 // min/max pair, our own colour fields, else HA's ha-selector; "advanced" fields fold into
 // one panel. ha-form visibility conditions apply, and a YAML object editor stands in when
-// the schema could not be serialised. Fields in `changed` carry a dot (an edited preset's
+// the schema could not be serialised. Fields in `changed` carry a dot (an edited built-in's
 // changes); a "preview" slot sits between the fields and the advanced part. Fires
 // value-changed with the whole params object, prefilled; hidden fields keep their values.
 
