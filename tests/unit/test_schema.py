@@ -1,4 +1,4 @@
-"""Param selectors, ha-form serialisation, the effect base and the preset catalogue."""
+"""Param selectors, ha-form serialisation, the effect base and the part catalogue."""
 
 from __future__ import annotations
 
@@ -19,10 +19,8 @@ from custom_components.magic_lights.effects.schema import (
 from custom_components.magic_lights.models import Frame, LightState
 from custom_components.magic_lights.presets import (
     PARTS_FILE,
-    SCENES_FILE,
     load_parts,
-    load_presets,
-    palettes_from_presets,
+    palettes_from_parts,
 )
 from custom_components.magic_lights.validation import RESERVED_NAMES
 from homeassistant.helpers import selector
@@ -236,80 +234,76 @@ class EffectBaseTest(unittest.TestCase):
             Broken()
 
 
-class PresetCatalogueTest(unittest.TestCase):
-    """scenes.json and parts.json against the parameter table (fakes.PARAM_TABLE)."""
+class PartCatalogueTest(unittest.TestCase):
+    """parts.json against the parameter table (fakes.PARAM_TABLE)."""
 
     @classmethod
     def setUpClass(cls) -> None:
-        cls.raw = json.loads(SCENES_FILE.read_text(encoding="utf-8"))
-        cls.presets = load_presets(FakeRegistry())
+        cls.raw = json.loads(PARTS_FILE.read_text(encoding="utf-8"))
+        cls.parts = load_parts(FakeRegistry())
 
     def test_all_load(self) -> None:
         self.assertEqual(len(self.raw), 48)
-        self.assertEqual(list(self.presets), [s["id"] for s in self.raw])
-        self.assertTrue(
-            all(s.builtin and s.preset is None for s in self.presets.values())
-        )
+        self.assertEqual(list(self.parts), [p["id"] for p in self.raw])
+        for item in self.raw:
+            with self.subTest(item["id"]):
+                self.assertEqual(
+                    set(item), {"id", "name", "icon", "category", "effect", "params"}
+                )
 
     def test_categories(self) -> None:
         by_category: dict[str, list[str]] = {}
-        for scene in self.presets.values():
-            by_category.setdefault(scene.category, []).append(scene.id)
+        for part in self.parts.values():
+            by_category.setdefault(part.category, []).append(part.id)
         self.assertEqual(
             {k: len(v) for k, v in by_category.items()},
             {"white": 8, "adaptive": 3, "color": 35, "dynamic": 2},
         )
 
     def test_names_and_icons(self) -> None:
-        names = [s.name.casefold() for s in self.presets.values()]
+        names = [p.name.casefold() for p in self.parts.values()]
         self.assertEqual(len(set(names)), 48)
         self.assertFalse(set(names) & RESERVED_NAMES)
         self.assertTrue(
-            all(s.icon and s.icon.startswith("mdi:") for s in self.presets.values())
+            all(p.icon and p.icon.startswith("mdi:") for p in self.parts.values())
         )
 
     def test_exact_param_keys(self) -> None:
         for item in self.raw:
-            for layer in item["layers"]:
-                with self.subTest(item["id"]):
-                    keys = {m.schema for m in PARAM_TABLE[layer["effect"]].schema}
-                    self.assertLessEqual(set(layer["params"]), keys)
-            self.assertEqual(
-                (item["others"], item["brightness"], item["transition"]),
-                ("off", 100, None),
-            )
-            self.assertNotIn("scope", item)
+            with self.subTest(item["id"]):
+                keys = {m.schema for m in PARAM_TABLE[item["effect"]].schema}
+                self.assertLessEqual(set(item["params"]), keys)
 
     def test_values(self) -> None:
-        relax = self.presets["relax"].layers[0]
+        relax = self.parts["relax"]
         self.assertEqual(
             (relax.effect, relax.params["kelvin"], relax.params["brightness"]),
             ("white", 2237, 56),
         )
-        night = self.presets["nightlight"].layers[0].params
+        night = self.parts["nightlight"].params
         self.assertEqual(
             (night["palette"], night["white"], night["brightness"]),
             ([{"xy": [0.561, 0.4042]}], {"kelvin": 2000}, 1),
         )
-        savanna = self.presets["savanna_sunset"].layers[0].params
+        savanna = self.parts["savanna_sunset"].params
         self.assertEqual(len(savanna["palette"]), 5)
         self.assertEqual(
             (savanna["motion"], savanna["gradients"], savanna["brightness"]),
             ("static", True, 58),
         )
-        candle = self.presets["cozy_candle"].layers[0]
+        candle = self.parts["cozy_candle"]
         self.assertEqual(
             (candle.effect, candle.params["effect"], candle.params["brightness"]),
             ("light_effect", "candle", 35),
         )
-        adaptive = self.presets["adaptive"].layers[0].params
+        adaptive = self.parts["adaptive"].params
         self.assertEqual(
             (adaptive["min_sunset"], adaptive["max_sunset"], adaptive["interval"]),
             ("18:30:00", "21:00:00", 90),
         )
 
     def test_palettes(self) -> None:
-        palettes = palettes_from_presets(self.presets)
+        palettes = palettes_from_parts(self.parts)
         self.assertEqual(len(palettes), 35)
         self.assertEqual(set(palettes[0]), {"id", "name", "colors"})
         json.dumps(palettes)
@@ -318,24 +312,9 @@ class PresetCatalogueTest(unittest.TestCase):
         registry = FakeRegistry()
         del registry.effects["adaptive"]
         with self.assertLogs("custom_components.magic_lights.presets", "ERROR"):
-            presets = load_presets(registry)
-        self.assertEqual(len(presets), 45)
-        with self.assertLogs("custom_components.magic_lights.presets", "ERROR"):
             parts = load_parts(registry)
         self.assertEqual(len(parts), 45)
         self.assertNotIn("adaptive", parts)
-
-    def test_parts_file(self) -> None:
-        raw = json.loads(PARTS_FILE.read_text(encoding="utf-8"))
-        self.assertEqual([p["id"] for p in raw], [s["id"] for s in self.raw])
-        for item in raw:
-            with self.subTest(item["id"]):
-                self.assertEqual(
-                    set(item), {"id", "name", "icon", "category", "effect", "params"}
-                )
-        parts = load_parts(FakeRegistry())
-        self.assertEqual(list(parts), [p["id"] for p in raw])
-        self.assertEqual(parts["relax"].params, self.presets["relax"].layers[0].params)
 
 
 if __name__ == "__main__":

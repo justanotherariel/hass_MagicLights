@@ -11,6 +11,7 @@ from unittest import IsolatedAsyncioTestCase
 from homeassistant.components.frontend import async_panel_exists
 from homeassistant.const import STATE_ON
 
+from custom_components.magic_lights.migrate_v4 import scene_id
 from tests.harness import DOMAIN, Harness
 from tests.scenario import DEMO_AREAS, DEMO_LIGHTS
 
@@ -97,11 +98,48 @@ def hell(scene_id: str, area_id: str) -> dict[str, Any]:
     }
 
 
-class UpgradeTest(IsolatedAsyncioTestCase):
-    async def test_v2_scenes_merge_and_keep_running(self) -> None:
-        def stored(key: str, version: int, data: dict[str, Any]) -> dict[str, Any]:
-            return {"version": version, "minor_version": 1, "key": key, "data": data}
+def stored(key: str, version: int, data: dict[str, Any]) -> dict[str, Any]:
+    return {"version": version, "minor_version": 1, "key": key, "data": data}
 
+
+def running_in(target_id: str, scene_id_: str) -> dict[str, Any]:
+    return {
+        "id": "01JA0000000000000000000000",
+        "target": target_id,
+        "scene_id": scene_id_,
+        "started": "2026-10-17T08:00:00+00:00",
+        "lights": LIVING_LIGHTS,
+        "manual": [],
+        "adjust": {},
+        "only_on": False,
+    }
+
+
+class UpgradeTest(IsolatedAsyncioTestCase):
+    async def boot(
+        self, version: int, data: dict[str, Any], runtime: dict[str, Any]
+    ) -> Harness:
+        h = Harness(
+            lights=[
+                dict(conf, on=conf["name"].startswith("Living")) for conf in DEMO_LIGHTS
+            ],
+            areas=DEMO_AREAS,
+            storage=stored(DOMAIN, version, data),
+            extra_storage={
+                f"{DOMAIN}.runtime": stored(f"{DOMAIN}.runtime", 1, runtime)
+            },
+        )
+        self.addAsyncCleanup(h.stop)
+        await h.start()
+        await h.setup_integration()
+        await h.idle()
+        return h
+
+    async def read(self, h: Harness, key: str) -> dict[str, Any]:
+        path = h.config_dir / ".storage" / key
+        return json.loads(await asyncio.to_thread(path.read_text))
+
+    async def test_v2_scenes_merge_and_keep_running(self) -> None:
         # The living room light did nothing under the kitchen's scope.
         film = hell("s_00000003", "kitchen") | {"name": "Film"}
         film["layers"] = [
@@ -118,69 +156,101 @@ class UpgradeTest(IsolatedAsyncioTestCase):
             },
             "targets": {"room:kitchen": {"visible_scenes": ["s_00000002"]}},
         }
-        running = {
-            "id": "01JA0000000000000000000000",
-            "target": "room:living_room",
-            "scene_id": "s_00000002",
-            "started": "2026-10-17T08:00:00+00:00",
-            "lights": LIVING_LIGHTS,
-            "manual": [],
-            "adjust": {},
-            "only_on": False,
-        }
         runtime = {
-            "activations": [running],
+            "activations": [running_in("room:living_room", "s_00000002")],
             "salts": {"s_00000002|room:living_room": 2},
         }
-        h = Harness(
-            lights=[
-                dict(conf, on=conf["name"].startswith("Living")) for conf in DEMO_LIGHTS
-            ],
-            areas=DEMO_AREAS,
-            storage=stored(DOMAIN, 2, v2),
-            extra_storage={
-                f"{DOMAIN}.runtime": stored(f"{DOMAIN}.runtime", 1, runtime)
-            },
-        )
-        self.addAsyncCleanup(h.stop)
-        await h.start()
-        await h.setup_integration()
-        await h.idle()
+        h = await self.boot(2, v2, runtime)
 
+        # v2 merged both Hells into s_00000001; each room has its own now.
+        living = scene_id("s_00000001", "room:living_room")
         self.assertEqual(h.hass.states.get(LIVING).state, "Hell")
-        self.assertEqual(h.attributes(LIVING)["scene_id"], "s_00000001")
+        self.assertEqual(h.attributes(LIVING)["scene_id"], living)
+        # The kitchen's menu showed Hell; Film, callable there, joins it.
         self.assertEqual(
-            h.hass.states.get(KITCHEN).attributes["options"], ["Off", "Hell", "Manual"]
+            h.hass.states.get(KITCHEN).attributes["options"],
+            ["Off", "Hell", "Film", "Manual"],
         )
         self.assertEqual(
             h.hass.states.get(LIVING).attributes["options"], ["Off", "Hell", "Manual"]
         )
         config = await h.ws({"type": "magic_lights/config"})
-        scenes = {s["id"]: s for s in config["scenes"] if not s["builtin"]}
-        self.assertEqual(list(scenes), ["s_00000001", "s_00000003"])
+        scenes = {(s["target"], s["name"]): s for s in config["scenes"]}
         self.assertEqual(
-            scenes["s_00000001"]["layers"][0]["lights"],
-            ["room:living_room", "room:kitchen"],
+            list(scenes),
+            [
+                ("room:kitchen", "Hell"),
+                ("room:kitchen", "Film"),
+                ("room:living_room", "Hell"),
+            ],
         )
         self.assertEqual(
-            scenes["s_00000003"]["layers"][0]["lights"], ["light.kitchen_island"]
+            [lay["lights"] for lay in scenes["room:living_room", "Hell"]["layers"]],
+            ["all"],
+        )
+        self.assertEqual(
+            scenes["room:kitchen", "Film"]["layers"][0]["lights"],
+            ["light.kitchen_island"],
+        )
+        self.assertEqual(
+            [p["name"] for p in config["parts"] if not p["builtin"]], ["Hell", "Film"]
         )
 
-        storage = h.config_dir / ".storage"
-
-        def read(key: str) -> dict[str, Any]:
-            return json.loads((storage / key).read_text())
-
-        saved = await asyncio.to_thread(read, f"{DOMAIN}.runtime")
-        self.assertEqual(saved["data"]["activations"][0]["scene_id"], "s_00000001")
-        self.assertIn("s_00000001|room:living_room", saved["data"]["salts"])
-        self.assertEqual((await asyncio.to_thread(read, DOMAIN))["version"], 3)
-        old = await asyncio.to_thread(read, f"{DOMAIN}.v2.bak")
-        self.assertEqual(old["data"], v2)
-        old_runtime = await asyncio.to_thread(read, f"{DOMAIN}.runtime.v1.bak")
+        saved = await self.read(h, f"{DOMAIN}.runtime")
+        self.assertEqual(saved["data"]["activations"][0]["scene_id"], living)
+        self.assertIn(f"{living}|room:living_room", saved["data"]["salts"])
+        self.assertEqual((await self.read(h, DOMAIN))["version"], 4)
+        self.assertEqual((await self.read(h, f"{DOMAIN}.v2.bak"))["data"], v2)
+        old_runtime = await self.read(h, f"{DOMAIN}.runtime.v2.bak")
         self.assertEqual(
             old_runtime["data"]["activations"][0]["scene_id"], "s_00000002"
         )
+
+    async def test_v3_scenes_become_each_rooms_own_and_keep_running(self) -> None:
+        shared = hell("s_00000001", "kitchen")
+        del shared["scope"]
+        shared["layers"][0]["lights"] = ["room:living_room", "room:kitchen"]
+        v3 = {
+            "scenes": {"s_00000001": shared},
+            "targets": {
+                "room:kitchen": {
+                    "visible_scenes": ["s_00000001", "relax"],
+                    "default_scene": "s_00000001",
+                }
+            },
+            "settings": {"default_scene": "adaptive"},
+        }
+        runtime = {
+            "activations": [running_in("room:living_room", "s_00000001")],
+            "salts": {},
+        }
+        h = await self.boot(3, v3, runtime)
+
+        living = scene_id("s_00000001", "room:living_room")
+        kitchen = scene_id("s_00000001", "room:kitchen")
+        self.assertEqual(h.hass.states.get(LIVING).state, "Hell")
+        self.assertEqual(h.attributes(LIVING)["scene_id"], living)
+        self.assertEqual(
+            h.hass.states.get(KITCHEN).attributes["options"],
+            ["Off", "Hell", "Relax", "Manual"],
+        )
+        config = await h.ws({"type": "magic_lights/config"})
+        targets = {t["id"]: t for t in config["targets"]}
+        self.assertEqual(targets["room:kitchen"]["scenes"][0], kitchen)
+        self.assertEqual(targets["room:kitchen"]["options"]["default_scene"], kitchen)
+        self.assertEqual(config["settings"]["default_scene"], "adaptive")
+        # Called by name, as automations do, it runs in each room.
+        await h.call("toggle_scene", KITCHEN, scene="Hell")
+        self.assertEqual(h.attributes(KITCHEN)["scene_id"], kitchen)
+
+        self.assertEqual((await self.read(h, DOMAIN))["version"], 4)
+        self.assertEqual((await self.read(h, f"{DOMAIN}.v3.bak"))["data"], v3)
+        old_runtime = await self.read(h, f"{DOMAIN}.runtime.v3.bak")
+        self.assertEqual(
+            old_runtime["data"]["activations"][0]["scene_id"], "s_00000001"
+        )
+        saved = await self.read(h, f"{DOMAIN}.runtime")
+        self.assertEqual(saved["data"]["activations"][0]["scene_id"], living)
 
 
 class ReloadTest(HarnessCase):

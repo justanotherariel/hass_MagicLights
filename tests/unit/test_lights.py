@@ -6,7 +6,7 @@ import unittest
 
 from custom_components.magic_lights.buses import BUS_DEFAULTS, BusKind
 from custom_components.magic_lights.const import DOMAIN
-from custom_components.magic_lights.lights import LightIndexImpl
+from custom_components.magic_lights.lights import LightIndexImpl, areas
 from custom_components.magic_lights.models import (
     BusLimits,
     Caps,
@@ -131,6 +131,16 @@ class LightIndexTest(unittest.TestCase):
                 "light.kitchen",
                 "light.yaml",
             ],
+        )
+
+    def test_areas_hold_the_lights_the_index_places(self) -> None:
+        self.assertEqual(
+            areas(self.hass),
+            {
+                "living": ("Living room", {"light.ceiling", "light.floor"}),
+                "kitchen": ("Kitchen", {"light.hidden", "light.kitchen"}),
+                "empty": ("Empty", set()),
+            },
         )
 
     def test_light_fields(self) -> None:

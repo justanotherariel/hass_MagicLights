@@ -17,7 +17,17 @@ from homeassistant.util import slugify
 from .buses import BUS_DEFAULTS, BusKind
 from .const import DOMAIN, MOTION_PARAM
 from .engine import Coordinator
-from .models import EffectLookup, Layer, Light, Scene, Target
+from .models import (
+    EffectLookup,
+    Layer,
+    Light,
+    Part,
+    Scene,
+    StoredScene,
+    Target,
+    TargetId,
+    resolve,
+)
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -36,20 +46,20 @@ def select_entity_id(hass: HomeAssistant, target: Target) -> str:
     ) or suggested_entity_id(target)
 
 
-def swatches(layers: Iterable[Layer], effects: EffectLookup) -> list[str]:
-    """Return up to five #rrggbb colours over the layers."""
+def swatches(looks: Iterable[Layer | Part], effects: EffectLookup) -> list[str]:
+    """Return up to five #rrggbb colours over the looks (layers or parts)."""
     out: list[str] = []
-    for layer in layers:
-        if (effect := effects.get(layer.effect)) is None:
+    for look in looks:
+        if (effect := effects.get(look.effect)) is None:
             continue
         try:
-            colors = effect.swatches(effect.validate(layer.params))
+            colors = effect.swatches(effect.validate(look.params))
         except vol.Invalid:
             # Stored params can predate the effect's schema; rendering reports it.
             continue
         except Exception:
             # A third-party effect must not break status or config replies.
-            _LOGGER.exception("Swatches of effect %s failed", layer.effect)
+            _LOGGER.exception("Swatches of effect %s failed", look.effect)
             continue
         out.extend(c for c in colors if c not in out)
     return out[:MAX_SWATCHES]
@@ -58,16 +68,16 @@ def swatches(layers: Iterable[Layer], effects: EffectLookup) -> list[str]:
 def target_swatches(
     coordinator: Coordinator, effects: EffectLookup, scene: Scene, target: Target
 ) -> list[str]:
-    """Swatches of the layers that reach the target: a room-only layer stays there."""
+    """Swatches of the layers that reach the target."""
     return swatches(
         [scene.layers[i] for i in coordinator.layers_in(scene, target)], effects
     )
 
 
-def playable(scene: Scene, effects: EffectLookup) -> bool:
-    """Whether activation can switch the scene's motion (adjust.dynamic)."""
-    for layer in scene.layers:
-        if (effect := effects.get(layer.effect)) is not None and any(
+def playable(looks: Iterable[Layer | Part], effects: EffectLookup) -> bool:
+    """Whether activation can switch the looks' motion (adjust.dynamic)."""
+    for look in looks:
+        if (effect := effects.get(look.effect)) is not None and any(
             getattr(key, "schema", None) == MOTION_PARAM for key in effect.schema.schema
         ):
             return True
@@ -79,50 +89,66 @@ def scene_summary(
 ) -> dict[str, Any]:
     """Describe a scene for a target's select `scenes` attribute."""
     return {
-        "id": scene.public_id,
+        "id": scene.id,
         "name": scene.name,
         "swatches": target_swatches(coordinator, effects, scene, target),
-        "dynamic": playable(scene, effects),
+        "dynamic": playable(scene.layers, effects),
     }
 
 
 def scene_info(
-    coordinator: Coordinator, effects: EffectLookup, scene: Scene
+    coordinator: Coordinator,
+    effects: EffectLookup,
+    target_id: TargetId,
+    stored: StoredScene,
 ) -> dict[str, Any]:
-    """SceneInfo: the stored form plus catalogue fields."""
-    origin = coordinator.presets.get(scene.public_id, scene)
-    override = None
-    if scene.builtin:
-        override = next(
-            (s.id for s in coordinator.config.scenes.values() if s.preset == scene.id),
-            None,
-        )
-    runs = coordinator.resolve_scene(scene.public_id) is scene
+    """SceneInfo: a target's stored scene, and how it plays there."""
+    scene = resolve(stored, coordinator.parts)
+    target = coordinator.targets.get(target_id)
+    layers = (
+        scene.layers
+        if target is None
+        else [scene.layers[i] for i in coordinator.layers_in(scene, target)]
+    )
     return {
-        **scene.to_dict(),
-        "builtin": scene.builtin,
-        # An edited preset is filed and shown where its preset is.
-        "category": origin.category,
-        "swatches": swatches(scene.layers, effects),
-        "dynamic": playable(scene, effects),
-        "override": override,
-        "fits": sorted(
-            target.id
-            for target in coordinator.targets.values()
-            if runs and coordinator.fits(scene, target)
-        ),
+        **stored.to_dict(),
+        "target": target_id,
+        "swatches": swatches(layers, effects),
+        "dynamic": playable(scene.layers, effects),
+        "fits": target is not None and bool(layers),
+        "dormant": target is None,
+    }
+
+
+def part_info(
+    coordinator: Coordinator, effects: EffectLookup, part: Part
+) -> dict[str, Any]:
+    """PartInfo: a part, whether it is built in or edited, and its scenes."""
+    used_by: list[str] = []
+    dormant: list[str] = []
+    for target_id, scenes in coordinator.config.scenes.items():
+        live = target_id in coordinator.targets
+        for scene in scenes:
+            if any(layer.part == part.id for layer in scene.layers):
+                (used_by if live else dormant).append(scene.id)
+    builtin = part.id in coordinator.builtins
+    return {
+        **part.to_dict(),
+        "icon": part.icon,
+        "category": part.category,
+        "builtin": builtin,
+        "edited": builtin and part.id in coordinator.config.parts,
+        "swatches": swatches([part], effects),
+        "dynamic": playable([part], effects),
+        "used_by": used_by,
+        "dormant": dormant,
     }
 
 
 def target_info(
-    hass: HomeAssistant,
-    coordinator: Coordinator,
-    effects: EffectLookup,
-    target: Target,
+    hass: HomeAssistant, coordinator: Coordinator, target: Target
 ) -> dict[str, Any]:
-    """TargetInfo: the target with its menu, its select and its scenes' swatches."""
-    visible = [s.public_id for s in coordinator.scenes_for(target.id)]
-    every = coordinator.scenes_for(target.id, include_hidden=True)
+    """TargetInfo: the target with its scenes in menu order and its select."""
     return {
         "id": target.id,
         "kind": target.kind,
@@ -132,11 +158,7 @@ def target_info(
         "rooms": list(target.rooms),
         "lights": list(target.lights),
         "options": target.options.to_dict(),
-        "scenes": visible,
-        "hidden": [s.public_id for s in every if s.public_id not in visible],
-        "swatches": {
-            s.public_id: target_swatches(coordinator, effects, s, target) for s in every
-        },
+        "scenes": [s.id for s in coordinator.config.scenes.get(target.id, ())],
         "select_entity_id": select_entity_id(hass, target),
     }
 

@@ -16,6 +16,7 @@ from homeassistant.util.ulid import ulid_now
 
 from ..color import diverges
 from ..const import DOMAIN, Priority
+from ..migrate_v4 import scene_id as migrated_scene_id
 from ..models import (
     ActivationSnapshot,
     Command,
@@ -26,16 +27,21 @@ from ..models import (
     LightIndex,
     LightsChange,
     LightState,
+    Part,
     RuntimeStore,
     RuntimeV1,
     Scene,
+    StoredScene,
     Target,
     TargetId,
     TargetOptions,
     TargetStatus,
-    available_scenes,
+    all_parts,
     ha_to_state,
+    is_whole_room,
     normalise,
+    part_scene,
+    resolve,
 )
 from .activation import (
     Activation,
@@ -109,7 +115,7 @@ class Coordinator:
         effects: EffectLookup,
         sender: Sender,
         config: Config,
-        presets: Mapping[str, Scene],
+        builtins: Mapping[str, Part],
         runtime: RuntimeStore,
     ) -> None:
         self._host = host
@@ -118,8 +124,11 @@ class Coordinator:
         self._scheduler = sender.scheduler
         self._sender = sender
         self._runtime = runtime
+        self.builtins = builtins
         self.config = config
-        self.presets = presets
+        self.parts: dict[str, Part] = {}
+        self._scenes: dict[TargetId, tuple[tuple[StoredScene, Scene], ...]] = {}
+        self._resolve_config()
         self.activations: dict[str, Activation] = {}
         self.by_target: dict[TargetId, str] = {}
         self.owner: dict[str, str] = {}
@@ -150,53 +159,49 @@ class Coordinator:
         """Whether the scene has lights in the target; it only runs where it does."""
         return bool(self.layers_in(scene, target))
 
-    def scenes_for(
-        self, target_id: TargetId, *, include_hidden: bool = False
-    ) -> list[Scene]:
-        """Scenes that fit a target, in menu order, edited presets in place."""
+    def scenes_of(self, target_id: TargetId) -> list[Scene]:
+        """Return the target's scenes in menu order, also those without lights there."""
+        return [scene for _, scene in self._scenes.get(target_id, ())]
+
+    def scenes_for(self, target_id: TargetId) -> list[Scene]:
+        """Return the target's scenes that have lights there: its menu."""
         if (target := self.targets.get(target_id)) is None:
             return []
-        available: dict[str, Scene] = {}
-        names: set[str] = set()
-        for public_id, scene in available_scenes(
-            self.config.scenes, self.presets
-        ).items():
-            # Lights moving between rooms can make two same-named scenes fit
-            # one target; the first is the one find_scene runs.
-            if self.fits(scene, target) and scene.name.casefold() not in names:
-                available[public_id] = scene
-                names.add(scene.name.casefold())
-        order = target.options.visible_scenes
-        if order is None:
-            # Presets, edited or not, are picked by hand.
-            ids = [
-                public_id for public_id in available if public_id not in self.presets
-            ]
-        else:
-            ids = [public_id for public_id in order if public_id in available]
-        if include_hidden:
-            ids += [public_id for public_id in available if public_id not in ids]
-        return [available[public_id] for public_id in ids]
+        return [s for s in self.scenes_of(target_id) if self.fits(s, target)]
 
-    def resolve_scene(self, scene_id: str) -> Scene | None:
-        """Return the scene a public id runs (an edited preset replaces it)."""
-        return available_scenes(self.config.scenes, self.presets).get(scene_id)
+    def resolve_scene(self, target_id: TargetId, scene_id: str) -> Scene | None:
+        """Return what an id runs on a target: its scene, else a part's scene.
+
+        A part runs as the target's scene that plays just it on all lights,
+        so the status and the menu show that scene.
+        """
+        own = self._scenes.get(target_id, ())
+        if found := next((s for st, s in own if st.id == scene_id), None):
+            return found
+        if (part := self.parts.get(scene_id)) is None:
+            return None
+        whole = next((s for st, s in own if is_whole_room(st, part.id)), None)
+        return whole or part_scene(part)
+
+    def resolve_draft(self, scene: StoredScene, parts: Mapping[str, Part]) -> Scene:
+        """Resolve an unsaved scene over the parts, `parts` unsaved ones among them."""
+        return resolve(scene, all_parts({**self.config.parts, **parts}, self.builtins))
 
     def find_scene(self, target_id: TargetId, scene: str) -> Scene:
         """Find a scene by id or case-insensitive name; raise ServiceValidationError.
 
-        Of scenes sharing a name, one with lights in the target wins. A scene
-        without any is refused: running it would only switch the target off.
+        The target's own scenes come first, then the built-in parts: a call
+        never reaches another room's scene or a user part. A scene without
+        lights in the target is refused: running it would only switch it off.
         """
         target = self._target(target_id)
-        candidates = list(available_scenes(self.config.scenes, self.presets).values())
-        found = next((c for c in candidates if scene in (c.id, c.preset)), None)
-        if found is None:
-            key = scene.casefold()
-            named = [c for c in candidates if c.name.casefold() == key]
-            found = next(
-                (c for c in named if self.fits(c, target)), named[0] if named else None
-            )
+        own = self.scenes_of(target_id)
+        key = scene.casefold()
+        found = next((s for s in own if s.id == scene), None) or next(
+            (s for s in own if s.name.casefold() == key), None
+        )
+        if found is None and (builtin := self._builtin_called(scene)) is not None:
+            found = self.resolve_scene(target_id, builtin)
         if found is None:
             raise ServiceValidationError(
                 translation_domain=DOMAIN,
@@ -206,6 +211,22 @@ class Coordinator:
         if not self.fits(found, target):
             raise self._not_adapted(found, target)
         return found
+
+    def _builtin_called(self, query: str) -> str | None:
+        """Return the built-in part a call names by id or case-insensitive name."""
+        if query in self.builtins:
+            return query
+        key = query.casefold()
+        return next(
+            (p for p in self.builtins if self.parts[p].name.casefold() == key), None
+        )
+
+    def _resolve_config(self) -> None:
+        self.parts = all_parts(self.config.parts, self.builtins)
+        self._scenes = {
+            target_id: tuple((st, resolve(st, self.parts)) for st in stored)
+            for target_id, stored in self.config.scenes.items()
+        }
 
     @staticmethod
     def _not_adapted(scene: Scene, target: Target) -> ServiceValidationError:
@@ -249,7 +270,7 @@ class Coordinator:
         if (old := self._own(target_id)) is not None:
             touched |= old.lights
             self._end(old, "replaced", silent=True)
-        scene_id = scene.public_id
+        scene_id = scene.id
         activation = Activation(
             id=ulid_now(),
             target_id=target_id,
@@ -383,18 +404,29 @@ class Coordinator:
         *,
         context: Context | None = None,
     ) -> None:
-        menu = [s.public_id for s in self.scenes_for(target_id)]
+        menu = self.scenes_for(target_id)
         status = self.status(target_id)
-        current = status.scene_id if status.state == "scene" else None
-        seq = [*menu, _OFF]
-        index = (seq.index(current) if current in seq else -1) + step
+        index = -1
+        if status.state == "scene":
+            # A zone's scene shown here is found by the name of this room's own.
+            index = next(
+                (
+                    i
+                    for i, scene in enumerate(menu)
+                    if scene.id == status.scene_id
+                    or scene.name.casefold() == (status.scene_name or "").casefold()
+                ),
+                -1,
+            )
+        seq = [*(s.id for s in menu), _OFF]
+        index += step
         if not 0 <= index < len(seq):
             if not cycle:
                 return
             index %= len(seq)
         if seq[index] == _OFF:
             self.turn_off(target_id, context=context)
-        elif (scene := self.resolve_scene(seq[index])) is not None:
+        elif (scene := self.resolve_scene(target_id, seq[index])) is not None:
             self.activate(target_id, scene, context=context)
 
     @callback
@@ -495,7 +527,6 @@ class Coordinator:
         adjust: Mapping[str, Any] | None = None,
     ) -> list[dict[str, Any]]:
         """Render a scene on a target without sending (PreviewFrame dicts)."""
-        scene_id = scene.public_id
         return preview(
             scene,
             self._target(target_id),
@@ -503,7 +534,7 @@ class Coordinator:
             self._effects,
             sun=self._host.sun(),
             start=start or self._host.now(),
-            salt=self.salts.get(salt_key(scene_id, target_id), 0),
+            salt=self.salts.get(salt_key(scene.id, target_id), 0),
             duration=duration,
             samples=samples,
             adjust=adjust,
@@ -525,9 +556,16 @@ class Coordinator:
     # ---- config
 
     @callback
-    def apply_config(self, config: Config) -> None:
-        """Take a new config; running activations follow their edited scenes."""
-        old, self.config = self.config, config
+    def apply_config(
+        self, config: Config, saved: Collection[str] = frozenset()
+    ) -> None:
+        """Take a new config; running activations follow their edited scenes.
+
+        `saved`: the scene and part ids a save named. A draft of one of them
+        becomes the saved scene; any other draft stays a draft.
+        """
+        self.config = config
+        self._resolve_config()
         for activation in list(self.activations.values()):
             if activation.id not in self.activations:
                 continue
@@ -536,20 +574,22 @@ class Coordinator:
                 self._end(activation, "config")
                 continue
             if activation.draft:
-                # Saving the scene being tried turns the draft into the real thing.
-                saved = config.scenes.get(activation.scene.id)
-                if saved is None or saved == old.scenes.get(activation.scene.id):
+                draft_id = activation.scene.id
+                if (
+                    draft_id not in saved
+                    or (scene := self.resolve_scene(target.id, draft_id)) is None
+                ):
                     continue
                 activation.draft = False
                 activation.replaced = ()
-                activation.scene_id = saved.public_id
-                scene = saved
             else:
-                scene = self.resolve_scene(activation.scene_id)
+                scene = self.resolve_scene(target.id, activation.scene_id)
             if scene is None or not self.fits(scene, target):
                 # Its lights keep their state: replanning would switch them off.
                 self._end(activation, "config")
                 continue
+            # A part's scene becomes the target's scene of it once there is one.
+            activation.scene_id = scene.id
             activation.transition = self._transition(
                 activation.transition_override, scene
             )
@@ -645,7 +685,7 @@ class Coordinator:
         target = self.targets.get(snapshot.target)
         if target is None or snapshot.target in self.by_target:
             return None
-        scene = self.resolve_scene(snapshot.scene_id)
+        scene = self._restored_scene(snapshot)
         if scene is None or not self.fits(scene, target):
             return None
         # Never widened, never stolen: an earlier snapshot wins an overlap.
@@ -659,12 +699,12 @@ class Coordinator:
         activation = Activation(
             id=snapshot.id,
             target_id=snapshot.target,
-            scene_id=snapshot.scene_id,
+            scene_id=scene.id,
             scene=scene,
             started=snapshot.started,
             transition=self._transition(None, scene),
             adjust=dict(snapshot.adjust),
-            salt=self.salts.get(salt_key(snapshot.scene_id, snapshot.target), 0),
+            salt=self.salts.get(salt_key(scene.id, snapshot.target), 0),
             only_on=snapshot.only_on,
             lights=lights,
             manual=set(snapshot.manual) & lights,
@@ -672,6 +712,22 @@ class Coordinator:
         build_runs(activation, plans, uncovered & lights, self._effects)
         self._register(activation)
         return activation
+
+    def _restored_scene(self, snapshot: ActivationSnapshot) -> Scene | None:
+        """Return the snapshot's scene, also when the runtime predates the upgrade.
+
+        The upgrade saves the config before the runtime; a stop in between
+        leaves v3 ids, which the migration hashed into the new ones.
+        """
+        target_id = snapshot.target
+        if (scene := self.resolve_scene(target_id, snapshot.scene_id)) is not None:
+            return scene
+        moved = migrated_scene_id(snapshot.scene_id, target_id)
+        if (scene := self.resolve_scene(target_id, moved)) is not None:
+            old_key = salt_key(snapshot.scene_id, target_id)
+            if old_key in self.salts:
+                self.salts[salt_key(moved, target_id)] = self.salts.pop(old_key)
+        return scene
 
     def _adopt(
         self,
@@ -939,7 +995,7 @@ class Coordinator:
             if (
                 own is None
                 and (default := self._default_scene(target)) is not None
-                and (scene := self.resolve_scene(default)) is not None
+                and (scene := self.resolve_scene(target_id, default)) is not None
                 and self.fits(scene, target)
             ):
                 self.activate(target_id, scene, only_on={e})

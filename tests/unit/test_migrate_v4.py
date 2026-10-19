@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import copy
-import dataclasses
 from datetime import UTC, datetime
 import json
 import logging
@@ -18,8 +17,7 @@ from typing import Any
 import unittest
 from unittest import mock
 
-from custom_components.magic_lights import migrate_v4
-from custom_components.magic_lights.effects import BUILTIN, Registry
+from custom_components.magic_lights import migrate_v4, store
 from custom_components.magic_lights.engine import build_coordinator
 from custom_components.magic_lights.engine.activation import plan_runs
 from custom_components.magic_lights.migrate_v4 import (
@@ -31,37 +29,47 @@ from custom_components.magic_lights.migrate_v4 import (
 )
 from custom_components.magic_lights.models import (
     ActivationSnapshot,
-    ConfigV4,
-    Layer,
-    Part,
-    PartLayer,
+    Config,
     RuntimeV1,
     Scene,
-    StoredScene,
     Target,
     TargetOptions,
     all_parts,
     is_user_part,
-    resolve,
 )
-from custom_components.magic_lights.presets import load_parts, load_presets
-from custom_components.magic_lights.validation import validate, validate_v4
-from homeassistant.exceptions import ServiceValidationError
+from custom_components.magic_lights.validation import validate
+from homeassistant.exceptions import (
+    HomeAssistantError,
+    ServiceValidationError,
+    UnsupportedStorageVersionError,
+)
+from homeassistant.helpers.storage import Store
 
+from . import test_migrate_v3
 from .fakes import (
     FakeDriver,
     FakeHost,
     FakeLightIndex,
     FakeRuntimeStore,
+    ShellHass,
     make_light,
     make_room,
     make_zone,
 )
-from . import test_migrate_v3
+from .v3_model import (
+    BUILTINS,
+    REGISTRY,
+    V3Scene,
+    available as v3_available,
+    default as v3_default,
+    find as v3_find,
+    fits,
+    fitting as v3_fitting,
+    menu_of,
+    resolve as v3_resolve,
+    scenes_for as v3_scenes_for,
+)
 
-REGISTRY = Registry(BUILTIN)
-PRESETS = load_presets(REGISTRY)  # the catalogue as v3 code reads it
-BUILTINS = load_parts(REGISTRY)
 LOGGER = "custom_components.magic_lights.migrate_v4"
 
 # Set to the output of scripts/export-store.py to check a real home before
@@ -69,8 +77,8 @@ LOGGER = "custom_components.magic_lights.migrate_v4"
 STORE_ENV = "MAGIC_LIGHTS_V3_STORE"
 
 type Raw = dict[str, Any]
-# A v3 lookup: the scene found (also one that does not fit) and the error.
-type Found = tuple[Scene | None, str | None]
+# A lookup: the scene found (also one that does not fit) and the error.
+type Found = tuple[Scene | V3Scene | None, str | None]
 
 SUN = {
     "min_brightness": 40,
@@ -405,11 +413,9 @@ def live(index: FakeLightIndex) -> list[Target]:
     return [t for t in index.targets.values() if t.lights]
 
 
-def fits(index: FakeLightIndex, found: Scene, target: Target) -> bool:
-    return any(index.expand(lay.lights, target) for lay in found.layers)
-
-
-def runs(found: Scene, target: Target, index: FakeLightIndex) -> dict[Any, Any]:
+def runs(
+    found: Scene | V3Scene, target: Target, index: FakeLightIndex
+) -> dict[Any, Any]:
     """Map the lights each layer runs together to its look; uncovered ones off.
 
     Layers keyed by their lights, not their place: a palette deals its colours
@@ -422,93 +428,7 @@ def runs(found: Scene, target: Target, index: FakeLightIndex) -> dict[Any, Any]:
     return out | {"scene": (found.others, found.transition)}
 
 
-# ---- v3 as it ran, over the raw store
-
-
-def v3_scene(raw: Mapping[str, Any]) -> Scene:
-    """Build a stored v3 scene with its params validated, as the engine ran it."""
-    plain = Scene.from_dict(raw)
-    layers = tuple(
-        Layer(lay.lights, lay.effect, REGISTRY.get(lay.effect).validate(lay.params))
-        for lay in plain.layers
-    )
-    return dataclasses.replace(plain, layers=layers)
-
-
-def preset_scene(part: Part) -> Scene:
-    return Scene(
-        id=part.id,
-        name=part.name,
-        icon=part.icon,
-        layers=(Layer("all", part.effect, part.params),),
-        builtin=True,
-    )
-
-
-def v3_available(data: Mapping[str, Any]) -> dict[str, Scene]:
-    """Every scene by public id: presets, an edit in its place, then user scenes."""
-    scenes = [v3_scene(raw) for raw in data["scenes"].values()]
-    edits = {s.preset: s for s in scenes if s.preset in BUILTINS}
-    out = {pid: edits.get(pid) or preset_scene(p) for pid, p in BUILTINS.items()}
-    out.update((s.id, s) for s in scenes if s.preset not in BUILTINS)
-    return out
-
-
-def v3_fitting(
-    data: Mapping[str, Any], target: Target, index: FakeLightIndex
-) -> dict[str, Scene]:
-    """Return the scenes that fit by public id; the first of a name hides others."""
-    out: dict[str, Scene] = {}
-    names: set[str] = set()
-    for pid, found in v3_available(data).items():
-        if fits(index, found, target) and found.name.casefold() not in names:
-            out[pid] = found
-            names.add(found.name.casefold())
-    return out
-
-
-def v3_scenes_for(
-    data: Mapping[str, Any], target: Target, index: FakeLightIndex
-) -> list[Scene]:
-    available = v3_fitting(data, target, index)
-    order = target.options.visible_scenes
-    if order is None:
-        return [s for pid, s in available.items() if pid not in BUILTINS]
-    return [available[pid] for pid in order if pid in available]
-
-
-def v3_find(
-    data: Mapping[str, Any], target: Target, query: str, index: FakeLightIndex
-) -> Found:
-    candidates = list(v3_available(data).values())
-    found = next((c for c in candidates if query in (c.id, c.preset)), None)
-    if found is None:
-        named = [c for c in candidates if c.name.casefold() == query.casefold()]
-        found = next(
-            (c for c in named if fits(index, c, target)), named[0] if named else None
-        )
-    if found is None:
-        return None, "unknown_scene"
-    if not fits(index, found, target):
-        return found, "scene_not_adapted"
-    return found, None
-
-
-def v3_resolve(data: Mapping[str, Any], public_id: str) -> Scene | None:
-    return v3_available(data).get(public_id)
-
-
-def v3_default(
-    data: Mapping[str, Any], target: Target, index: FakeLightIndex
-) -> Scene | None:
-    """Return the scene a light switched on in the idle target starts."""
-    default = target.options.default_scene
-    if default is None and target.kind == "room":
-        default = (data.get("settings") or {}).get("default_scene")
-    if default in (None, "none"):
-        return None
-    found = v3_resolve(data, default)
-    return found if found is not None and fits(index, found, target) else None
+# ---- v3 as it ran (v3_model), and the questions put to both
 
 
 def queries(data: Mapping[str, Any]) -> list[tuple[str, str]]:
@@ -543,67 +463,41 @@ def odd_edits(data: Mapping[str, Any]) -> set[str]:
     }
 
 
-# ---- v4 as design-v4.md §3 resolves it
-
-
 class V4:
-    """Resolution over a v4 config: room scenes first, then built-in parts."""
+    """The coordinator over a migrated config, answering as the proof asks."""
 
-    def __init__(self, config: ConfigV4, index: FakeLightIndex) -> None:
+    def __init__(self, config: Config, index: FakeLightIndex) -> None:
         self.config = config
-        self.index = index
-        self.parts = all_parts(config.parts, BUILTINS)
-
-    def own(self, target: Target) -> list[tuple[StoredScene, Scene]]:
-        return [
-            (s, resolve(s, self.parts)) for s in self.config.scenes.get(target.id, ())
-        ]
+        self.coordinator = build_coordinator(
+            FakeHost(),
+            index,
+            REGISTRY,
+            {"ha": FakeDriver()},
+            config,
+            BUILTINS,
+            FakeRuntimeStore(),
+        )
 
     def scenes_for(self, target: Target) -> list[Scene]:
-        return [s for _, s in self.own(target) if fits(self.index, s, target)]
+        return self.coordinator.scenes_for(target.id)
 
     def resolve_scene(self, target: Target, scene_id_: str) -> Scene | None:
-        own = self.own(target)
-        if found := next((s for st, s in own if st.id == scene_id_), None):
-            return found
-        if (part := self.parts.get(scene_id_)) is None:
-            return None
-        whole = (PartLayer("all", part.id),)
-        for st, s in own:
-            if st.layers == whole and st.others == "off" and st.transition is None:
-                return s
-        return Scene(
-            id=part.id,
-            name=part.name,
-            icon=part.icon,
-            layers=(Layer("all", part.effect, part.params),),
-        )
+        return self.coordinator.resolve_scene(target.id, scene_id_)
 
     def find(self, target: Target, query: str) -> Found:
-        own = [s for _, s in self.own(target)]
-        key = query.casefold()
-        found = next((s for s in own if s.id == query), None) or next(
-            (s for s in own if s.name.casefold() == key), None
-        )
-        if found is None:
-            named = (p for p, b in BUILTINS.items() if b.name.casefold() == key)
-            if pid := query if query in BUILTINS else next(named, None):
-                found = self.resolve_scene(target, pid)
-        if found is None:
-            return None, "unknown_scene"
-        if not fits(self.index, found, target):
-            return found, "scene_not_adapted"
-        return found, None
+        try:
+            return self.coordinator.find_scene(target.id, query), None
+        except ServiceValidationError as err:
+            return None, err.translation_key
 
     def default(self, target: Target) -> Scene | None:
-        opts = self.config.targets.get(target.id, TargetOptions())
-        default = opts.default_scene
-        if default is None and target.kind == "room":
-            default = self.config.settings.default_scene
-        if default in (None, "none"):
+        """Return the scene a light switched on in the idle target starts."""
+        coordinator = self.coordinator
+        target = coordinator.targets[target.id]
+        if (chosen := coordinator._default_scene(target)) is None:  # noqa: SLF001
             return None
-        found = self.resolve_scene(target, default)
-        return found if found is not None and fits(self.index, found, target) else None
+        found = coordinator.resolve_scene(target.id, chosen)
+        return found if found is not None and coordinator.fits(found, target) else None
 
 
 class ProofCase(unittest.TestCase):
@@ -628,10 +522,9 @@ class ProofCase(unittest.TestCase):
         self.assertEqual(data, before, "the input is left alone")
         self.assertEqual(self.migrate_logged(data, areas), (result, remap, logs))
         self.assertEqual(json.loads(json.dumps(result)), result)
-        config = validate_v4(result, REGISTRY, BUILTINS)
+        config = validate(result, REGISTRY, BUILTINS)
         index = index_of(data, areas)
-        self.assert_model_is_v3(data, index)
-        v4 = V4(config, index)
+        v4 = V4(config, index_of(result, areas))
         self.assert_well_formed(config, index)
         for target in live(index):
             with self.subTest(target=target.id):
@@ -649,62 +542,7 @@ class ProofCase(unittest.TestCase):
         _, _, logs = self.proven(home["store"]["data"], areas, runtime)
         self.assertEqual([line for line in logs if "No room holds" in line], [])
 
-    def assert_model_is_v3(
-        self, data: Mapping[str, Any], index: FakeLightIndex
-    ) -> None:
-        """Check that the raw-dict model answers as the v3 coordinator does."""
-        coordinator = build_coordinator(
-            FakeHost(),
-            index,
-            REGISTRY,
-            {"ha": FakeDriver()},
-            validate(data, REGISTRY, presets=PRESETS),
-            PRESETS,
-            FakeRuntimeStore(),
-        )
-
-        def same(model: Scene | None, code: Scene | None, target: Target) -> None:
-            self.assertEqual(model is None, code is None)
-            if model is not None and code is not None:
-                self.assertEqual(
-                    (model.public_id, model.name, model.brightness),
-                    (code.public_id, code.name, code.brightness),
-                )
-                self.assertEqual(runs(model, target, index), runs(code, target, index))
-
-        for target in live(index):
-            with self.subTest(model=target.id):
-                self.assertEqual(
-                    [s.public_id for s in v3_scenes_for(data, target, index)],
-                    [s.public_id for s in coordinator.scenes_for(target.id)],
-                )
-                for _, query in queries(data):
-                    found, error = v3_find(data, target, query, index)
-                    try:
-                        code, code_error = (
-                            coordinator.find_scene(target.id, query),
-                            None,
-                        )
-                    except ServiceValidationError as err:
-                        code, code_error = None, err.translation_key
-                    self.assertEqual(error, code_error, query)
-                    if error is None:
-                        same(found, code, target)
-                for public_id in v3_available(data):
-                    same(
-                        v3_resolve(data, public_id),
-                        coordinator.resolve_scene(public_id),
-                        target,
-                    )
-                default = coordinator._default_scene(target)  # noqa: SLF001
-                ran = default and coordinator.resolve_scene(default)
-                same(
-                    v3_default(data, target, index),
-                    ran if ran and coordinator.fits(ran, target) else None,
-                    target,
-                )
-
-    def assert_well_formed(self, config: ConfigV4, index: FakeLightIndex) -> None:
+    def assert_well_formed(self, config: Config, index: FakeLightIndex) -> None:
         """Check that nothing validate tolerates as drift is written."""
         parts = all_parts(config.parts, BUILTINS)
         used: set[str] = set()
@@ -786,7 +624,7 @@ class ProofCase(unittest.TestCase):
         A preset default joins only where it ran, as a scene of its own.
         """
         names = [s.name for s in v3_scenes_for(data, target, index)]
-        if target.options.visible_scenes is not None:
+        if menu_of(data, target.id) is not None:
             names += [
                 s.name
                 for pid, s in v3_fitting(data, target, index).items()
@@ -977,7 +815,7 @@ class Home3Test(ProofCase):
     def test_a_look_runs_as_the_room_scene_of_it(self) -> None:
         result, remap, _ = self.migrate_logged(HOME3, HOME3_AREAS)
         index = index_of(HOME3, HOME3_AREAS)
-        v4 = V4(validate_v4(result, REGISTRY, BUILTINS), index)
+        v4 = V4(validate(result, REGISTRY, BUILTINS), index_of(result, HOME3_AREAS))
         office = index.targets["room:arbeitszimmer"]
         found, _ = v4.find(office, "adaptive_bright")
         self.assertEqual(found.id, remap[("adaptive_bright", office.id)])
@@ -991,7 +829,7 @@ class Home3Test(ProofCase):
     def test_a_v3_scene_id_is_no_call(self) -> None:
         result, remap, _ = self.migrate_logged(HOME3, HOME3_AREAS)
         index = index_of(HOME3, HOME3_AREAS)
-        v4 = V4(validate_v4(result, REGISTRY, BUILTINS), index)
+        v4 = V4(validate(result, REGISTRY, BUILTINS), index_of(result, HOME3_AREAS))
         office = index.targets["room:arbeitszimmer"]
         self.assertEqual(v4.find(office, HELL)[1], "unknown_scene")
         self.assertEqual(v4.find(office, remap[(HELL, office.id)])[0].name, "Hell")
@@ -1239,7 +1077,7 @@ class RulesTest(ProofCase):
         self.assertEqual(len(ids), len(set(ids)))
         self.assertIn("s_00000000", ids)
         self.assertEqual(len(clashed["parts"]), len(result["parts"]))
-        validate_v4(clashed, REGISTRY, BUILTINS)
+        validate(clashed, REGISTRY, BUILTINS)
 
     def test_a_long_name_stays_within_bounds(self) -> None:
         name = "X" * 64
@@ -1254,7 +1092,7 @@ class RulesTest(ProofCase):
         result, _, _ = self.migrate_logged(data, EDGE_AREAS)
         names = [p["name"] for p in result["parts"].values()]
         self.assertEqual(names, [name, f"{'X' * 55} · Office"])
-        validate_v4(result, REGISTRY, BUILTINS)
+        validate(result, REGISTRY, BUILTINS)
 
 
 class _ThroughV4(ProofCase):
@@ -1359,6 +1197,68 @@ class ExportTest(ProofCase):
         )
         self.assertEqual(home["store"]["data"], HOME3)
         self.prove_home(home)
+
+
+class StoreUpgradeTest(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.storage = Path(tmp.name, ".storage")
+        self.storage.mkdir()
+        self.hass = ShellHass(tmp.name)
+
+    def write(self, key: str, version: int, data: Any) -> str:
+        text = storage_file(key, data, version)
+        (self.storage / key).write_text(text)
+        return text
+
+    def config_store(self) -> store.ConfigStore:
+        return store.ConfigStore(self.hass, REGISTRY, BUILTINS, lambda: HOME3_AREAS)
+
+    async def test_the_live_home_upgrades_with_backups(self) -> None:
+        old = self.write(store.STORAGE_KEY, 3, HOME3)
+        runtime = self.write(store.RUNTIME_KEY, 1, HOME3_RUNTIME.to_dict())
+        config_store = self.config_store()
+        config = await config_store.async_load_config()
+        self.assertEqual(config_store.remap_v3, {})
+        expected, remap = migrate(HOME3, REGISTRY, BUILTINS, HOME3_AREAS)
+        self.assertEqual(config_store.remap, remap)
+        self.assertEqual(config, Config.from_dict(expected))
+        self.assertEqual((self.storage / "magic_lights.v3.bak").read_text(), old)
+        self.assertEqual(
+            (self.storage / "magic_lights.runtime.v3.bak").read_text(), runtime
+        )
+        saved = json.loads((self.storage / store.STORAGE_KEY).read_text())
+        self.assertEqual((saved["version"], saved["minor_version"]), (4, 1))
+        moved = config_store.remap_runtime(HOME3_RUNTIME)
+        self.assertEqual(moved, remap_runtime(HOME3_RUNTIME, remap))
+        # Loaded again, nothing moves.
+        again = self.config_store()
+        self.assertEqual(await again.async_load_config(), config)
+        self.assertEqual(again.remap_runtime(moved), moved)
+
+    async def test_the_version_before_refuses_the_upgraded_file(self) -> None:
+        self.write(store.STORAGE_KEY, 3, HOME3)
+        await self.config_store().async_load_config()
+        older = Store(self.hass, 3, store.STORAGE_KEY, minor_version=1)
+        with self.assertRaises(UnsupportedStorageVersionError):
+            await older.async_load()
+
+    async def test_an_unknown_version_is_refused(self) -> None:
+        self.write(store.STORAGE_KEY, 1, HOME3)
+        with self.assertRaises(NotImplementedError):
+            await self.config_store().async_load_config()
+
+    async def test_a_failed_upgrade_saves_nothing(self) -> None:
+        broken = copy.deepcopy(HOME3)
+        broken["scenes"][FILM]["layers"] = None
+        old = self.write(store.STORAGE_KEY, 3, broken)
+        config_store = self.config_store()
+        with self.assertRaises(HomeAssistantError) as err:
+            await config_store.async_load_config()
+        self.assertIn("copied to magic_lights.v3.bak", str(err.exception))
+        self.assertEqual((self.storage / store.STORAGE_KEY).read_text(), old)
+        self.assertEqual(config_store.remap, {})
 
 
 @unittest.skipUnless(os.environ.get(STORE_ENV), f"set {STORE_ENV} to check a home")

@@ -68,143 +68,107 @@ def _adaptive(**params: object) -> dict[str, object]:
     }
 
 
-def _scene(scene_id: str, name: str, icon: str, layers: list[dict]) -> dict:
+def _part(part_id: str, name: str, effect: str, params: dict) -> dict:
+    return {"id": part_id, "name": name, "effect": effect, "params": params}
+
+
+def _scene(scene_id: str, name: str, icon: str, *layers: tuple) -> dict:
     return {
         "id": scene_id,
         "name": name,
         "icon": icon,
-        "preset": None,
-        "layers": layers,
+        "layers": [{"lights": lights, "part": part} for lights, part in layers],
         "others": "off",
-        "brightness": 100,
         "transition": None,
     }
 
 
-# One scene shared by several rooms: a part for the sofa lamp in the living room only
-# and a warmer part for the bedroom only.
-HELL = _scene(
-    "s_12186051",
-    "Hell",
-    "mdi:white-balance-sunny",
-    [
-        {
-            "lights": [
-                "light.living_ceiling",
-                "light.living_floor_lamp",
-                "light.living_tv_strip",
-                "room:kitchen",
-                "room:hallway",
-                "room:bedroom",
-            ],
-            "effect": "adaptive",
-            "params": _adaptive(),
-        },
-        {
-            "lights": ["light.living_sofa_lamp"],
-            "effect": "adaptive",
-            "params": _adaptive(min_brightness=12, max_brightness=30),
-        },
-        {
-            "lights": ["room:bedroom"],
-            "effect": "adaptive",
-            "params": _adaptive(max_kelvin=2200),
-        },
-    ],
-)
-
-GEDIMMT = _scene(
-    "s_254d2fcd",
-    "Gedimmt",
-    "mdi:weather-night",
-    [
-        {
-            "lights": ["room:living_room", "room:kitchen", "room:bedroom"],
-            "effect": "white",
-            "params": {"kelvin": 2725, "brightness": 30},
-        }
-    ],
-)
-
-# Picked into the living room's menu, but its lights are elsewhere: it needs setting up there.
-NACHTLICHT = _scene(
-    "s_0a915dea",
-    "Nachtlicht",
-    "mdi:moon-waning-crescent",
-    [
-        {
-            "lights": ["room:bedroom", "room:hallway"],
-            "effect": "palette",
-            "params": {"palette": [{"xy": [0.6, 0.38]}], "brightness": 1},
-        }
-    ],
-)
-
-MOVIE = _scene(
-    "s_0a1b2c3d",
-    "Movie night",
-    "mdi:movie-open",
-    [
-        {
-            "lights": ["room:living_room"],
-            "effect": "white",
-            "params": {"kelvin": 2200, "brightness": 30},
-        },
-        {
-            "lights": ["light.living_tv_strip"],
-            "effect": "palette",
-            "params": {
-                "palette": [{"xy": [0.17, 0.05]}, {"xy": [0.45, 0.2]}],
-                "brightness": 50,
-            },
-        },
-    ],
-)
-
-# The edit of a preset, for every room.
-SAVANNA_EDIT = {
-    **_scene(
-        "s_5a7a0001",
-        "Savanna sunset",
-        "mdi:weather-sunset",
-        [
-            {
-                "lights": "all",
-                "effect": "palette",
-                "params": {
-                    "palette": [
-                        {"xy": [0.45, 0.45]},
-                        {"xy": [0.55, 0.4]},
-                        {"xy": [0.65, 0.33]},
-                        {"xy": [0.5, 0.41]},
-                    ],
-                    "brightness": 58,
-                    "motion": "dynamic",
-                },
-            }
-        ],
+# Looks shared by several rooms, and two a room has to itself.
+PARTS = [
+    _part("p_12186051", "Hell", "adaptive", _adaptive()),
+    _part(
+        "p_2c1f0e11",
+        "Hell · Living Room",
+        "adaptive",
+        _adaptive(min_brightness=12, max_brightness=30),
     ),
-    "preset": "savanna_sunset",
-}
-
-# The office has no scenes; the hallway keeps its default menu (its scenes that fit).
-MENUS = {
-    "room:living_room": [
-        "s_12186051",
-        "s_254d2fcd",
-        "s_0a1b2c3d",
+    _part("p_3b6a1d02", "Hell · Bedroom", "adaptive", _adaptive(max_kelvin=2200)),
+    _part("p_254d2fcd", "Gedimmt", "white", {"kelvin": 2725, "brightness": 30}),
+    _part(
+        "p_0a915dea",
+        "Nachtlicht",
+        "palette",
+        {"palette": [{"xy": [0.6, 0.38]}], "brightness": 1},
+    ),
+    _part(
+        "p_0a1b2c3d",
+        "Movie strip",
+        "palette",
+        {"palette": [{"xy": [0.17, 0.05]}, {"xy": [0.45, 0.2]}], "brightness": 50},
+    ),
+    _part("p_0a1b2c3e", "Movie", "white", {"kelvin": 2200, "brightness": 30}),
+    # The edit of a built-in, for every room.
+    _part(
         "savanna_sunset",
-        "cozy_candle",
-        "s_0a915dea",
+        "Savanna sunset",
+        "palette",
+        {
+            "palette": [
+                {"xy": [0.45, 0.45]},
+                {"xy": [0.55, 0.4]},
+                {"xy": [0.65, 0.33]},
+                {"xy": [0.5, 0.41]},
+            ],
+            "brightness": 58,
+            "motion": "dynamic",
+        },
+    ),
+]
+
+SUN, NIGHT, MOON = (
+    "mdi:white-balance-sunny",
+    "mdi:weather-night",
+    "mdi:moon-waning-crescent",
+)
+LIVING_HELL = [
+    "light.living_ceiling",
+    "light.living_floor_lamp",
+    "light.living_tv_strip",
+]
+
+# Each room's scenes, in menu order. The office has none; the living room's
+# Nachtlicht has no lights there any more: it needs setting up.
+SCENES = {
+    "room:living_room": [
+        _scene("s_12186051", "Hell", SUN, (LIVING_HELL, "p_12186051"),
+               (["light.living_sofa_lamp"], "p_2c1f0e11")),
+        _scene("s_254d2fcd", "Gedimmt", NIGHT, ("all", "p_254d2fcd")),
+        _scene("s_0a1b2c3d", "Movie night", "mdi:movie-open", ("all", "p_0a1b2c3e"),
+               (["light.living_tv_strip"], "p_0a1b2c3d")),
+        _scene("s_5a7a0001", "Savanna sunset", "mdi:weather-sunset", ("all", "savanna_sunset")),
+        _scene("s_c02c0001", "Cozy candle", "mdi:candle", ("all", "cozy_candle")),
+        _scene("s_0a915dea", "Nachtlicht", MOON, (["light.hallway"], "p_0a915dea")),
     ],
-    "room:kitchen": ["s_12186051", "s_254d2fcd", "savanna_sunset"],
-    "room:bedroom": ["s_12186051", "s_254d2fcd", "s_0a915dea", "relax"],
-    "room:office": [],
-}
+    "room:kitchen": [
+        _scene("s_12186052", "Hell", SUN, ("all", "p_12186051")),
+        _scene("s_254d2fce", "Gedimmt", NIGHT, ("all", "p_254d2fcd")),
+        _scene("s_5a7a0002", "Savanna sunset", "mdi:weather-sunset", ("all", "savanna_sunset")),
+    ],
+    "room:bedroom": [
+        _scene("s_12186053", "Hell", SUN, ("all", "p_3b6a1d02")),
+        _scene("s_254d2fcf", "Gedimmt", NIGHT, ("all", "p_254d2fcd")),
+        _scene("s_0a915deb", "Nachtlicht", MOON, ("all", "p_0a915dea")),
+        _scene("s_4e1a0001", "Relax", "mdi:sofa", ("all", "relax")),
+    ],
+    "room:hallway": [
+        _scene("s_12186054", "Hell", SUN, ("all", "p_12186051")),
+        _scene("s_0a915dec", "Nachtlicht", MOON, ("all", "p_0a915dea")),
+    ],
+}  # fmt: skip
 
 
 async def demo_scenes(h: Harness) -> None:
-    """Make the home look lived in: a zone, shared and edited scenes, live scenes."""
+    """Make the home look lived in: a zone, shared parts, an edit, live scenes."""
     await h.ws(
         {
             "type": "magic_lights/zone/save",
@@ -217,10 +181,18 @@ async def demo_scenes(h: Harness) -> None:
             },
         }
     )
-    for scene in (HELL, GEDIMMT, NACHTLICHT, MOVIE, SAVANNA_EDIT):
-        await h.ws({"type": "magic_lights/scene/save", "scene": scene})
-    await h.ws({"type": "magic_lights/menus/save", "menus": MENUS})
-    # The user's fade, and an edited preset as the switch-on scene.
+    await h.ws(
+        {
+            "type": "magic_lights/library/save",
+            "parts": PARTS,
+            "scenes": [
+                {"target": target_id, "scene": scene}
+                for target_id, scenes in SCENES.items()
+                for scene in scenes
+            ],
+        }
+    )
+    # The user's fade, and a built-in as the switch-on scene.
     await h.ws(
         {
             "type": "magic_lights/settings/save",

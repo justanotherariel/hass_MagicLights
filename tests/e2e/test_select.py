@@ -12,7 +12,16 @@ from homeassistant.helpers import (
 
 from tests.harness import DOMAIN
 
-from . import BEDROOM, KITCHEN, LIVING, LIVING_LIGHTS, HarnessCase
+from . import (
+    BEDROOM,
+    KITCHEN,
+    LIVING,
+    LIVING_LIGHTS,
+    HarnessCase,
+    part,
+    save,
+    scene,
+)
 
 DOWNSTAIRS = {
     "id": "",
@@ -22,21 +31,22 @@ DOWNSTAIRS = {
     "lights": [],
 }
 
-# Presets are hidden until picked; the demo home has no scenes of its own.
+# New rooms start empty; built-ins still run by name.
 DEFAULT_MENU = ["Off", "Manual"]
 
 
 class SelectTest(HarnessCase):
-    async def show(self, target_id: str, *scene_ids: str) -> None:
-        """Put scenes in a target's menu, as the panel does."""
-        await self.h.ws(
-            {
-                "type": "magic_lights/target/options",
-                "target_id": target_id,
-                "options": {"visible_scenes": list(scene_ids)},
-            }
-        )
+    async def show(self, target_id: str, *part_ids: str) -> list[str]:
+        """Give a target a scene of each built-in, as New scene does; return ids."""
+        config = await self.h.ws({"type": "magic_lights/config"})
+        names = {p["id"]: p["name"] for p in config["parts"]}
+        scenes = [
+            scene(f"s_0000000{n}", names[part_id], ("all", part_id))
+            for n, part_id in enumerate(part_ids, 1)
+        ]
+        await save(self.h, target_id, *scenes)
         await self.h.idle()
+        return [s["id"] for s in scenes]
 
     async def test_one_select_per_room_on_a_service_device(self) -> None:
         hass = self.h.hass
@@ -52,7 +62,8 @@ class SelectTest(HarnessCase):
             ],
         )
         self.assertEqual(self.status(LIVING)["options"], DEFAULT_MENU)
-        self.assertEqual(len(self.status(LIVING)["hidden_scenes"]), 48)
+        self.assertEqual(self.status(LIVING)["scenes"], [])
+        self.assertNotIn("hidden_scenes", self.status(LIVING))
         # The ceiling was on before Magic Lights: nobody's scene, so manual.
         self.assertEqual(self.state(LIVING), "Manual")
         self.assertEqual(self.state(BEDROOM), "Off")
@@ -80,7 +91,7 @@ class SelectTest(HarnessCase):
         self.assertIsNone(devices.async_get(device_id).area_id)
 
     async def test_activate_sends_each_light_what_it_can_do(self) -> None:
-        await self.show("room:living_room", "relax")
+        (relax_id,) = await self.show("room:living_room", "relax")
         self.assertEqual(self.status(LIVING)["options"], ["Off", "Relax", "Manual"])
         self.h.clear_calls()
         self.h.events.clear()
@@ -96,7 +107,7 @@ class SelectTest(HarnessCase):
         )
         attrs = self.status(LIVING)
         self.assertEqual(attrs["status"], "scene")
-        self.assertEqual(attrs["scene_id"], "relax")
+        self.assertEqual(attrs["scene_id"], relax_id)
         self.assertEqual(set(attrs["lights"].values()), {"scene"})
         self.assertEqual(
             self.h.events,
@@ -104,7 +115,7 @@ class SelectTest(HarnessCase):
                 {
                     "type": "activated",
                     "target_id": "room:living_room",
-                    "scene_id": "relax",
+                    "scene_id": relax_id,
                 }
             ],
         )
@@ -113,8 +124,10 @@ class SelectTest(HarnessCase):
         self.assertEqual(attrs["brightness"], 56)
 
         # The running scene again, at another brightness: everything is sent again.
+        # Called by the built-in's id, it is the room's scene of it.
         self.h.clear_calls()
-        await self.h.call("activate_scene", LIVING, scene="Relax", brightness=50)
+        await self.h.call("activate_scene", LIVING, scene="relax", brightness=50)
+        self.assertEqual(self.status(LIVING)["scene_id"], relax_id)
         self.assertEqual(self.status(LIVING)["brightness"], 50)
         self.assertEqual(
             [c["entity_id"] for c in self.h.calls()].count("light.living_ceiling"), 1
@@ -150,16 +163,17 @@ class SelectTest(HarnessCase):
         await h.call("toggle_scene", KITCHEN, scene="read")
         self.assertEqual(self.state(KITCHEN), "Off")
 
-        # A hidden preset can still be started; the menu shows it while it runs.
-        hidden = [s["id"] for s in self.status(KITCHEN)["hidden_scenes"]]
-        self.assertIn("honolulu", hidden)
-        self.assertFalse(
-            {s["id"] for s in self.status(KITCHEN)["scenes"]} & set(hidden)
+        # Any built-in can be started; the menu shows it while it runs.
+        self.assertEqual(
+            [s["name"] for s in self.status(KITCHEN)["scenes"]], ["Energize", "Read"]
         )
         await h.call("activate_scene", KITCHEN, scene="honolulu", dynamic=True)
         attrs = self.status(KITCHEN)
         self.assertEqual(self.state(KITCHEN), "Honolulu")
-        self.assertIn("Honolulu", attrs["options"])
+        self.assertEqual(attrs["scene_id"], "honolulu")
+        self.assertEqual(
+            attrs["options"], ["Off", "Energize", "Read", "Honolulu", "Manual"]
+        )
         self.assertTrue(attrs["dynamic"])
 
         h.clear_calls()
@@ -177,20 +191,14 @@ class SelectTest(HarnessCase):
 
     async def test_a_scene_without_lights_here_is_refused(self) -> None:
         h = self.h
-        film = {
-            "id": "s_0000f001",
-            "name": "Film",
-            "layers": [
-                {"lights": ["light.kitchen_island"], "effect": "white", "params": {}}
-            ],
-        }
-        await h.ws({"type": "magic_lights/scene/save", "scene": film})
+        film = scene("s_0000f001", "Film", (["light.kitchen_island"], "read"))
+        await save(h, "room:kitchen", film)
+        # Its light moved to the kitchen: the living room's scene is left without.
+        await save(h, "room:living_room", film | {"id": "s_0000f002"})
         await h.idle()
         self.assertIn("Film", self.status(KITCHEN)["options"])
         self.assertNotIn("Film", self.status(LIVING)["options"])
-        self.assertNotIn(
-            "s_0000f001", {s["id"] for s in self.status(LIVING)["hidden_scenes"]}
-        )
+        self.assertEqual(self.status(LIVING)["scenes"], [])
         h.clear_calls()
         for service in ("activate_scene", "toggle_scene"):
             with (
@@ -206,6 +214,28 @@ class SelectTest(HarnessCase):
         await h.settle()
         self.assertEqual(h.calls(), [])
         self.assertEqual(self.state(LIVING), "Manual")
+
+    async def test_a_user_part_running_as_default_stays_selectable(self) -> None:
+        h = self.h
+        await save(h, parts=(part("p_0000a001", "Mine", kelvin=2700),))
+        await h.ws(
+            {
+                "type": "magic_lights/settings/save",
+                "settings": {"default_scene": "p_0000a001"},
+            }
+        )
+        await self.light_call("turn_on", "light.bedroom_ceiling")
+        self.assertEqual(self.state(BEDROOM), "Mine")
+        self.assertEqual(self.status(BEDROOM)["options"], ["Off", "Mine", "Manual"])
+        started = self.status(BEDROOM)["since"]
+        await h.select(BEDROOM, "Mine")
+        attrs = self.status(BEDROOM)
+        self.assertEqual((attrs["scene_id"], attrs["via"]), ("p_0000a001", None))
+        self.assertNotEqual(attrs["since"], started)
+        # Calls still reach only this room's scenes and the built-ins.
+        with self.assertRaises(ServiceValidationError) as err:
+            await h.call("activate_scene", BEDROOM, scene="Mine")
+        self.assertEqual(err.exception.translation_key, "unknown_scene")
 
     async def test_set_dynamic_leaves_manual_lights_alone(self) -> None:
         h = self.h
@@ -319,3 +349,20 @@ class OverlapTest(HarnessCase):
         for select in (LIVING, KITCHEN):
             self.assertEqual(self.state(select), "Relax")
             self.assertEqual(self.status(select)["via"], "zone:downstairs")
+
+    async def test_a_zone_scene_seen_from_a_room_keeps_running(self) -> None:
+        h = self.h
+        await h.ws({"type": "magic_lights/zone/save", "zone": DOWNSTAIRS})
+        await save(h, "zone:downstairs", scene("s_0000d001", "Up", ("all", "read")))
+        await h.settle()
+        await h.call("activate_scene", "select.downstairs_scene", scene="Up")
+        self.assertIn("Up", self.status(KITCHEN)["options"])
+        h.clear_calls()
+        await h.select(KITCHEN, "Up")
+        await h.settle()
+        attrs = self.status(KITCHEN)
+        self.assertEqual(self.state(KITCHEN), "Up")
+        self.assertEqual(
+            (attrs["scene_id"], attrs["via"]), ("s_0000d001", "zone:downstairs")
+        )
+        self.assertEqual(h.calls(), [])

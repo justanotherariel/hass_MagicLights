@@ -17,7 +17,6 @@ from custom_components.magic_lights.models import (
     Caps,
     Color,
     Config,
-    ConfigV4,
     HaLight,
     Layer,
     LightState,
@@ -31,19 +30,18 @@ from custom_components.magic_lights.models import (
     TargetStatus,
     Zone,
     all_parts,
-    available_scenes,
     ha_to_state,
     is_user_part,
+    is_whole_room,
     normalise,
+    part_scene,
     resolve,
 )
 from custom_components.magic_lights.validation import (
     ConfigError,
     validate,
     validate_builtin_part,
-    validate_preset,
-    validate_scene,
-    validate_v4,
+    validate_draft,
 )
 from homeassistant.core import Context, State
 
@@ -55,28 +53,6 @@ COLOR_ONLY = make_caps(color_temp=False)
 DIM_ONLY = make_caps(color=False, color_temp=False)
 ON_OFF = make_caps(brightness=False, color=False, color_temp=False, transition=False)
 
-
-def scene_dict(scene_id: str, name: str, **kw):
-    return {
-        "id": scene_id,
-        "name": name,
-        "layers": [{"lights": "all", "effect": "white", "params": {}}],
-        **kw,
-    }
-
-
-def preset(scene_id: str, name: str) -> Scene:
-    return Scene(
-        id=scene_id,
-        name=name,
-        icon=None,
-        layers=(Layer("all", "white", {"kelvin": 2700, "brightness": 100}),),
-        category="white",
-        builtin=True,
-    )
-
-
-PRESETS = {"relax": preset("relax", "Relax"), "read": preset("read", "Read")}
 
 WARM = {"kelvin": 2700, "brightness": 100}
 BUILTINS = {
@@ -275,76 +251,6 @@ class HaLightTest(unittest.TestCase):
 
 class RoundTripTest(unittest.TestCase):
     def config(self) -> Config:
-        layers = (
-            Layer(
-                ("light.a", "room:kitchen"), "static", {"color": {"xy": [0.6, 0.35]}}
-            ),
-            Layer("all", "white", {"kelvin": 2700, "brightness": 60}),
-        )
-        scene = Scene(
-            "s_0123abcd",
-            "Movie",
-            "mdi:movie",
-            layers,
-            preset="relax",
-            others="keep",
-            brightness=70,
-            transition=2.5,
-        )
-        return Config(
-            zones={
-                "down": Zone(
-                    "down", "Downstairs", None, ("living", "kitchen"), ("light.x",)
-                )
-            },
-            targets={
-                "room:living": TargetOptions(
-                    excluded_lights=("light.b",),
-                    visible_scenes=("relax", "s_0123abcd"),
-                    default_scene="none",
-                    detect_changes=False,
-                ),
-                "room:kitchen": TargetOptions(),
-            },
-            scenes={scene.id: scene},
-            settings=Settings(
-                transition=0.5,
-                default_scene="adaptive",
-                native_effects=False,
-                buses={"zigbee:abc": {"rate": 5.0}},
-                light_buses={"light.a": "zigbee:abc"},
-            ),
-        )
-
-    def test_config(self) -> None:
-        config = self.config()
-        data = json.loads(json.dumps(config.to_dict()))
-        self.assertNotIn(
-            "room:kitchen", data["targets"]
-        )  # default options are not stored
-        expected = dataclasses.replace(
-            config, targets={"room:living": config.targets["room:living"]}
-        )
-        self.assertEqual(Config.from_dict(data), expected)
-        self.assertEqual(Config.from_dict({}), Config())
-
-    def test_scene_stored_keys(self) -> None:
-        scene = self.config().scenes["s_0123abcd"]
-        self.assertEqual(
-            set(scene.to_dict()),
-            {
-                "id",
-                "name",
-                "icon",
-                "preset",
-                "layers",
-                "others",
-                "brightness",
-                "transition",
-            },
-        )
-
-    def config_v4(self) -> ConfigV4:
         scene = StoredScene(
             "s_0123abcd",
             "Movie",
@@ -356,10 +262,18 @@ class RoundTripTest(unittest.TestCase):
             others="keep",
             transition=2.5,
         )
-        return ConfigV4(
-            zones=self.config().zones,
+        return Config(
+            zones={
+                "down": Zone(
+                    "down", "Downstairs", None, ("living", "kitchen"), ("light.x",)
+                )
+            },
             targets={
-                "zone:down": TargetOptions(default_scene="s_0123abcd"),
+                "zone:down": TargetOptions(
+                    excluded_lights=("light.b",),
+                    default_scene="s_0123abcd",
+                    detect_changes=False,
+                ),
                 "room:kitchen": TargetOptions(),
             },
             parts={
@@ -367,30 +281,51 @@ class RoundTripTest(unittest.TestCase):
                 "relax": Part("relax", "Relax", "white", WARM),
             },
             scenes={"zone:down": (scene,), "room:kitchen": ()},
-            settings=Settings(default_scene="p_0123abcd"),
+            settings=Settings(
+                transition=0.5,
+                default_scene="p_0123abcd",
+                native_effects=False,
+                buses={"zigbee:abc": {"rate": 5.0}},
+                light_buses={"light.a": "zigbee:abc"},
+            ),
         )
 
-    def test_config_v4(self) -> None:
-        config = self.config_v4()
+    def test_config(self) -> None:
+        config = self.config()
         data = json.loads(json.dumps(config.to_dict()))
         self.assertEqual(set(data), {"zones", "targets", "parts", "scenes", "settings"})
+        # Default options are not stored.
         self.assertEqual(list(data["targets"]), ["zone:down"])
-        self.assertNotIn("visible_scenes", data["targets"]["zone:down"])
         self.assertEqual(
-            data["scenes"]["zone:down"][0]["layers"],
-            [
-                {"lights": ["light.a", "room:kitchen"], "part": "p_0123abcd"},
-                {"lights": "all", "part": "relax"},
-            ],
+            set(data["targets"]["zone:down"]),
+            {
+                "excluded_lights",
+                "extra_lights",
+                "default_scene",
+                "reclaim_on_turn_on",
+                "detect_changes",
+            },
+        )
+        self.assertEqual(
+            data["scenes"]["zone:down"][0],
+            {
+                "id": "s_0123abcd",
+                "name": "Movie",
+                "icon": "mdi:movie",
+                "layers": [
+                    {"lights": ["light.a", "room:kitchen"], "part": "p_0123abcd"},
+                    {"lights": "all", "part": "relax"},
+                ],
+                "others": "keep",
+                "transition": 2.5,
+            },
         )
         expected = dataclasses.replace(
             config, targets={"zone:down": config.targets["zone:down"]}
         )
-        self.assertEqual(ConfigV4.from_dict(data), expected)
-        self.assertEqual(ConfigV4.from_dict({}), ConfigV4())
-        menu_only = ConfigV4(targets={"room:a": TargetOptions(visible_scenes=("x",))})
-        self.assertEqual(menu_only.to_dict()["targets"], {})
-        validate_v4(data, FakeRegistry(), BUILTINS)
+        self.assertEqual(Config.from_dict(data), expected)
+        self.assertEqual(Config.from_dict({}), Config())
+        validate(data, FakeRegistry(), BUILTINS)
 
     def test_part_stored_keys(self) -> None:
         # Icons and categories live in the catalogue, not the store.
@@ -468,231 +403,12 @@ class RoundTripTest(unittest.TestCase):
             Part("p_00000001", "Hell", "white", {}),
             PartLayer("all", "p_00000001"),
             StoredScene("s_00000001", "Hell", None, ()),
-            ConfigV4(),
+            Scene("s_00000001", "Hell", None, ()),
         ):
             with self.subTest(type(obj).__name__):
                 self.assertFalse(hasattr(obj, "__dict__"))
                 with self.assertRaises(dataclasses.FrozenInstanceError):
                     obj.__setattr__(dataclasses.fields(obj)[0].name, None)
-
-
-class ValidateTest(unittest.TestCase):
-    registry = FakeRegistry()
-
-    def test_valid_config_fills_defaults(self) -> None:
-        config = validate(
-            {
-                "zones": {
-                    "down": {"id": "down", "name": "Downstairs", "rooms": ["living"]}
-                },
-                "targets": {"room:living": {"detect_changes": False}},
-                "scenes": {"s_00000001": scene_dict("s_00000001", " Movie ")},
-                "settings": {"buses": {"zigbee:1": {"rate": 4}}},
-            },
-            self.registry,
-            presets=PRESETS,
-            fits=lambda scene: {"room:living", "zone:down"},
-        )
-        scene = config.scenes["s_00000001"]
-        self.assertEqual(scene.name, "Movie")
-        self.assertEqual(scene.layers[0].params, {"kelvin": 2700, "brightness": 100})
-        self.assertEqual(scene.brightness, 100)
-        self.assertFalse(config.targets["room:living"].detect_changes)
-        self.assertEqual(config.settings.buses, {"zigbee:1": {"rate": 4.0}})
-        self.assertEqual(config.zones["down"].lights, ())
-        self.assertEqual(config.settings.transition, 0.4)
-
-    def test_a_stored_transition_is_kept(self) -> None:
-        stored = {"settings": {"transition": 1.0}}
-        self.assertEqual(validate(stored, self.registry).settings.transition, 1.0)
-        self.assertEqual(Config.from_dict(stored).settings.transition, 1.0)
-
-    def assertCode(self, code: str, data, **kw) -> ConfigError:
-        with self.assertRaises(ConfigError) as ctx:
-            validate(data, self.registry, **kw)
-        self.assertEqual(ctx.exception.code, code)
-        return ctx.exception
-
-    def test_unknown_effect(self) -> None:
-        scene = scene_dict("s_00000001", "A")
-        scene["layers"].append({"lights": ["light.a"], "effect": "strobe"})
-        err = self.assertCode("unknown_effect", {"scenes": {"s_00000001": scene}})
-        self.assertEqual(err.path, ["scenes", "s_00000001", "layers", 1, "effect"])
-
-    def test_invalid_params(self) -> None:
-        scene = scene_dict("s_00000001", "A")
-        scene["layers"][0]["params"] = {"kelvin": 9000}
-        err = self.assertCode("invalid_params", {"scenes": {"s_00000001": scene}})
-        self.assertEqual(
-            err.path, ["scenes", "s_00000001", "layers", 0, "params", "kelvin"]
-        )
-        scene["layers"][0]["params"] = {"colour": 1}
-        self.assertCode("invalid_params", {"scenes": {"s_00000001": scene}})
-
-    def test_structure(self) -> None:
-        for data in (
-            {"scenes": {"relax": scene_dict("relax", "A")}},  # stored ids are s_<8 hex>
-            {"scenes": {"s_00000001": scene_dict("s_00000002", "A")}},
-            {"scenes": {"s_00000001": scene_dict("s_00000001", "A", layers=[])}},
-            {"scenes": {"s_00000001": scene_dict("s_00000001", "")}},
-            {"scenes": {"s_00000001": scene_dict("s_00000001", "x" * 65)}},
-            {"scenes": {"s_00000001": scene_dict("s_00000001", "A", brightness=0)}},
-            {"scenes": {"s_00000001": scene_dict("s_00000001", "A", others="on")}},
-            {"scenes": {"s_00000001": {**scene_dict("s_00000001", "A"), "extra": 1}}},
-            {"zones": {"Down": {"id": "Down", "name": "Down"}}},
-            {"zones": {"down": {"id": "up", "name": "Down"}}},
-            {"targets": {"area:x": {}}},
-            {"targets": {"room:x": {"extra_lights": ["switch.x"]}}},
-            {"settings": {"buses": {"z": {"rate": 0}}}},
-        ):
-            with self.subTest(data=data):
-                self.assertCode("invalid", data)
-
-    def test_reserved_names(self) -> None:
-        for name in ("Off", " manual ", "OFF"):
-            with self.subTest(name=name):
-                self.assertCode(
-                    "reserved_name",
-                    {"scenes": {"s_00000001": scene_dict("s_00000001", name)}},
-                )
-
-    def test_references(self) -> None:
-        unknown = {
-            "scenes": {"s_00000001": scene_dict("s_00000001", "A", preset="nope")}
-        }
-        self.assertCode("unknown_preset", unknown, presets=PRESETS)
-        validate(unknown, self.registry)  # presets unknown: not checked
-        renamed = {
-            "scenes": {
-                "s_00000001": scene_dict("s_00000001", "My relax", preset="relax")
-            }
-        }
-        err = self.assertCode("preset_name", renamed, presets=PRESETS)
-        self.assertEqual(err.path, ["scenes", "s_00000001", "name"])
-        self.assertIn("'Relax'", err.msg)
-        # A panel that still sends scopes fails loudly.
-        scoped = scene_dict("s_00000001", "A", scope=["room:living"])
-        self.assertCode("invalid", {"scenes": {"s_00000001": scoped}})
-
-    def test_duplicate_names(self) -> None:
-        def scenes(*items):
-            return {"scenes": {s["id"]: s for s in items}}
-
-        where = {
-            "s_0000000a": {"room:living"},
-            "s_0000000b": {"room:living", "room:kitchen"},
-            "s_0000000c": {"room:kitchen"},
-        }
-
-        def fits(scene: Scene) -> set[str]:
-            return where.get(scene.id, set())
-
-        living = scene_dict("s_0000000a", "Movie")
-        both = scene_dict("s_0000000b", "movie")
-        kitchen = scene_dict("s_0000000c", "MOVIE")
-        # One name per target, among the scenes with lights there.
-        validate(scenes(living, kitchen), self.registry, fits=fits)
-        err = self.assertCode("duplicate_name", scenes(living, both), fits=fits)
-        self.assertEqual(err.path, ["scenes", "s_0000000b", "name"])
-        self.assertIn("room:living", err.msg)
-        validate(scenes(living, both), self.registry)  # where unknown: presets only
-        # A preset's name is taken everywhere, whatever the lights.
-        for kw in ({}, {"fits": fits}):
-            with self.subTest(**kw):
-                err = self.assertCode(
-                    "duplicate_name",
-                    scenes(scene_dict("s_0000000d", "relax")),
-                    presets=PRESETS,
-                    **kw,
-                )
-                self.assertEqual(err.path, ["scenes", "s_0000000d", "name"])
-        # An edited preset goes by its preset's name.
-        edited = scene_dict("s_0000000e", "Relax", preset="relax")
-        validate(scenes(edited, living), self.registry, presets=PRESETS, fits=fits)
-
-    def test_validate_scene(self) -> None:
-        existing = Config.from_dict(
-            {
-                "scenes": {
-                    s["id"]: s
-                    for s in (
-                        scene_dict("s_0000000a", "Movie"),
-                        scene_dict("s_0000000b", "Movie"),
-                    )
-                }
-            }
-        )
-
-        def everywhere(scene: Scene) -> set[str]:
-            return {"room:living"}
-
-        # Only the saved scene's own clashes count.
-        new = validate_scene(
-            scene_dict("s_0000000c", "Dinner"),
-            self.registry,
-            existing,
-            presets=PRESETS,
-            fits=everywhere,
-        )
-        self.assertEqual(new.layers[0].params, {"kelvin": 2700, "brightness": 100})
-        single = Config.from_dict(
-            {"scenes": {"s_0000000a": scene_dict("s_0000000a", "Movie")}}
-        )
-        edit = validate_scene(
-            scene_dict("s_0000000a", "Movie", brightness=40),
-            self.registry,
-            single,
-            fits=everywhere,
-        )
-        self.assertEqual(edit.brightness, 40)
-        with self.assertRaises(ConfigError) as ctx:
-            validate_scene(
-                scene_dict("s_0000000c", "movie"),
-                self.registry,
-                existing,
-                fits=everywhere,
-            )
-        self.assertEqual(
-            (ctx.exception.code, ctx.exception.path),
-            ("duplicate_name", ["scenes", "s_0000000c", "name"]),
-        )
-        # Apart, the same name is fine.
-        validate_scene(
-            scene_dict("s_0000000c", "movie"),
-            self.registry,
-            existing,
-            fits=lambda scene: {"room:kitchen"} if scene.id == "s_0000000c" else set(),
-        )
-
-    def test_one_edit_per_preset(self) -> None:
-        everywhere = scene_dict("s_0000000a", "Relax", preset="relax")
-        stored = Config.from_dict({"scenes": {"s_0000000a": everywhere}})
-        second = scene_dict("s_0000000c", "Relax", preset="relax")
-        with self.assertRaises(ConfigError) as ctx:
-            validate_scene(second, self.registry, stored, presets=PRESETS)
-        self.assertEqual(ctx.exception.code, "duplicate_copy")
-        self.assertEqual(ctx.exception.path, ["scenes", "s_0000000c", "preset"])
-        self.assertIn("s_0000000a", ctx.exception.msg)
-        self.assertCode(
-            "duplicate_copy",
-            {"scenes": {"s_0000000a": everywhere, "s_0000000c": second}},
-        )
-        # Edits in place, other presets and user scenes are fine.
-        for data in (
-            {**everywhere, "brightness": 50},
-            scene_dict("s_0000000c", "Read", preset="read"),
-            scene_dict("s_0000000c", "Mine"),
-        ):
-            with self.subTest(data=data):
-                validate_scene(data, self.registry, stored, presets=PRESETS)
-
-    def test_validate_preset(self) -> None:
-        data = {**scene_dict("cozy", "Cozy"), "category": "white"}
-        scene = validate_preset(data, self.registry)
-        self.assertTrue(scene.builtin)
-        self.assertEqual(scene.category, "white")
-        with self.assertRaises(ConfigError):
-            validate_preset(scene_dict("cozy", "Cozy"), self.registry)
 
 
 class ConfigErrorTest(unittest.TestCase):
@@ -711,19 +427,6 @@ class ConfigErrorTest(unittest.TestCase):
             (err.code, err.msg, err.path),
             ("duplicate_name", "taken", ["scenes", "s_1"]),
         )
-
-
-class AvailableScenesTest(unittest.TestCase):
-    def test_edits_replace_presets_and_order(self) -> None:
-        edited = Scene.from_dict(scene_dict("s_0000000a", "Relax", preset="relax"))
-        user = Scene.from_dict(scene_dict("s_0000000c", "Mine"))
-        orphan = Scene.from_dict(scene_dict("s_0000000d", "Old copy", preset="gone"))
-        scenes = {s.id: s for s in (user, edited, orphan)}
-        every = available_scenes(scenes, PRESETS)
-        self.assertEqual(list(every), ["relax", "read", "s_0000000c", "s_0000000d"])
-        self.assertIs(every["relax"], edited)
-        self.assertIs(every["s_0000000d"], orphan)
-        self.assertIs(available_scenes({}, PRESETS)["read"], PRESETS["read"])
 
 
 class AllPartsTest(unittest.TestCase):
@@ -784,12 +487,29 @@ class ResolveTest(unittest.TestCase):
         self.assertEqual(resolve(scene, parts).brightness, 100)
         self.assertEqual(resolve(scene, {}).layers, ())
 
+    def test_a_part_on_its_own(self) -> None:
+        self.assertEqual(
+            part_scene(BUILTINS["read"]),
+            Scene("read", "Read", "mdi:book", (Layer("all", "white", WARM),)),
+        )
+        plain = StoredScene("s_00000001", "Read", None, (PartLayer("all", "read"),))
+        self.assertTrue(is_whole_room(plain, "read"))
+        self.assertFalse(is_whole_room(plain, "relax"))
+        for other in (
+            dataclasses.replace(plain, others="keep"),
+            dataclasses.replace(plain, transition=1.0),
+            dataclasses.replace(plain, layers=(PartLayer(("light.a",), "read"),)),
+            dataclasses.replace(plain, layers=(*plain.layers, *plain.layers)),
+        ):
+            with self.subTest(other=other):
+                self.assertFalse(is_whole_room(other, "read"))
 
-class ValidateV4Test(unittest.TestCase):
+
+class ValidateTest(unittest.TestCase):
     registry = FakeRegistry()
 
-    def run_validate(self, data, **kw) -> ConfigV4:
-        return validate_v4(data, self.registry, BUILTINS, **kw)
+    def run_validate(self, data, **kw) -> Config:
+        return validate(data, self.registry, BUILTINS, **kw)
 
     def assertCode(self, code: str, data, **kw) -> ConfigError:
         with self.assertRaises(ConfigError) as ctx:
@@ -801,7 +521,10 @@ class ValidateV4Test(unittest.TestCase):
         config = self.run_validate(
             {
                 "zones": {"down": {"id": "down", "name": "Down", "rooms": ["wc"]}},
-                "targets": {"zone:down": {"default_scene": "s_00000001"}},
+                "targets": {
+                    "zone:down": {"default_scene": "s_00000001"},
+                    "room:wc": {"detect_changes": False},
+                },
                 "parts": {
                     "p_0000000a": part_dict("p_0000000a", " Hell "),
                     "read": part_dict("read", "Read", params={"brightness": 50}),
@@ -818,7 +541,10 @@ class ValidateV4Test(unittest.TestCase):
                         }
                     ]
                 },
-                "settings": {"default_scene": "p_0000000a"},
+                "settings": {
+                    "default_scene": "p_0000000a",
+                    "buses": {"zigbee:1": {"rate": 4}},
+                },
             }
         )
         self.assertEqual(config.parts["p_0000000a"].name, "Hell")
@@ -834,9 +560,17 @@ class ValidateV4Test(unittest.TestCase):
                 (PartLayer(("room:wc",), "p_0000000a"), PartLayer("all", "read")),
             ),
         )
-        self.assertIsNone(config.targets["zone:down"].visible_scenes)
+        self.assertFalse(config.targets["room:wc"].detect_changes)
+        self.assertEqual(config.zones["down"].lights, ())
         self.assertEqual(config.settings.default_scene, "p_0000000a")
-        self.assertEqual(self.run_validate({}), ConfigV4())
+        self.assertEqual(config.settings.buses, {"zigbee:1": {"rate": 4.0}})
+        self.assertEqual(config.settings.transition, 0.4)
+        self.assertEqual(self.run_validate({}), Config())
+
+    def test_a_stored_transition_is_kept(self) -> None:
+        stored = {"settings": {"transition": 1.0}}
+        self.assertEqual(self.run_validate(stored).settings.transition, 1.0)
+        self.assertEqual(Config.from_dict(stored).settings.transition, 1.0)
 
     def test_structure(self) -> None:
         scene = stored_scene("s_00000001", "A")
@@ -856,10 +590,16 @@ class ValidateV4Test(unittest.TestCase):
             {"scenes": {"room:a": [{**scene, "others": "on"}]}},
             {"scenes": {"room:a": [stored_scene("s_00000001", "A", "s_00000002")]}},
             {"scenes": {"room:a": [scene], "room:b": [scene]}},
+            # A panel that still sends scopes or menus fails loudly.
+            {"scenes": {"room:a": [{**scene, "scope": ["room:a"]}]}},
             {"targets": {"room:a": {"visible_scenes": None}}},
             {"targets": {"room:a": {"default_scene": "relax"}}},
+            {"targets": {"area:x": {}}},
+            {"targets": {"room:x": {"extra_lights": ["switch.x"]}}},
             {"settings": {"default_scene": "s_00000001"}},
+            {"settings": {"buses": {"z": {"rate": 0}}}},
             {"zones": {"down": {"id": "up", "name": "Down"}}},
+            {"zones": {"Down": {"id": "Down", "name": "Down"}}},
         ):
             with self.subTest(data=data):
                 self.assertCode("invalid", data)
@@ -905,8 +645,20 @@ class ValidateV4Test(unittest.TestCase):
         self.assertIn("'Read'", err.msg)
         self.run_validate(parts(renamed), only={"p_0000000a"})
         self.run_validate(parts(part_dict("read", "Read"), hell))
-        # An edit whose built-in left the catalogue is ignored.
-        self.run_validate(parts(part_dict("gone", "Hell"), hell))
+        # An edit whose built-in left the catalogue is ignored, but not saved.
+        gone = part_dict("gone", "Hell")
+        self.run_validate(parts(gone, hell))
+        err = self.assertCode("unknown_part", parts(gone), only={"gone"})
+        self.assertEqual(err.path, ["parts", "gone", "id"])
+
+    def test_a_save_never_fails_on_a_part_it_does_not_name(self) -> None:
+        # Its effect may come from a plugin that is not loaded (any more).
+        strobe = part_dict("p_0000000a", "Strobe", effect="strobe", params={"x": 1})
+        data = {"parts": {"p_0000000a": strobe}}
+        config = self.run_validate(data, only={"s_00000001"})
+        self.assertEqual(config.parts["p_0000000a"].params, {"x": 1})
+        self.assertCode("unknown_effect", data, only={"p_0000000a"})
+        self.assertCode("unknown_effect", data)
 
     def test_scene_names_are_per_target(self) -> None:
         living = stored_scene("s_0000000a", "Movie")
@@ -1012,6 +764,26 @@ class ValidateV4Test(unittest.TestCase):
         self.run_validate(missing, only={"room:a"})
         mine = {"p_0000000a": part_dict("p_0000000a", "Hell")}
         self.run_validate({**missing, "parts": mine})
+
+    def test_validate_draft(self) -> None:
+        hell = part_dict("p_0000000a", "Hell", params={"kelvin": 3000})
+        draft = stored_scene("s_00000001", "Draft", "p_0000000a", "relax")
+        scene, parts = validate_draft(draft, [hell], self.registry, BUILTINS)
+        self.assertEqual(
+            scene.layers, (PartLayer("all", "p_0000000a"), PartLayer("all", "relax"))
+        )
+        self.assertEqual(parts["p_0000000a"].params["kelvin"], 3000)
+        # The part editor tries a part under its own id.
+        validate_draft(stored_scene("relax", "Relax"), [], self.registry, BUILTINS)
+        for scene_data, part_data, code in (
+            (stored_scene("s_00000001", "Draft", "p_0000000b"), [], "unknown_part"),
+            (stored_scene("s_00000001", "Off"), [], "reserved_name"),
+            (draft, [{**hell, "effect": "strobe"}], "unknown_effect"),
+            ({**draft, "layers": []}, [hell], "invalid"),
+        ):
+            with self.subTest(code=code), self.assertRaises(ConfigError) as ctx:
+                validate_draft(scene_data, part_data, self.registry, BUILTINS)
+            self.assertEqual(ctx.exception.code, code)
 
     def test_validate_builtin_part(self) -> None:
         data = part_dict("cozy", "Cozy", icon="mdi:sofa", category="white")

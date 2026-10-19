@@ -8,7 +8,7 @@ import dataclasses
 import logging
 from typing import Any
 
-from .models import EffectLookup, RuntimeV1, Scene
+from .models import EffectLookup, Part, RuntimeV1
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -41,12 +41,13 @@ type Raw = dict[str, Any]
 def migrate(
     data: Mapping[str, Any],
     effects: EffectLookup,
-    presets: Mapping[str, Scene],
+    presets: Mapping[str, Part],
     areas: Mapping[str, Collection[str]],
 ) -> tuple[Raw, dict[str, str]]:
     """Return the v3 config and the ids of merged scenes mapped to the kept one.
 
-    `areas` holds the light ids of each area, as the registries place them.
+    `presets` are the built-in parts, which v3 knew as presets. `areas` holds
+    the light ids of each area, as the registries place them.
     """
     data = copy.deepcopy(dict(data))
     zones: Mapping[str, Raw] = data.get("zones") or {}
@@ -195,7 +196,7 @@ def _within_scope(
     return bool(layers)
 
 
-def _override(scene: Raw, preset: Scene) -> Raw | None:
+def _override(scene: Raw, preset: Part) -> Raw | None:
     """Keep the everywhere edit of a preset; drop one scoped to some targets."""
     if scene.get("scope"):
         _LOGGER.warning(

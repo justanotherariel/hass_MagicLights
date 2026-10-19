@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import time
 
-from . import BEDROOM, KITCHEN, LIVING, HarnessCase
+from . import BEDROOM, KITCHEN, LIVING, HarnessCase, part, save, scene
 
 
 class OverrideTest(HarnessCase):
@@ -63,22 +63,11 @@ class OverrideTest(HarnessCase):
 
     async def test_turn_on_of_a_light_the_scene_keeps_off(self) -> None:
         h = self.h
-        await h.ws(
-            {
-                "type": "magic_lights/scene/save",
-                "scene": {
-                    "id": "s_00000001",
-                    "name": "Ceiling only",
-                    "layers": [
-                        {
-                            "lights": ["light.living_ceiling"],
-                            "effect": "white",
-                            "params": {"kelvin": 3000, "brightness": 80},
-                        }
-                    ],
-                },
-            }
+        bright = part("p_00000001", "Ceiling", kelvin=3000, brightness=80)
+        ceiling = scene(
+            "s_00000001", "Ceiling only", (["light.living_ceiling"], bright["id"])
         )
+        await save(h, "room:living_room", ceiling, parts=(bright,))
         await h.select(LIVING, "Ceiling only")
         self.assertEqual(
             self.ours("light.living_floor_lamp")[-1]["service"], "turn_off"

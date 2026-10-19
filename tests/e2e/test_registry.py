@@ -9,7 +9,7 @@ from homeassistant.helpers import entity_registry as er
 
 from tests.harness import DOMAIN
 
-from . import LIVING, HarnessCase
+from . import LIVING, HarnessCase, part, save, scene
 
 RENAMES = {
     "light.living_sofa_lamp": "light.sofa",
@@ -40,28 +40,14 @@ class RenameTest(HarnessCase):
                 },
             }
         )
-        red = {"xy": [0.68, 0.31]}
-        await h.ws(
-            {
-                "type": "magic_lights/scene/save",
-                "scene": {
-                    "id": "s_0000f001",
-                    "name": "TV red",
-                    "layers": [
-                        {
-                            "lights": ["room:living_room"],
-                            "effect": "white",
-                            "params": {},
-                        },
-                        {
-                            "lights": ["light.living_tv_strip"],
-                            "effect": "static",
-                            "params": {"color": red},
-                        },
-                    ],
-                },
-            }
+        red = part("p_0000f001", "Red", "static", color={"xy": [0.68, 0.31]})
+        tv_red = scene(
+            "s_0000f001",
+            "TV red",
+            (["room:living_room"], "read"),
+            (["light.living_tv_strip"], red["id"]),
         )
+        await save(h, "room:living_room", tv_red, parts=(red,))
         await h.ws(
             {
                 "type": "magic_lights/settings/save",
@@ -86,7 +72,8 @@ class RenameTest(HarnessCase):
             stored["targets"]["room:living_room"]["excluded_lights"], ["light.sofa"]
         )
         self.assertEqual(stored["zones"]["downstairs"]["lights"], ["light.desk"])
-        layers = stored["scenes"]["s_0000f001"]["layers"]
+        (scene_,) = stored["scenes"]["room:living_room"]
+        layers = scene_["layers"]
         self.assertEqual(layers[1]["lights"], ["light.tv"])
         self.assertEqual(
             stored["settings"]["light_buses"], {"light.hall": "zigbee:test"}

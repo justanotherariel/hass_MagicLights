@@ -14,7 +14,7 @@ SPOTS = ["light.kitchen_spot_1", "light.kitchen_spot_2"]
 
 class BusTest(HarnessCase):
     storage = {
-        "version": 3,
+        "version": 4,
         "minor_version": 1,
         "key": "magic_lights",
         "data": {

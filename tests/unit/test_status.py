@@ -45,7 +45,7 @@ def activation(
     return Activation(
         id=activation_id,
         target_id=target_id,
-        scene_id=sc.public_id,
+        scene_id=sc.id,
         scene=sc,
         started=START,
         transition=1.0,

@@ -88,7 +88,7 @@ class TargetSceneSelect(SelectEntity):
     _attr_translation_key = "scene"
     _attr_should_poll = False
     _unrecorded_attributes = frozenset(
-        {"lights", "parts", "manual", "scenes", "hidden_scenes", "elsewhere"}
+        {"lights", "parts", "manual", "scenes", "elsewhere"}
     )
 
     def __init__(self, data: MagicLightsData, target: Target, *, place: bool) -> None:
@@ -108,7 +108,6 @@ class TargetSceneSelect(SelectEntity):
         )
         self._menu: list[Scene] | None = None
         self._summaries: list[dict[str, Any]] = []
-        self._hidden: list[dict[str, Any]] = []
         self._shown: tuple[Any, ...] | None = None
         self._place = place
         self._refresh()
@@ -162,24 +161,16 @@ class TargetSceneSelect(SelectEntity):
             self._summaries = [
                 scene_summary(coordinator, registry, s, target) for s in self._menu
             ]
-            shown = {s.public_id for s in self._menu}
-            self._hidden = [
-                scene_summary(coordinator, registry, s, target)
-                for s in coordinator.scenes_for(self._target_id, include_hidden=True)
-                if s.public_id not in shown
-            ]
         status = coordinator.status(self._target_id)
         names = [scene.name for scene in self._menu]
         current = _current_option(status)
         # The running scene stays selectable even when it is not in the menu
-        # (a zone scene seen from a room, a hidden scene started by a service).
+        # (a zone scene seen from a room, a built-in started by a service).
         extra = [] if current in (OPTION_OFF, OPTION_MANUAL, *names) else [current]
         attributes = status.to_dict() | {
             "target_id": target.id,
             "kind": target.kind,
             "scenes": self._summaries,
-            # Cards may show scenes the menu leaves out, and play them.
-            "hidden_scenes": self._hidden,
         }
         shown = (
             [OPTION_OFF, *names, *extra, OPTION_MANUAL],
@@ -210,12 +201,26 @@ class TargetSceneSelect(SelectEntity):
             coordinator.turn_off(self._target_id, context=context)
         elif option == OPTION_MANUAL:
             coordinator.release(self._target_id, context=context)
-        else:
-            coordinator.activate(
-                self._target_id,
-                coordinator.find_scene(self._target_id, option),
-                context=context,
-            )
+        elif (scene := self._scene_option(option)) is not None:
+            coordinator.activate(self._target_id, scene, context=context)
+
+    def _scene_option(self, option: str) -> Scene | None:
+        """Return the scene an option names; None when it already runs here.
+
+        The running extra option may name what a call cannot reach: a user
+        part as the switch-on default runs again, a zone's scene seen from a
+        room keeps running.
+        """
+        coordinator = self._coordinator
+        status = coordinator.status(self._target_id)
+        names = (scene.name for scene in self._menu or ())
+        if (
+            status.scene_id is not None
+            and option == _current_option(status)
+            and option not in names
+        ):
+            return coordinator.resolve_scene(self._target_id, status.scene_id)
+        return coordinator.find_scene(self._target_id, option)
 
     # ---- entity services (services.py); HA sets self._context to the call's
 
@@ -253,7 +258,7 @@ class TargetSceneSelect(SelectEntity):
         if (
             status.state == "scene"
             and status.via is None
-            and status.scene_id == found.public_id
+            and status.scene_id == found.id
         ):
             coordinator.turn_off(self._target_id, context=self._context)
         else:

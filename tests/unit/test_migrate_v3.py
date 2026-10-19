@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 import copy
-import dataclasses
 from datetime import UTC, datetime
 import json
 import os
@@ -14,8 +13,6 @@ from typing import Any
 import unittest
 
 from custom_components.magic_lights import store
-from custom_components.magic_lights.effects import BUILTIN, Registry
-from custom_components.magic_lights.engine import Coordinator, build_coordinator
 from custom_components.magic_lights.engine.activation import plan_runs
 from custom_components.magic_lights.migrate_v3 import (
     OLD_DEFAULT_MENU,
@@ -24,30 +21,16 @@ from custom_components.magic_lights.migrate_v3 import (
 )
 from custom_components.magic_lights.models import (
     ActivationSnapshot,
-    Layer,
     RuntimeV1,
-    Scene,
     Target,
     TargetOptions,
 )
-from custom_components.magic_lights.presets import load_presets
-from custom_components.magic_lights.validation import validate
 from homeassistant.exceptions import HomeAssistantError, UnsupportedStorageVersionError
 from homeassistant.helpers.storage import Store
 
-from .fakes import (
-    FakeDriver,
-    FakeHost,
-    FakeLightIndex,
-    FakeRuntimeStore,
-    ShellHass,
-    make_light,
-    make_room,
-    make_zone,
-)
-
-REGISTRY = Registry(BUILTIN)
-PRESETS = load_presets(REGISTRY)
+from . import v3_model
+from .fakes import FakeLightIndex, ShellHass, make_light, make_room, make_zone
+from .v3_model import BUILTINS as PRESETS, REGISTRY, V3Scene, preset_scene
 
 # Set to a JSON file {"store": <.storage/magic_lights>, "areas": {area: [lights]}}
 # to check a real home before deploying.
@@ -207,28 +190,17 @@ def index_of(data: Mapping[str, Any], areas: Mapping[str, list[str]]) -> FakeLig
     )
 
 
-def fits(index: FakeLightIndex, scene: Scene, target: Target) -> bool:
-    return any(index.expand(layer.lights, target) for layer in scene.layers)
-
-
-def v2_scene(raw: Mapping[str, Any]) -> Scene:
-    """Build a v2 scene with its params validated, as the engine ran it."""
-    plain = Scene.from_dict(raw)
-    layers = tuple(
-        Layer(lay.lights, lay.effect, REGISTRY.get(lay.effect).validate(lay.params))
-        for lay in plain.layers
-    )
-    return dataclasses.replace(plain, layers=layers)
+fits = v3_model.fits
 
 
 def v2_available(
     target_id: str, data: Mapping[str, Any]
-) -> tuple[dict[str, Scene], set[str]]:
+) -> tuple[dict[str, V3Scene], set[str]]:
     """v2's scenes of a target by public id, and the ids of room-scoped edits."""
-    copies: dict[str, tuple[Scene, list[str]]] = {}
-    users: dict[str, Scene] = {}
+    copies: dict[str, tuple[V3Scene, list[str]]] = {}
+    users: dict[str, V3Scene] = {}
     for raw in data["scenes"].values():
-        found, scope = v2_scene(raw), raw.get("scope") or []
+        found, scope = V3Scene.from_raw(raw), raw.get("scope") or []
         if found.preset not in PRESETS:
             if not scope or target_id in scope:
                 users[found.id] = found
@@ -237,19 +209,27 @@ def v2_available(
                 copies[found.preset] = (found, scope)
         elif not scope:
             copies.setdefault(found.preset, (found, scope))
-    out = {pid: copies.get(pid, (preset, []))[0] for pid, preset in PRESETS.items()}
+    out = {
+        pid: copies.get(pid, (preset_scene(preset), []))[0]
+        for pid, preset in PRESETS.items()
+    }
     scoped = {c.id for c, scope in copies.values() if scope}
     return out | users, scoped
 
 
-def v2_menu(target: Target, available: Mapping[str, Scene], index: Any) -> list[str]:
+def v2_menu(
+    data: Mapping[str, Any],
+    target: Target,
+    available: Mapping[str, V3Scene],
+    index: Any,
+) -> list[str]:
     fitting = [pid for pid, s in available.items() if fits(index, s, target)]
-    if (order := target.options.visible_scenes) is None:
+    if (order := v3_model.menu_of(data, target.id)) is None:
         return [pid for pid in fitting if pid not in PRESETS]
     return [pid for pid in order if pid in fitting]
 
 
-def runs(scene: Scene, target: Target, index: FakeLightIndex) -> dict[Any, Any]:
+def runs(scene: V3Scene, target: Target, index: FakeLightIndex) -> dict[Any, Any]:
     """Map the lights each layer runs together to its effect and params.
 
     Layers keyed by their lights, not their place: a palette deals its colours
@@ -262,10 +242,40 @@ def runs(scene: Scene, target: Target, index: FakeLightIndex) -> dict[Any, Any]:
     return out | {"scene": (scene.others, scene.brightness, scene.transition)}
 
 
+class V3:
+    """How v3 ran a migrated store, as v3_model answers."""
+
+    def __init__(self, data: Mapping[str, Any], index: FakeLightIndex) -> None:
+        self.data = data
+        self.index = index
+
+    def resolve_scene(self, public_id: str) -> V3Scene | None:
+        return v3_model.resolve(self.data, public_id)
+
+    def find_scene(self, target_id: str, query: str) -> V3Scene:
+        found, error = v3_model.find(
+            self.data, self.index.targets[target_id], query, self.index
+        )
+        assert found is not None and error is None, error
+        return found
+
+    def fits(self, scene: V3Scene, target: Target) -> bool:
+        return fits(self.index, scene, target)
+
+    def scenes_for(self, target_id: str) -> list[V3Scene]:
+        target = self.index.targets[target_id]
+        return v3_model.scenes_for(self.data, target, self.index)
+
+    def every(self, target_id: str) -> list[V3Scene]:
+        """Return what fits the target: its menu and the scenes it hides."""
+        target = self.index.targets[target_id]
+        return list(v3_model.fitting(self.data, target, self.index).values())
+
+
 class MigrationCase(unittest.TestCase):
     def migrated(
         self, data: Mapping[str, Any], areas: Mapping[str, list[str]]
-    ) -> tuple[Coordinator, dict[str, str], dict[str, Any]]:
+    ) -> tuple[V3, dict[str, str], dict[str, Any]]:
         """Migrate and prove that no room runs or shows anything else."""
         before = copy.deepcopy(dict(data))
         result, remap = migrate(data, REGISTRY, PRESETS, areas)
@@ -273,31 +283,17 @@ class MigrationCase(unittest.TestCase):
         self.assertNotIn("scope", json.dumps(result["scenes"]))
         index = index_of(result, areas)
         old_targets = index_of(data, areas).targets
-        config = validate(
-            result,
-            REGISTRY,
-            presets=PRESETS,
-            fits=lambda s: {t.id for t in index.targets.values() if fits(index, s, t)},
-        )
-        coordinator = build_coordinator(
-            FakeHost(),
-            index,
-            REGISTRY,
-            {"ha": FakeDriver()},
-            config,
-            PRESETS,
-            FakeRuntimeStore(),
-        )
+        v3 = V3(result, index)
         for target in index.targets.values():
             with self.subTest(target=target.id):
                 old = old_targets[target.id]
                 self.assertEqual(old.lights, target.lights)
-                self.assert_room_kept(coordinator, index, old, data, remap)
-        return coordinator, remap, result
+                self.assert_room_kept(v3, index, old, data, remap)
+        return v3, remap, result
 
     def assert_room_kept(
         self,
-        coordinator: Coordinator,
+        v3: V3,
         index: FakeLightIndex,
         target: Target,
         data: Mapping[str, Any],
@@ -307,10 +303,10 @@ class MigrationCase(unittest.TestCase):
         available, room_edits = v2_available(target.id, data)
         old = {pid: s for pid, s in available.items() if fits(index, s, target)}
         for public_id, scene in old.items():
-            now = coordinator.resolve_scene(remap.get(public_id, public_id))
+            now = v3.resolve_scene(remap.get(public_id, public_id))
             self.assertIsNotNone(now, public_id)
             self.assertEqual(now.name.casefold(), scene.name.casefold(), public_id)
-            self.assertTrue(coordinator.fits(now, target), public_id)
+            self.assertTrue(v3.fits(now, target), public_id)
             if scene.id in room_edits:
                 # An edit of a preset for some rooms goes; the preset stays.
                 self.assertNotEqual(now.id, scene.id)
@@ -318,14 +314,14 @@ class MigrationCase(unittest.TestCase):
             self.assertEqual(
                 runs(now, target, index), runs(scene, target, index), public_id
             )
-        every = coordinator.scenes_for(target.id, include_hidden=True)
+        every = v3.every(target.id)
         names = [s.name.casefold() for s in every]
         self.assertEqual(len(names), len(set(names)), "one option per name")
-        menu = [available[pid].name for pid in v2_menu(target, available, index)]
-        if set(target.options.visible_scenes or ()) >= OLD_DEFAULT_MENU:
+        menu = [available[pid].name for pid in v2_menu(data, target, available, index)]
+        if set(v3_model.menu_of(data, target.id) or ()) >= OLD_DEFAULT_MENU:
             dropped = {PRESETS[pid].name for pid in OLD_DEFAULT_MENU}
             menu = [name for name in menu if name not in dropped]
-        shown = {s.name.casefold() for s in coordinator.scenes_for(target.id)}
+        shown = {s.name.casefold() for s in v3.scenes_for(target.id)}
         fit_before = {s.name.casefold() for s in old.values()}
         menu_before = {name.casefold() for name in menu}
         # Without scopes, a zone shows what is set up in its rooms, and a
@@ -345,7 +341,7 @@ class MigrationCase(unittest.TestCase):
 
 class HomeTest(MigrationCase):
     def test_same_named_room_scenes_become_one(self) -> None:
-        coordinator, remap, result = self.migrated(HOME, AREAS)
+        v3, remap, result = self.migrated(HOME, AREAS)
         self.assertEqual(
             remap,
             {
@@ -435,13 +431,11 @@ class HomeTest(MigrationCase):
             result["settings"], {"transition": 1.0, "default_scene": "s_000000d1"}
         )
 
-        self.assertIs(coordinator.resolve_scene("relax"), PRESETS["relax"])
-        self.assertEqual(coordinator.resolve_scene("read").id, "s_000000c2")
+        self.assertEqual(v3.resolve_scene("relax"), preset_scene(PRESETS["relax"]))
+        self.assertEqual(v3.resolve_scene("read").id, "s_000000c2")
         # Names stay apart where the scenes do.
-        self.assertEqual(coordinator.find_scene("room:hall", "night").id, "s_000000e1")
-        self.assertEqual(
-            coordinator.find_scene("room:office", "Night").id, "s_000000e2"
-        )
+        self.assertEqual(v3.find_scene("room:hall", "night").id, "s_000000e1")
+        self.assertEqual(v3.find_scene("room:office", "Night").id, "s_000000e2")
 
     def test_a_room_edit_of_a_preset_is_dropped_with_a_warning(self) -> None:
         with self.assertLogs(
@@ -469,7 +463,7 @@ class HomeTest(MigrationCase):
             ),
             {"s_000000b2|room:bedroom": 3, "tokyo|room:living": 1},
         )
-        coordinator, remap, _ = self.migrated(HOME, AREAS)
+        v3, remap, _ = self.migrated(HOME, AREAS)
         moved = remap_runtime(runtime, remap)
         self.assertEqual(
             [a.scene_id for a in moved.activations],
@@ -478,17 +472,11 @@ class HomeTest(MigrationCase):
         self.assertEqual(
             moved.salts, {"s_000000b0|room:bedroom": 3, "tokyo|room:living": 1}
         )
-        coordinator.restore_ownership(moved)
-        self.assertEqual(
-            {a.target_id: a.scene_id for a in coordinator.activations.values()},
-            {
-                "room:bedroom": "s_000000b0",
-                "room:hall": "s_000000b0",
-                "room:living": "s_000000f1",
-                "room:storage": "relax",
-            },
-        )
-        self.assertEqual(coordinator.salts["s_000000b0|room:bedroom"], 3)
+        # Each still runs in its room.
+        for activation in moved.activations:
+            with self.subTest(activation.target):
+                target = v3.index.targets[activation.target]
+                self.assertTrue(v3.fits(v3.resolve_scene(activation.scene_id), target))
 
 
 class MergeRulesTest(MigrationCase):
@@ -739,6 +727,8 @@ class StoredHomeTest(MigrationCase):
 
 
 class StoreMigrationTest(unittest.IsolatedAsyncioTestCase):
+    """A v2 store goes on through v3 to v4; see test_migrate_v4 for v3 stores."""
+
     async def asyncSetUp(self) -> None:
         tmp = tempfile.TemporaryDirectory()
         self.addCleanup(tmp.cleanup)
@@ -754,26 +744,50 @@ class StoreMigrationTest(unittest.IsolatedAsyncioTestCase):
         return text
 
     def config_store(self) -> store.ConfigStore:
-        return store.ConfigStore(self.hass, REGISTRY, PRESETS, lambda: AREAS)
+        areas = {a: (a.title(), lights) for a, lights in AREAS.items()}
+        return store.ConfigStore(self.hass, REGISTRY, PRESETS, lambda: areas)
 
     async def test_upgrade_keeps_a_backup_and_older_code_refuses_it(self) -> None:
         old = self.write(store.STORAGE_KEY, 2, HOME)
         runtime = self.write(store.RUNTIME_KEY, 1, {"activations": [], "salts": {}})
         config_store = self.config_store()
         config = await config_store.async_load_config()
-        self.assertEqual(config_store.remap["s_000000b1"], "s_000000b0")
-        self.assertEqual(len(config.scenes), 7)
+        self.assertEqual(config_store.remap_v3["s_000000b1"], "s_000000b0")
+        self.assertIn(("s_000000b0", "room:living"), config_store.remap)
+        self.assertEqual(
+            [s.name for s in config.scenes["room:closet"]], ["Sunny", "Tokyo"]
+        )
         self.assertEqual((self.storage / "magic_lights.v2.bak").read_text(), old)
         self.assertEqual(
-            (self.storage / "magic_lights.runtime.v1.bak").read_text(), runtime
+            (self.storage / "magic_lights.runtime.v2.bak").read_text(), runtime
         )
         saved = json.loads((self.storage / store.STORAGE_KEY).read_text())
-        self.assertEqual((saved["version"], saved["minor_version"]), (3, 1))
+        self.assertEqual((saved["version"], saved["minor_version"]), (4, 1))
         self.assertEqual(await self.config_store().async_load_config(), config)
 
-        older = Store(self.hass, 2, store.STORAGE_KEY, minor_version=1)
+        older = Store(self.hass, 3, store.STORAGE_KEY, minor_version=1)
         with self.assertRaises(UnsupportedStorageVersionError):
             await older.async_load()
+
+    async def test_running_scenes_follow_both_steps(self) -> None:
+        running = ActivationSnapshot(
+            "a_1",
+            "room:bedroom",
+            "s_000000b2",
+            datetime(2026, 10, 17, 8, 0, tzinfo=UTC),
+            tuple(AREAS["bedroom"]),
+            (),
+            {},
+            False,
+        )
+        config_store = self.config_store()
+        self.write(store.STORAGE_KEY, 2, HOME)
+        await config_store.async_load_config()
+        moved = config_store.remap_runtime(RuntimeV1((running,)))
+        self.assertEqual(
+            moved.activations[0].scene_id,
+            config_store.remap[("s_000000b0", "room:bedroom")],
+        )
 
     async def test_a_plugin_effect_registered_later_migrates(self) -> None:
         home = copy.deepcopy(HOME)
@@ -783,22 +797,26 @@ class StoreMigrationTest(unittest.IsolatedAsyncioTestCase):
         }
         self.write(store.STORAGE_KEY, 2, home)
         config = await self.config_store().async_load_config()
-        self.assertEqual(
-            config.scenes["s_000000f1"].layers[0],
-            Layer(("light.shelf",), "disco", {"speed": 3}),
-        )
+        (disco,) = [p for p in config.parts.values() if p.effect == "disco"]
+        self.assertEqual((disco.name, disco.params), ("Film", {"speed": 3}))
 
-    async def test_a_result_that_fails_validation_saves_nothing(self) -> None:
-        broken = copy.deepcopy(HOME)
-        broken["scenes"]["s_000000f1"]["brightness"] = 500
-        old = self.write(store.STORAGE_KEY, 2, broken)
-        config_store = self.config_store()
-        with self.assertRaises(HomeAssistantError) as err:
-            await config_store.async_load_config()
-        self.assertIn("s_000000f1", str(err.exception))
-        self.assertEqual((self.storage / store.STORAGE_KEY).read_text(), old)
-        self.assertEqual((self.storage / "magic_lights.v2.bak").read_text(), old)
-        self.assertEqual(config_store.remap, {})
+    async def test_a_failed_upgrade_saves_nothing(self) -> None:
+        reserved = copy.deepcopy(HOME)
+        reserved["scenes"]["s_000000f1"]["name"] = "Off"
+        unreadable = copy.deepcopy(HOME)
+        unreadable["scenes"]["s_000000f1"]["layers"][0]["lights"] = 5
+        for name, broken in (("invalid", reserved), ("crash", unreadable)):
+            with self.subTest(name):
+                old = self.write(store.STORAGE_KEY, 2, broken)
+                config_store = self.config_store()
+                with self.assertRaises(HomeAssistantError) as err:
+                    await config_store.async_load_config()
+                self.assertIn("magic_lights.v2.bak", str(err.exception))
+                self.assertEqual((self.storage / store.STORAGE_KEY).read_text(), old)
+                self.assertEqual(
+                    (self.storage / "magic_lights.v2.bak").read_text(), old
+                )
+                self.assertEqual((config_store.remap_v3, config_store.remap), ({}, {}))
 
 
 if __name__ == "__main__":

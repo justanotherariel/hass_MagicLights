@@ -1,9 +1,8 @@
-"""Validation of stored config, scenes, presets and parts."""
+"""Validation of the stored config, the built-in parts and drafts."""
 
 from __future__ import annotations
 
-from collections.abc import Callable, Collection, Iterable, Mapping, Sequence
-import dataclasses
+from collections.abc import Collection, Iterable, Mapping, Sequence
 from typing import Any
 
 import voluptuous as vol
@@ -11,11 +10,8 @@ import voluptuous as vol
 from .const import DEFAULT_TRANSITION, OPTION_MANUAL, OPTION_OFF
 from .models import (
     Config,
-    ConfigV4,
     EffectLookup,
-    Layer,
     Part,
-    Scene,
     Settings,
     StoredScene,
     TargetId,
@@ -50,36 +46,6 @@ _LIGHTS = vol.Any(
 )
 _EFFECT = vol.All(str, vol.Length(min=1))
 
-LAYER_SCHEMA = vol.Schema(
-    {
-        vol.Required("lights"): _LIGHTS,
-        vol.Required("effect"): _EFFECT,
-        vol.Optional("params", default=dict): dict,
-    }
-)
-
-SCENE_SCHEMA = vol.Schema(
-    {
-        vol.Required("id"): _SCENE_ID,
-        vol.Required("name"): _NAME,
-        vol.Optional("icon", default=None): vol.Maybe(str),
-        vol.Optional("preset", default=None): vol.Maybe(_ID),
-        vol.Required("layers"): vol.All([LAYER_SCHEMA], vol.Length(min=1)),
-        vol.Optional("others", default="off"): vol.In(["off", "keep"]),
-        vol.Optional("brightness", default=100): vol.All(
-            vol.Coerce(float), vol.Range(min=1, max=100), round
-        ),
-        vol.Optional("transition", default=None): vol.Maybe(_TRANSITION),
-    }
-)
-
-PRESET_SCHEMA = SCENE_SCHEMA.extend(
-    {
-        vol.Required("id"): _ID,
-        vol.Required("category"): vol.In(["white", "color", "dynamic", "adaptive"]),
-    }
-)
-
 PART_SCHEMA = vol.Schema(
     {
         vol.Required("id"): _PART_ID,
@@ -111,6 +77,11 @@ STORED_SCENE_SCHEMA = vol.Schema(
     }
 )
 
+# The part editor tries its part as a scene under the part's id.
+DRAFT_SCENE_SCHEMA = STORED_SCENE_SCHEMA.extend(
+    {vol.Required("id"): vol.Any(_SCENE_ID, _PART_ID)}
+)
+
 ZONE_SCHEMA = vol.Schema(
     {
         vol.Required("id"): _ID,
@@ -121,7 +92,7 @@ ZONE_SCHEMA = vol.Schema(
     }
 )
 
-OPTIONS_SCHEMA_V4 = vol.Schema(
+OPTIONS_SCHEMA = vol.Schema(
     {
         vol.Optional("excluded_lights", default=list): vol.All([_LIGHT_ID], _unique),
         vol.Optional("extra_lights", default=list): vol.All([_LIGHT_ID], _unique),
@@ -131,15 +102,6 @@ OPTIONS_SCHEMA_V4 = vol.Schema(
         ),
         vol.Optional("reclaim_on_turn_on", default=True): bool,
         vol.Optional("detect_changes", default=True): bool,
-    }
-)
-
-OPTIONS_SCHEMA = OPTIONS_SCHEMA_V4.extend(
-    {
-        vol.Optional("visible_scenes", default=None): vol.Maybe(
-            vol.All([str], _unique)
-        ),
-        vol.Optional("default_scene", default=None): vol.Maybe(str),
     }
 )
 
@@ -156,35 +118,21 @@ BUS_LIMITS_SCHEMA = vol.Schema(
 SETTINGS_SCHEMA = vol.Schema(
     {
         vol.Optional("transition", default=DEFAULT_TRANSITION): _TRANSITION,
-        vol.Optional("default_scene", default=None): vol.Maybe(str),
+        vol.Optional("default_scene", default=None): vol.Maybe(_PART_ID),
         vol.Optional("native_effects", default=True): bool,
         vol.Optional("buses", default=dict): {str: BUS_LIMITS_SCHEMA},
         vol.Optional("light_buses", default=dict): {_LIGHT_ID: str},
     }
 )
 
-SETTINGS_SCHEMA_V4 = SETTINGS_SCHEMA.extend(
-    {vol.Optional("default_scene", default=None): vol.Maybe(_PART_ID)}
-)
-
+# Entries are checked one by one, so that errors carry their ids in the path.
 CONFIG_SCHEMA = vol.Schema(
     {
         vol.Optional("zones", default=dict): {str: ZONE_SCHEMA},
         vol.Optional("targets", default=dict): {_TARGET_ID: OPTIONS_SCHEMA},
-        vol.Optional("scenes", default=dict): {str: SCENE_SCHEMA},
-        vol.Optional("settings", default=dict): SETTINGS_SCHEMA,
-    }
-)
-
-
-# Entries are checked one by one, so that errors carry their ids in the path.
-CONFIG_SCHEMA_V4 = vol.Schema(
-    {
-        vol.Optional("zones", default=dict): {str: ZONE_SCHEMA},
-        vol.Optional("targets", default=dict): {_TARGET_ID: OPTIONS_SCHEMA_V4},
         vol.Optional("parts", default=dict): {str: dict},
         vol.Optional("scenes", default=dict): {_TARGET_ID: [dict]},
-        vol.Optional("settings", default=dict): SETTINGS_SCHEMA_V4,
+        vol.Optional("settings", default=dict): SETTINGS_SCHEMA,
     }
 )
 
@@ -217,7 +165,7 @@ def _check_reserved(name: str, path: Sequence[Any]) -> None:
 def _params(
     raw: Mapping[str, Any], registry: EffectLookup, path: Sequence[Any]
 ) -> dict[str, Any]:
-    """Return the params of a layer or part checked by its effect, defaults filled."""
+    """Return the params of a part checked by its effect, defaults filled."""
     if (effect := registry.get(raw["effect"])) is None:
         raise ConfigError(
             "unknown_effect", f"unknown effect '{raw['effect']}'", [*path, "effect"]
@@ -230,147 +178,6 @@ def _params(
             f"{raw['effect']}: {err.msg}",
             [*path, "params", *err.path],
         ) from err
-
-
-def _build_scene(
-    raw: Mapping[str, Any], registry: EffectLookup, path: Sequence[Any]
-) -> Scene:
-    _check_reserved(raw["name"], [*path, "name"])
-    layers = tuple(
-        Layer.from_dict(
-            {**layer, "params": _params(layer, registry, [*path, "layers", i])}
-        )
-        for i, layer in enumerate(raw["layers"])
-    )
-    return dataclasses.replace(Scene.from_dict(raw), layers=layers)
-
-
-# The targets a scene has lights in.
-type Fits = Callable[[Scene], Collection[TargetId]]
-
-
-def _check_preset(
-    scene: Scene, presets: Mapping[str, Scene] | None, path: Sequence[Any]
-) -> None:
-    if presets is None or scene.preset is None:
-        return
-    if (preset := presets.get(scene.preset)) is None:
-        raise ConfigError(
-            "unknown_preset", f"unknown preset '{scene.preset}'", [*path, "preset"]
-        )
-    # Automations and select states know an edited preset by the preset's name.
-    if scene.name != preset.name:
-        raise ConfigError(
-            "preset_name",
-            f"an edited preset keeps its name '{preset.name}'",
-            [*path, "name"],
-        )
-
-
-def _check_copies(scene: Scene, scenes: Mapping[str, Scene]) -> None:
-    """Reject a second edit of a preset: one applies to every target."""
-    if scene.preset is None:
-        return
-    for other in scenes.values():
-        if other.id != scene.id and other.preset == scene.preset:
-            raise ConfigError(
-                "duplicate_copy",
-                f"'{other.name}' is already edited ({other.id})",
-                ["scenes", scene.id, "preset"],
-            )
-
-
-def _check_names(
-    scenes: Mapping[str, Scene],
-    presets: Mapping[str, Scene],
-    only: str | None,
-    fits: Fits | None,
-) -> None:
-    """Names are unique among the scenes of each target; presets count everywhere.
-
-    Without `fits`, user scenes are only checked against the presets.
-    """
-
-    def clash(offender: Scene, where: str) -> ConfigError:
-        return ConfigError(
-            "duplicate_name",
-            f"a scene named '{offender.name}' already exists ({where})",
-            ["scenes", offender.id, "name"],
-        )
-
-    preset_names = {p.name.casefold() for p in presets.values()}
-    users = [s for s in scenes.values() if s.preset not in presets]
-    for scene in users:
-        if only in (None, scene.id) and scene.name.casefold() in preset_names:
-            raise clash(scene, "a preset")
-    if fits is None:
-        return
-    seen: dict[tuple[TargetId, str], Scene] = {}
-    for scene in users:
-        for target_id in sorted(fits(scene)):
-            other = seen.setdefault((target_id, scene.name.casefold()), scene)
-            if other is scene or only not in (None, scene.id, other.id):
-                continue
-            raise clash(scene if only in (None, scene.id) else other, target_id)
-
-
-def validate_scene(
-    data: Mapping[str, Any],
-    registry: EffectLookup,
-    config: Config,
-    *,
-    presets: Mapping[str, Scene] | None = None,
-    fits: Fits | None = None,
-) -> Scene:
-    """Validate one stored scene for saving into `config`."""
-    path = ["scenes", data.get("id")]
-    raw = _apply(SCENE_SCHEMA, data, path)
-    scene = _build_scene(raw, registry, path)
-    _check_preset(scene, presets, path)
-    _check_copies(scene, config.scenes)
-    _check_names({**config.scenes, scene.id: scene}, presets or {}, scene.id, fits)
-    return scene
-
-
-def validate_preset(data: Mapping[str, Any], registry: EffectLookup) -> Scene:
-    """Validate one entry of presets/scenes.json."""
-    path = ["presets", data.get("id")]
-    raw = _apply(PRESET_SCHEMA, data, path)
-    return dataclasses.replace(_build_scene(raw, registry, path), builtin=True)
-
-
-def validate(
-    data: Mapping[str, Any],
-    registry: EffectLookup,
-    *,
-    presets: Mapping[str, Scene] | None = None,
-    fits: Fits | None = None,
-) -> Config:
-    """Validate a whole stored config; params come back with defaults filled."""
-    raw = _apply(CONFIG_SCHEMA, data, [])
-    for key, zone in raw["zones"].items():
-        if zone["id"] != key:
-            raise ConfigError(
-                "invalid", "zone id does not match its key", ["zones", key]
-            )
-    scenes = {}
-    for key, scene_data in raw["scenes"].items():
-        path = ["scenes", key]
-        if scene_data["id"] != key:
-            raise ConfigError("invalid", "scene id does not match its key", path)
-        scenes[key] = _build_scene(scene_data, registry, path)
-        _check_preset(scenes[key], presets, path)
-        _check_copies(scenes[key], scenes)
-    _check_names(scenes, presets or {}, None, fits)
-    return Config(
-        zones={k: Zone.from_dict(v) for k, v in raw["zones"].items()},
-        targets={k: TargetOptions.from_dict(v) for k, v in raw["targets"].items()},
-        scenes=scenes,
-        settings=Settings.from_dict(raw["settings"]),
-    )
-
-
-# ---- store v4
 
 
 def _touched(only: Collection[str] | None, *entity_ids: str) -> bool:
@@ -394,17 +201,32 @@ def validate_builtin_part(data: Mapping[str, Any], registry: EffectLookup) -> Pa
     return _build_part(_apply(BUILTIN_PART_SCHEMA, data, path), registry, path)
 
 
-def _stored_parts(raw: Mapping[str, Any], registry: EffectLookup) -> dict[str, Part]:
-    parts = {}
-    for key, data in raw.items():
-        path = ["parts", key]
-        part = _build_part(_apply(PART_SCHEMA, data, path), registry, path)
-        # A part plays under its own name when it is the switch-on default.
-        _check_reserved(part.name, [*path, "name"])
-        if part.id != key:
-            raise ConfigError("invalid", "part id does not match its key", path)
-        parts[key] = part
-    return parts
+def _part(
+    key: str,
+    data: Any,
+    registry: EffectLookup,
+    *,
+    checked: bool = True,
+) -> Part:
+    """Validate a stored part; unchecked, its params stay as stored."""
+    path = ["parts", key]
+    raw = _apply(PART_SCHEMA, data, path)
+    part = _build_part(raw, registry, path) if checked else Part.from_dict(raw)
+    # A part plays under its own name when it is the switch-on default.
+    _check_reserved(part.name, [*path, "name"])
+    if part.id != key:
+        raise ConfigError("invalid", "part id does not match its key", path)
+    return part
+
+
+def _stored_parts(
+    raw: Mapping[str, Any], registry: EffectLookup, only: Collection[str] | None
+) -> dict[str, Part]:
+    # An effect a plugin no longer provides must not block saving anything else.
+    return {
+        key: _part(key, data, registry, checked=_touched(only, key))
+        for key, data in raw.items()
+    }
 
 
 def _stored_scenes(
@@ -462,6 +284,12 @@ def _check_part_names(
     """
     for part in parts.values():
         builtin = builtins.get(part.id)
+        if builtin is None and not is_user_part(part.id) and _saved(only, part.id):
+            raise ConfigError(
+                "unknown_part",
+                f"there is no built-in part '{part.id}'",
+                ["parts", part.id, "id"],
+            )
         if (
             builtin is not None
             and part.name != builtin.name
@@ -481,15 +309,16 @@ def _check_part_names(
 
 
 def _check_layers(
-    scene: StoredScene, parts: Collection[str], rooms: Collection[str]
+    scene: StoredScene, parts: Collection[str], rooms: Collection[str] | None
 ) -> None:
+    """Check a scene's parts, and its room refs unless `rooms` is None."""
     for i, layer in enumerate(scene.layers):
         path = ["scenes", scene.id, "layers", i]
         if layer.part not in parts:
             raise ConfigError(
                 "unknown_part", f"unknown part '{layer.part}'", [*path, "part"]
             )
-        lights = () if layer.lights == "all" else layer.lights
+        lights = () if layer.lights == "all" or rooms is None else layer.lights
         if stray := [x for x in lights if x.startswith("room:") and x not in rooms]:
             raise ConfigError(
                 "unknown_target",
@@ -499,7 +328,7 @@ def _check_layers(
 
 
 def _check_target_scenes(
-    config: ConfigV4,
+    config: Config,
     target_id: TargetId,
     parts: Collection[str],
     live: Collection[TargetId] | None,
@@ -532,7 +361,7 @@ def _check_target_scenes(
     _check_unique_names("scene", scenes, target_id, only)
 
 
-def _check_defaults(config: ConfigV4, only: Collection[str] | None) -> None:
+def _check_defaults(config: Config, only: Collection[str] | None) -> None:
     """Check that a target's default is one of its scenes, the global one a part.
 
     A global default naming a built-in that left the catalogue means none.
@@ -561,34 +390,35 @@ def _check_defaults(config: ConfigV4, only: Collection[str] | None) -> None:
         )
 
 
-def validate_v4(
+def validate(
     data: Mapping[str, Any],
     registry: EffectLookup,
     builtins: Mapping[str, Part],
     *,
     only: Collection[str] | None = None,
     live: Collection[TargetId] | None = None,
-) -> ConfigV4:
-    """Validate a whole stored v4 config; params come back with defaults filled.
+) -> Config:
+    """Validate a whole stored config; params come back with defaults filled.
 
-    Shapes and params are checked everywhere. The rules between entries count
-    only where an entry in `only` takes part (None = all): the ids of saved
-    parts, scenes and targets, or "settings". So a save never fails on state
-    that drifted without one. A scene's target, parts and room refs drift, so
-    they count only for a scene `only` names: the scenes of a target that is
-    gone stay dormant (`live`: the target ids that exist; None takes every
-    room as existing) and a layer whose part is missing is dropped at resolve.
+    Shapes are checked everywhere, params of the parts a save names (None =
+    all). The rules between entries count only where an entry in `only` takes
+    part: the ids of saved parts, scenes and targets, or "settings". So a save
+    never fails on state that drifted without one. A scene's target, parts and
+    room refs drift, so they count only for a scene `only` names: the scenes
+    of a target that is gone stay dormant (`live`: the target ids that exist;
+    None takes every room as existing) and a layer whose part is missing is
+    dropped at resolve.
     """
-    raw = _apply(CONFIG_SCHEMA_V4, data, [])
+    raw = _apply(CONFIG_SCHEMA, data, [])
     for key, zone in raw["zones"].items():
         if zone["id"] != key:
             raise ConfigError(
                 "invalid", "zone id does not match its key", ["zones", key]
             )
-    config = ConfigV4(
+    config = Config(
         zones={k: Zone.from_dict(v) for k, v in raw["zones"].items()},
         targets={k: TargetOptions.from_dict(v) for k, v in raw["targets"].items()},
-        parts=_stored_parts(raw["parts"], registry),
+        parts=_stored_parts(raw["parts"], registry, only),
         scenes=_stored_scenes(raw["scenes"]),
         settings=Settings.from_dict(raw["settings"]),
     )
@@ -598,3 +428,25 @@ def validate_v4(
         _check_target_scenes(config, target_id, known, live, only)
     _check_defaults(config, only)
     return config
+
+
+def validate_draft(
+    scene: Mapping[str, Any],
+    parts: Iterable[Mapping[str, Any]],
+    registry: EffectLookup,
+    known: Collection[str],
+) -> tuple[StoredScene, dict[str, Part]]:
+    """Validate a scene and its changed parts that are previewed or tried.
+
+    Names are not checked against others: that happens on save. `known` are
+    the part ids the draft may use besides its own.
+    """
+    drafts = {}
+    for data in parts:
+        part = _part(str(data.get("id")), data, registry)
+        drafts[part.id] = part
+    path = ["scenes", scene.get("id")]
+    stored = StoredScene.from_dict(_apply(DRAFT_SCENE_SCHEMA, scene, path))
+    _check_reserved(stored.name, [*path, "name"])
+    _check_layers(stored, {*known, *drafts}, None)
+    return stored, drafts

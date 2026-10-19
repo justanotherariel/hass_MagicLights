@@ -71,7 +71,7 @@ def preview(
     activation = Activation(
         id="preview",
         target_id=target.id,
-        scene_id=scene.public_id,
+        scene_id=scene.id,
         scene=scene,
         started=start,
         transition=0.0,

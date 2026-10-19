@@ -12,8 +12,8 @@ from ..models import (
     EffectLookup,
     Host,
     LightIndex,
+    Part,
     RuntimeStore,
-    Scene,
 )
 from .coordinator import Coordinator
 from .host import HassHost
@@ -29,12 +29,12 @@ def build_coordinator(
     effects: EffectLookup,
     drivers: Mapping[str, Driver],
     config: Config,
-    presets: Mapping[str, Scene],
+    builtins: Mapping[str, Part],
     runtime: RuntimeStore,
 ) -> Coordinator:
     """Wire sender, scheduler and coordinator over a host."""
     sender = Sender(host, lights, drivers)
-    return Coordinator(host, lights, effects, sender, config, presets, runtime)
+    return Coordinator(host, lights, effects, sender, config, builtins, runtime)
 
 
 def create_engine(
@@ -43,12 +43,12 @@ def create_engine(
     effects: EffectLookup,
     drivers: Mapping[str, Driver],
     config: Config,
-    presets: Mapping[str, Scene],
+    builtins: Mapping[str, Part],
     runtime: RuntimeStore,
 ) -> Coordinator:
     """Build the engine on a running HomeAssistant; its watcher starts in start()."""
     coordinator = build_coordinator(
-        HassHost(hass), lights, effects, drivers, config, presets, runtime
+        HassHost(hass), lights, effects, drivers, config, builtins, runtime
     )
     coordinator.watcher = Watcher(hass, coordinator, lights)
     return coordinator

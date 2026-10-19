@@ -11,5 +11,5 @@
   "issue_tracker": "https://github.com/justanotherariel/hass_MagicLights/issues",
   "requirements": [],
   "single_config_entry": true,
-  "version": "2.1.0"
+  "version": "3.0.0"
 }

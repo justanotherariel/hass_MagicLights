@@ -20,12 +20,11 @@ from .const import DOMAIN, SIGNAL_CONFIG, SIGNAL_EFFECTS
 from .data import MagicLightsConfigEntry, MagicLightsData
 from .effects import async_get_registry
 from .engine import create_engine
-from .lights import LightIndexImpl, light_areas
-from .migrate_v3 import remap_runtime
+from .lights import LightIndexImpl, areas
 from .models import Config, LightsChange
 from .native import build_drivers
 from .panel import async_register_panel, async_register_static, async_unregister_panel
-from .presets import load_presets
+from .presets import load_parts
 from .services import async_setup_services
 from .store import ConfigStore, RuntimeStoreImpl
 from .websocket import async_register_websocket
@@ -43,14 +42,14 @@ async def async_setup(hass: HomeAssistant, config: ConfigType) -> bool:
 
 async def async_setup_entry(hass: HomeAssistant, entry: MagicLightsConfigEntry) -> bool:
     registry = async_get_registry(hass)
-    presets = await hass.async_add_executor_job(load_presets, registry)
-    store = ConfigStore(hass, registry, presets, partial(light_areas, hass))
+    builtins = await hass.async_add_executor_job(load_parts, registry)
+    store = ConfigStore(hass, registry, builtins, partial(areas, hass))
     config = await store.async_load_config() or Config()
     runtime = RuntimeStoreImpl(hass)
     snapshot = await runtime.load()
-    if store.remap and snapshot is not None:
-        # Running scenes follow their merge; saved before anything can end them.
-        snapshot = remap_runtime(snapshot, store.remap)
+    if (store.remap_v3 or store.remap) and snapshot is not None:
+        # Running scenes follow the upgrade; saved before anything can end them.
+        snapshot = store.remap_runtime(snapshot)
         await runtime.save(snapshot)
     integration = await async_get_integration(hass, DOMAIN)
 
@@ -59,7 +58,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MagicLightsConfigEntry) 
     lights = LightIndexImpl(hass, config, drivers)
     lights.rebuild()
     coordinator = create_engine(
-        hass, lights, registry, drivers, config, presets, runtime
+        hass, lights, registry, drivers, config, builtins, runtime
     )
     # Before the select platform, so the selects are born with this status.
     coordinator.restore_ownership(snapshot)
@@ -69,7 +68,7 @@ async def async_setup_entry(hass: HomeAssistant, entry: MagicLightsConfigEntry) 
         store,
         runtime,
         registry,
-        presets,
+        builtins,
         str(integration.version),
     )
 
@@ -177,16 +176,19 @@ def _rename_light(config: Config, old: str, new: str) -> Config:
             for target_id, options in config.targets.items()
         },
         scenes={
-            scene_id: replace(
-                scene,
-                layers=tuple(
-                    layer
-                    if layer.lights == "all"
-                    else replace(layer, lights=ids(layer.lights))
-                    for layer in scene.layers
-                ),
+            target_id: tuple(
+                replace(
+                    scene,
+                    layers=tuple(
+                        layer
+                        if layer.lights == "all"
+                        else replace(layer, lights=ids(layer.lights))
+                        for layer in scene.layers
+                    ),
+                )
+                for scene in scenes
             )
-            for scene_id, scene in config.scenes.items()
+            for target_id, scenes in config.scenes.items()
         },
         settings=replace(
             config.settings,

@@ -17,6 +17,7 @@ from custom_components.magic_lights.engine import build_coordinator
 from custom_components.magic_lights.engine.activation import seeded_rng
 from custom_components.magic_lights.engine.coordinator import ADOPTION_GRACE
 from custom_components.magic_lights.engine.sender import SETTLE_TIME
+from custom_components.magic_lights.migrate_v4 import scene_id as migrated_id
 from custom_components.magic_lights.models import (
     OFF,
     ActivationSnapshot,
@@ -28,11 +29,16 @@ from custom_components.magic_lights.models import (
     HaLight,
     Layer,
     LightState,
+    Part,
+    PartLayer,
     RuntimeV1,
     Scene,
     Settings,
+    StoredScene,
     Target,
+    TargetId,
     TargetOptions,
+    part_scene,
 )
 from homeassistant.core import Context
 from homeassistant.exceptions import ServiceValidationError
@@ -182,52 +188,38 @@ def deal_brightness(scene_id: str, target_id: str, salt: int) -> float:
     return (pick % 50 + 1) / 100
 
 
-# ---- scenes
+# ---- parts and scenes
 
 
-def preset(
-    scene_id: str,
-    effect: str,
-    params: Mapping[str, Any] | None = None,
-    *,
-    lights: Any = "all",
-    **kw: Any,
-) -> Scene:
-    return Scene(
-        scene_id,
-        scene_id.replace("_", " ").title(),
-        None,
-        (Layer(lights, effect, params or {}),),
-        builtin=True,
-        **kw,
+def builtin(part_id: str, effect: str, params: Mapping[str, Any] | None = None) -> Part:
+    return Part(part_id, part_id.replace("_", " ").title(), effect, dict(params or {}))
+
+
+BUILTINS = {
+    p.id: p
+    for p in (
+        builtin("relax", "white", {"kelvin": 2237, "brightness": 56}),
+        builtin("read", "white", {"kelvin": 2890}),
+        builtin("tokyo", "static", {"color": {"xy": [0.2, 0.3]}}),
+        builtin("candle", "flicker"),
+        builtin("adaptive", "adaptive"),
+        builtin("glow", "native"),
+        builtin("dark", "off"),
+        builtin("dealt", "deal"),
     )
+}
 
+CORNER = Scene(
+    "corner", "Corner", None, (Layer(("light.l1",), "white", {"kelvin": 2700}),)
+)
+CORNER_KEEP = replace(CORNER, id="corner_keep", name="Corner Keep", others="keep")
 
-PRESETS = {
-    s.id: s
-    for s in (
-        preset("relax", "white", {"kelvin": 2237, "brightness": 56}),
-        preset("read", "white", {"kelvin": 2890}),
-        preset("tokyo", "static", {"color": {"xy": [0.2, 0.3]}}),
-        preset("candle", "flicker"),
-        preset("adaptive", "adaptive"),
-        preset("glow", "native"),
-        preset("dark", "off"),
-        preset(
-            "corner",
-            "white",
-            {"kelvin": 2700},
-            lights=("light.l1",),
-        ),
-        preset(
-            "corner_keep",
-            "white",
-            {"kelvin": 2700},
-            lights=("light.l1",),
-            others="keep",
-        ),
-        preset("dealt", "deal"),
-    )
+# What tests run straight away: the built-ins on their own, and two scenes
+# that light only light.l1.
+SCENES = {
+    **{part_id: part_scene(part) for part_id, part in BUILTINS.items()},
+    CORNER.id: CORNER,
+    CORNER_KEEP.id: CORNER_KEEP,
 }
 
 
@@ -239,6 +231,30 @@ def user_scene(
     **kw: Any,
 ) -> Scene:
     return Scene(scene_id, name, None, (Layer("all", effect, params or {}),), **kw)
+
+
+def user_part(
+    part_id: str, effect: str = "white", params: Mapping[str, Any] | None = None
+) -> Part:
+    return Part(part_id, part_id, effect, dict(params or {}))
+
+
+def stored(
+    scene_id: str, name: str, *layers: tuple[Any, str], **kw: Any
+) -> StoredScene:
+    """Return a stored scene; each layer is (lights, part id)."""
+    return StoredScene(
+        scene_id,
+        name,
+        None,
+        tuple(PartLayer(lights, part) for lights, part in layers),
+        **kw,
+    )
+
+
+def whole(scene_id: str, part_id: str, name: str | None = None) -> StoredScene:
+    """Return a scene that plays one part on all of its target's lights."""
+    return stored(scene_id, name or BUILTINS[part_id].name, ("all", part_id))
 
 
 # ---- the rig
@@ -300,6 +316,8 @@ class Rig:
         self,
         *,
         scenes: Iterable[Scene] = (),
+        library: Mapping[TargetId, Iterable[StoredScene]] | None = None,
+        parts: Iterable[Part] = (),
         settings: Settings | None = None,
         runtime: RuntimeV1 | None = None,
         lights: Iterable | None = None,
@@ -307,6 +325,7 @@ class Rig:
         start: bool = True,
         **world_kw: Any,
     ) -> None:
+        """Build the engine over the world; `scenes` run as they are."""
         default_lights, default_targets = world(**world_kw)
         self.host = FakeHost()
         self.index = FakeLightIndex(
@@ -319,8 +338,11 @@ class Rig:
             self.registry.add(effect)
         self.driver = FakeDriver()
         self.store = FakeRuntimeStore(runtime)
+        self.scenes = {**SCENES, **{s.id: s for s in scenes}}
         self.config = Config(
-            scenes={s.id: s for s in scenes}, settings=settings or Settings()
+            parts={p.id: p for p in parts},
+            scenes={t: tuple(v) for t, v in (library or {}).items()},
+            settings=settings or Settings(),
         )
         for entity_id in self.index.lights:
             self.host.set_state(entity_id, HA_OFF)
@@ -330,7 +352,7 @@ class Rig:
             self.registry,
             {"ha": self.driver},
             self.config,
-            PRESETS,
+            BUILTINS,
             self.store,
         )
         if runtime is not None:
@@ -340,8 +362,17 @@ class Rig:
 
     # actions
     def activate(self, target: str, scene_id: str, **kw: Any) -> None:
-        scene = self.c.resolve_scene(scene_id) or self.config.scenes[scene_id]
+        scene = self.c.resolve_scene(target, scene_id) or self.scenes[scene_id]
         self.c.activate(target, scene, **kw)
+
+    def apply(self, saved: Iterable[str] = (), **changes: Any) -> None:
+        """Apply the config with some fields changed, as a save naming `saved`."""
+        if "scenes" in changes:
+            changes["scenes"] = {t: tuple(v) for t, v in changes["scenes"].items()}
+        if "parts" in changes:
+            changes["parts"] = {p.id: p for p in changes["parts"]}
+        self.config = replace(self.config, **changes)
+        self.c.apply_config(self.config, frozenset(saved))
 
     def report(self, entity_id: str, new: HaLight | None) -> None:
         old = self.host.state(entity_id)
@@ -382,6 +413,11 @@ ZONE = "zone:downstairs"
 MENU = ("relax", "read", "tokyo", "candle", "adaptive", "glow")
 
 
+def menu(*part_ids: str) -> list[StoredScene]:
+    """Whole-room scenes of built-ins, numbered in order."""
+    return [whole(f"s_{n:08x}", part_id) for n, part_id in enumerate(part_ids, 1)]
+
+
 # ---- tests
 
 
@@ -415,7 +451,7 @@ class ActivateTest(unittest.TestCase):
         self.assertEqual(rig.last("light.l1").transition, 3)
         rig.activate(ROOM, "read")
         self.assertEqual(rig.last("light.l1").transition, 2.0)
-        rig.c.activate(ROOM, replace(PRESETS["read"], transition=4.0))
+        rig.c.activate(ROOM, replace(SCENES["read"], transition=4.0))
         self.assertEqual(rig.last("light.l1").transition, 4.0)
         self.assertEqual(rig.c.status(ROOM).brightness, 100)
 
@@ -532,7 +568,7 @@ class ActivateTest(unittest.TestCase):
     def test_unknown_target_raises(self) -> None:
         rig = Rig()
         with self.assertRaises(ServiceValidationError):
-            rig.c.activate("room:attic", PRESETS["relax"])
+            rig.c.activate("room:attic", SCENES["relax"])
         self.assertEqual(rig.c.status("room:attic").state, "off")
 
 
@@ -745,29 +781,33 @@ class AdjustNextReshuffleTest(unittest.TestCase):
         self.assertEqual(rig.sent("light.l2"), [])
 
     def test_next_and_previous(self) -> None:
-        rig = Rig(living=TargetOptions(visible_scenes=MENU))
-        self.assertEqual([s.id for s in rig.c.scenes_for(ROOM)], list(MENU))
+        rig = Rig(library={ROOM: menu(*MENU)})
+        names = [s.name for s in rig.c.scenes_for(ROOM)]
+        self.assertEqual(
+            names, ["Relax", "Read", "Tokyo", "Candle", "Adaptive", "Glow"]
+        )
         rig.c.next_scene(ROOM)
-        self.assertEqual(rig.own(ROOM).scene_id, "relax")
+        self.assertEqual(rig.own(ROOM).scene_id, "s_00000001")
         rig.c.next_scene(ROOM)
-        self.assertEqual(rig.own(ROOM).scene_id, "read")
+        self.assertEqual(rig.own(ROOM).scene.name, "Read")
         rig.c.next_scene(ROOM, -1)
-        self.assertEqual(rig.own(ROOM).scene_id, "relax")
+        self.assertEqual(rig.own(ROOM).scene.name, "Relax")
         rig.activate(ROOM, "glow")
+        self.assertEqual(rig.own(ROOM).scene_id, "s_00000006")
         rig.c.next_scene(ROOM)
         self.assertIsNone(rig.own(ROOM))
         self.assertEqual(rig.events()[-1]["type"], "off")
         rig.c.next_scene(ROOM, -1)
-        self.assertEqual(rig.own(ROOM).scene_id, "glow")
+        self.assertEqual(rig.own(ROOM).scene.name, "Glow")
         rig.activate(ROOM, "relax")
         rig.c.next_scene(ROOM, -1, cycle=False)  # nothing before the first
-        self.assertEqual(rig.own(ROOM).scene_id, "relax")
+        self.assertEqual(rig.own(ROOM).scene.name, "Relax")
 
     def test_next_from_a_zone_scene_steps_from_it(self) -> None:
-        rig = Rig(living=TargetOptions(visible_scenes=MENU))
+        rig = Rig(library={ROOM: menu(*MENU)})
         rig.activate(ZONE, "read")
         rig.c.next_scene(ROOM)
-        self.assertEqual(rig.own(ROOM).scene_id, "tokyo")
+        self.assertEqual(rig.own(ROOM).scene.name, "Tokyo")
         self.assertEqual(rig.own(ZONE).lights, set(KITCHEN_LIGHTS))
 
     def test_reshuffle_reseeds_and_persists_the_salt(self) -> None:
@@ -783,64 +823,119 @@ class AdjustNextReshuffleTest(unittest.TestCase):
         self.assertEqual(rig.own(ROOM).salt, 1)
 
 
+HELL = user_part("p_00000001", "white", {"kelvin": 4000})
+WARM = user_part("p_00000002", "white", {"kelvin": 2200})
+
+
 class ScenesTest(unittest.TestCase):
-    def test_default_menu_holds_the_user_scenes_that_fit(self) -> None:
-        edited = user_scene("s_00000001", "Relax", preset="relax")
-        mine = explicit("s_00000002", "Mine", "room:living")
-        anywhere = user_scene("s_00000003", "Anywhere")
-        rig = Rig(scenes=[edited, mine, anywhere])
-        self.assertEqual(
-            [s.id for s in rig.c.scenes_for(ROOM)], ["s_00000002", "s_00000003"]
-        )
-        self.assertEqual([s.id for s in rig.c.scenes_for(KITCHEN)], ["s_00000003"])
-        self.assertEqual(
-            [s.id for s in rig.c.scenes_for(ZONE)], ["s_00000002", "s_00000003"]
-        )
-        # Hidden presets, edited or not, still run.
-        every = [s.id for s in rig.c.scenes_for(ROOM, include_hidden=True)]
-        self.assertEqual(len(every), len(PRESETS) + 2)
-        self.assertIn("s_00000001", every)
-        self.assertIs(rig.c.find_scene(ROOM, "relax"), edited)
-        self.assertIs(rig.c.find_scene(KITCHEN, "Relax"), edited)
-        self.assertEqual(rig.c.find_scene(KITCHEN, "Tokyo").id, "tokyo")
-
-    def test_visibility_order_and_edited_presets(self) -> None:
-        edited = user_scene("s_00000001", "Relax", preset="relax")
-        mine = user_scene("s_00000002", "Mine")
+    def test_a_targets_menu_is_its_scenes_that_fit(self) -> None:
         rig = Rig(
-            scenes=[edited, mine],
-            living=TargetOptions(visible_scenes=("s_00000002", "relax", "gone")),
+            parts=[HELL],
+            library={
+                ROOM: [
+                    stored("s_00000001", "Mine", ("all", HELL.id)),
+                    stored("s_00000002", "Film", (["light.k1"], HELL.id)),
+                    whole("s_00000003", "tokyo"),
+                ],
+                KITCHEN: [stored("s_00000004", "Anywhere", ("all", HELL.id))],
+                "room:attic": [whole("s_00000005", "relax")],
+            },
         )
         self.assertEqual(
-            [s.id for s in rig.c.scenes_for(ROOM)], ["s_00000002", "s_00000001"]
+            [s.id for s in rig.c.scenes_for(ROOM)], ["s_00000001", "s_00000003"]
         )
-        hidden = rig.c.scenes_for(ROOM, include_hidden=True)
-        self.assertEqual(len(hidden), len(PRESETS) + 1)
-        self.assertIs(rig.c.resolve_scene("relax"), edited)
-        self.assertIs(rig.c.resolve_scene("read"), PRESETS["read"])
-        self.assertIs(rig.c.resolve_scene("s_00000002"), mine)
-        self.assertIsNone(rig.c.resolve_scene("s_00000001"))  # known by "relax"
-        kitchen = [s.id for s in rig.c.scenes_for(KITCHEN)]
-        self.assertNotIn("dark", kitchen)
-        self.assertEqual(kitchen, ["s_00000002"])
+        self.assertEqual(
+            [s.id for s in rig.c.scenes_of(ROOM)],
+            ["s_00000001", "s_00000002", "s_00000003"],
+        )
+        self.assertEqual([s.id for s in rig.c.scenes_for(KITCHEN)], ["s_00000004"])
+        # A zone has its own scenes; a target that is gone has none.
+        self.assertEqual(rig.c.scenes_for(ZONE), [])
+        self.assertEqual(rig.c.scenes_for("room:attic"), [])
+        mine = rig.c.scenes_for(ROOM)[0]
+        self.assertEqual(mine.layers, (Layer("all", "white", {"kelvin": 4000}),))
 
-    def test_one_option_per_name(self) -> None:
-        # Two scenes of one name can both fit once a light moves between rooms.
-        first = explicit("s_00000001", "Hell", "light.l1")
-        second = explicit("s_00000002", "hell", "light.k1", "light.l2")
-        rig = Rig(scenes=[first, second])
-        self.assertEqual([s.id for s in rig.c.scenes_for(ROOM)], ["s_00000001"])
-        self.assertIs(rig.c.find_scene(ROOM, "HELL"), first)
-        self.assertEqual([s.id for s in rig.c.scenes_for(KITCHEN)], ["s_00000002"])
-
-    def test_find_scene(self) -> None:
-        rig = Rig()
-        self.assertEqual(rig.c.find_scene(ROOM, "relax").id, "relax")
-        self.assertEqual(rig.c.find_scene(ROOM, "rELAx").id, "relax")
-        self.assertEqual(rig.c.find_scene(ROOM, "dark").id, "dark")  # hidden
+    def test_find_scene_tries_the_targets_scenes_then_the_built_ins(self) -> None:
+        mine = stored("s_00000001", "Relax", ("all", HELL.id))
+        rig = Rig(parts=[HELL], library={ROOM: [mine]})
+        for query in ("s_00000001", "relax", "RELAX"):
+            with self.subTest(query):
+                self.assertEqual(rig.c.find_scene(ROOM, query).id, mine.id)
+        # By its id, the built-in.
+        self.assertEqual(rig.c.find_scene(KITCHEN, "Relax").id, "relax")
+        self.assertEqual(rig.c.find_scene(ROOM, "tokyo").id, "tokyo")
+        self.assertEqual(rig.c.find_scene(ROOM, "tOKYo").name, "Tokyo")
+        self.assertEqual(rig.c.find_scene(ROOM, "dark").id, "dark")
         with self.assertRaises(ServiceValidationError) as err:
             rig.c.find_scene(ROOM, "Nope")
         self.assertEqual(err.exception.translation_key, "unknown_scene")
+
+    def test_calls_never_reach_user_parts_or_other_targets(self) -> None:
+        rig = Rig(
+            parts=[HELL],
+            library={ROOM: [stored("s_00000001", "Hell", ("all", HELL.id))]},
+        )
+        for query in ("Hell", HELL.id, "s_00000001"):
+            with (
+                self.subTest(query),
+                self.assertRaises(ServiceValidationError) as err,
+            ):
+                rig.c.find_scene(KITCHEN, query)
+            self.assertEqual(err.exception.translation_key, "unknown_scene")
+        self.assertIsNone(rig.c.resolve_scene(KITCHEN, "s_00000001"))
+
+    def test_a_part_runs_as_the_targets_scene_of_it(self) -> None:
+        rig = Rig(
+            library={
+                ROOM: [
+                    whole("s_00000001", "read", "Evening"),
+                    whole("s_00000002", "tokyo"),
+                ],
+                # Not just the part on all lights: these do not stand in for it.
+                KITCHEN: [
+                    stored("s_00000003", "Read", ("all", "read"), others="keep"),
+                    stored("s_00000004", "Tokyo", ("all", "tokyo"), transition=2.0),
+                    stored("s_00000005", "Relax", ("all", "relax"), ("all", "dark")),
+                ],
+            }
+        )
+        self.assertEqual(rig.c.resolve_scene(ROOM, "read").id, "s_00000001")
+        self.assertEqual(rig.c.find_scene(ROOM, "Read").id, "s_00000001")
+        self.assertEqual(rig.c.find_scene(ROOM, "Tokyo").id, "s_00000002")
+        for part_id in ("read", "tokyo", "relax"):
+            self.assertEqual(rig.c.resolve_scene(KITCHEN, part_id).id, part_id)
+        self.assertEqual(rig.c.resolve_scene(ZONE, "read"), SCENES["read"])
+        self.assertIsNone(rig.c.resolve_scene(ROOM, "nope"))
+
+    def test_an_edit_of_a_built_in_plays_everywhere_under_its_name(self) -> None:
+        edit = replace(BUILTINS["relax"], params={"kelvin": 2237, "brightness": 20})
+        rig = Rig(parts=[edit], library={ROOM: [whole("s_00000001", "relax")]})
+        for target_id in (ROOM, KITCHEN):
+            found = rig.c.find_scene(target_id, "Relax")
+            self.assertEqual(found.name, "Relax")
+            self.assertEqual(found.layers[0].params["brightness"], 20)
+        self.assertEqual(rig.c.parts["relax"].name, "Relax")
+
+    def test_the_default_runs_as_the_rooms_scene_of_it(self) -> None:
+        rig = Rig(
+            settings=Settings(default_scene="adaptive"),
+            library={ROOM: [whole("s_00000001", "adaptive")]},
+        )
+        rig.report("light.l1", ha_on())
+        rig.report("light.k1", ha_on())
+        self.assertEqual(rig.own(ROOM).scene_id, "s_00000001")
+        self.assertEqual(rig.c.status(ROOM).scene_name, "Adaptive")
+        self.assertEqual(rig.own(KITCHEN).scene_id, "adaptive")
+
+    def test_a_part_running_becomes_the_scene_made_of_it(self) -> None:
+        rig = Rig()
+        rig.activate(ROOM, "tokyo")
+        a = rig.own(ROOM)
+        rig.clear()
+        rig.apply(scenes={ROOM: [whole("s_00000001", "tokyo")]})
+        self.assertIs(rig.own(ROOM), a)
+        self.assertEqual(rig.c.status(ROOM).scene_id, "s_00000001")
+        self.assertEqual(rig.driver.sent, [])
 
 
 def explicit(scene_id: str, name: str, *lights: str, **kw: Any) -> Scene:
@@ -854,11 +949,15 @@ class FitTest(unittest.TestCase):
     """A scene runs only where it has lights; elsewhere it is refused or skipped."""
 
     def test_explicit_foreign_lights_are_refused_and_nothing_is_sent(self) -> None:
-        rig = Rig(scenes=[KITCHEN_ONLY])
+        film = stored("s_000000f1", "Film", (["light.k1", "light.k2"], HELL.id))
+        rig = Rig(
+            parts=[HELL],
+            library={ROOM: [film], KITCHEN: [replace(film, id="s_000000f2")]},
+        )
         rig.activate(ROOM, "relax")
         running = rig.own(ROOM)
         rig.clear()
-        for name in ("Film", "film", KITCHEN_ONLY.id):
+        for name in ("Film", "film", film.id):
             with (
                 self.subTest(name),
                 self.assertRaises(ServiceValidationError) as err,
@@ -873,62 +972,63 @@ class FitTest(unittest.TestCase):
         self.assertIs(rig.own(ROOM), running)
         self.assertEqual(rig.driver.sent, [])
         self.assertEqual(rig.events(), [])
-        self.assertIs(rig.c.find_scene(KITCHEN, "Film"), KITCHEN_ONLY)
-
-    def test_a_name_finds_the_scene_that_fits(self) -> None:
-        kitchen = explicit("s_000000f1", "Hell", "light.k1")
-        living = explicit("s_000000f2", "Hell", "light.l1")
-        rig = Rig(scenes=[kitchen, living])
-        self.assertIs(rig.c.find_scene(ROOM, "hell"), living)
-        self.assertIs(rig.c.find_scene(KITCHEN, "Hell"), kitchen)
-        self.assertIs(rig.c.find_scene(ZONE, "Hell"), kitchen)  # both fit: first
+        self.assertEqual(rig.c.find_scene(KITCHEN, "Film").id, "s_000000f2")
 
     def test_menu_holds_only_scenes_that_fit(self) -> None:
-        rig = Rig(
-            scenes=[KITCHEN_ONLY],
-            living=TargetOptions(visible_scenes=("relax", KITCHEN_ONLY.id, "read")),
-        )
-        self.assertEqual([s.id for s in rig.c.scenes_for(ROOM)], ["relax", "read"])
-        every = {s.id for s in rig.c.scenes_for(ROOM, include_hidden=True)}
-        self.assertNotIn(KITCHEN_ONLY.id, every)
-        kitchen = {s.id for s in rig.c.scenes_for(KITCHEN, include_hidden=True)}
-        self.assertTrue({"corner", "corner_keep"}.isdisjoint(kitchen))
-        self.assertIn(KITCHEN_ONLY.id, kitchen)
-        self.assertEqual(rig.c.scenes_for("room:attic"), [])
+        film = stored("s_000000f1", "Film", (["light.k1", "light.k2"], HELL.id))
+        relax, read = menu("relax", "read")
+        rig = Rig(parts=[HELL], library={ROOM: [relax, film, read]})
+        self.assertEqual([s.id for s in rig.c.scenes_for(ROOM)], [relax.id, read.id])
         rig.activate(ROOM, "relax")
         rig.c.next_scene(ROOM)
-        self.assertEqual(rig.own(ROOM).scene_id, "read")
+        self.assertEqual(rig.own(ROOM).scene_id, read.id)
 
     def test_a_default_without_lights_here_does_nothing(self) -> None:
-        rig = Rig(settings=Settings(default_scene="corner"))  # light.l1 only
+        corner = stored("s_0000c001", "Corner", (["light.l1"], HELL.id))
+        rig = Rig(
+            parts=[HELL],
+            library={ROOM: [corner], KITCHEN: [replace(corner, id="s_0000c002")]},
+            living=TargetOptions(default_scene="s_0000c001"),
+            kitchen=TargetOptions(default_scene="s_0000c002"),
+        )
         rig.report("light.k1", ha_on())
         self.assertEqual(rig.c.activations, {})
         self.assertEqual(rig.driver.sent, [])
         self.assertEqual(rig.events(), [])
         rig.report("light.l1", ha_on())
-        self.assertEqual(rig.own(ROOM).scene_id, "corner")
+        self.assertEqual(rig.own(ROOM).scene_id, "s_0000c001")
 
     def test_a_default_without_lights_here_leaves_it_to_the_zone(self) -> None:
         rig = Rig(
-            kitchen=TargetOptions(default_scene="corner"),
-            zone=TargetOptions(default_scene="tokyo"),
+            parts=[HELL],
+            library={
+                KITCHEN: [stored("s_0000c002", "Corner", (["light.l1"], HELL.id))],
+                ZONE: [whole("s_00000001", "tokyo")],
+            },
+            kitchen=TargetOptions(default_scene="s_0000c002"),
+            zone=TargetOptions(default_scene="s_00000001"),
         )
         rig.report("light.k1", ha_on())
         self.assertIsNone(rig.own(KITCHEN))
-        self.assertEqual(rig.own(ZONE).scene_id, "tokyo")
+        self.assertEqual(rig.own(ZONE).scene_id, "s_00000001")
 
     def test_an_edit_that_removes_a_rooms_lights_ends_it_there(self) -> None:
-        both = explicit("s_000000f3", "Both", "light.l1", "light.k1")
-        rig = Rig(scenes=[both])
+        both = stored("s_000000f3", "Both", (["light.l1", "light.k1"], HELL.id))
+        in_kitchen = replace(both, id="s_000000f4")
+        rig = Rig(parts=[HELL], library={ROOM: [both], KITCHEN: [in_kitchen]})
         rig.activate(ROOM, both.id)
-        rig.activate(KITCHEN, both.id)
+        rig.activate(KITCHEN, in_kitchen.id)
         rig.echo()
         kitchen = rig.own(KITCHEN)
         rig.clear()
-        edited = replace(
-            both, layers=(Layer(("light.k1",), "white", {"kelvin": 4000}),)
+        rig.apply(
+            parts=[replace(HELL, params={"kelvin": 3000})],
+            scenes={
+                ROOM: [replace(both, layers=(PartLayer(("light.k1",), HELL.id),))],
+                KITCHEN: [in_kitchen],
+            },
+            saved=[both.id, HELL.id],
         )
-        rig.c.apply_config(replace(rig.config, scenes={both.id: edited}))
         self.assertIsNone(rig.own(ROOM))
         self.assertEqual(
             rig.events("ended"),
@@ -944,11 +1044,12 @@ class FitTest(unittest.TestCase):
         for e in LIVING_LIGHTS:
             self.assertEqual(rig.sent(e), [])  # left as they are, not switched off
         self.assertIs(rig.own(KITCHEN), kitchen)
-        self.assertEqual(rig.last("light.k1").color.kelvin, 4000)
+        self.assertEqual(rig.last("light.k1").color.kelvin, 3000)
 
     def test_a_restored_scene_without_lights_here_is_dropped(self) -> None:
-        rt = RuntimeV1((snapshot(ROOM, KITCHEN_ONLY.id, LIVING_LIGHTS),), {})
-        rig = Rig(scenes=[KITCHEN_ONLY], runtime=rt, start=False)
+        film = stored("s_000000f1", "Film", (["light.k1", "light.k2"], HELL.id))
+        rt = RuntimeV1((snapshot(ROOM, film.id, LIVING_LIGHTS),), {})
+        rig = Rig(parts=[HELL], library={ROOM: [film]}, runtime=rt, start=False)
         self.assertIsNone(rig.own(ROOM))
 
     def test_try_refuses_a_draft_without_lights_here(self) -> None:
@@ -1030,20 +1131,24 @@ class OnlyOnTest(unittest.TestCase):
     def test_room_option_wins_and_none_disables(self) -> None:
         rig = Rig(
             settings=Settings(default_scene="relax"),
-            living=TargetOptions(default_scene="read"),
+            library={ROOM: [whole("s_00000001", "read")]},
+            living=TargetOptions(default_scene="s_00000001"),
             kitchen=TargetOptions(default_scene="none"),
         )
         rig.report("light.l1", ha_on())
-        self.assertEqual(rig.own(ROOM).scene_id, "read")
+        self.assertEqual(rig.own(ROOM).scene_id, "s_00000001")
         rig.report("light.k1", ha_on())
         self.assertIsNone(rig.own(KITCHEN))
         self.assertEqual(rig.c.status(KITCHEN).state, "manual")
 
     def test_zone_default_when_the_room_has_none(self) -> None:
-        rig = Rig(zone=TargetOptions(default_scene="tokyo"))
+        rig = Rig(
+            library={ZONE: [whole("s_00000001", "tokyo")]},
+            zone=TargetOptions(default_scene="s_00000001"),
+        )
         rig.report("light.k1", ha_on())
         a = rig.own(ZONE)
-        self.assertEqual((a.scene_id, a.lights), ("tokyo", {"light.k1"}))
+        self.assertEqual((a.scene_id, a.lights), ("s_00000001", {"light.k1"}))
         self.assertIsNone(rig.own(KITCHEN))
 
     def test_no_adoption_into_a_normal_activation(self) -> None:
@@ -1054,7 +1159,10 @@ class OnlyOnTest(unittest.TestCase):
         self.assertNotIn("light.l2", rig.c.owner)
 
     def test_default_scene_that_keeps_the_light_does_nothing(self) -> None:
-        rig = Rig(settings=Settings(default_scene="corner_keep"))
+        corner = stored("s_0000c001", "Corner", (["light.l1"], "read"), others="keep")
+        rig = Rig(
+            library={ROOM: [corner]}, living=TargetOptions(default_scene=corner.id)
+        )
         rig.report("light.l2", ha_on())
         self.assertEqual(rig.c.activations, {})
         self.assertEqual(rig.driver.sent, [])
@@ -1156,7 +1264,7 @@ RELAX_STATE = ha_on(143, kelvin=2237)
 
 
 class RestoreTest(unittest.TestCase):
-    def boot(self, runtime: RuntimeV1, states: Mapping[str, HaLight], **kw) -> Rig:
+    def boot(self, runtime: RuntimeV1, states: Mapping[str, HaLight], **kw: Any) -> Rig:
         rig = Rig(runtime=runtime, start=False, **kw)
         for entity_id, state in states.items():
             rig.host.set_state(entity_id, state)
@@ -1240,14 +1348,16 @@ class RestoreTest(unittest.TestCase):
         self.assertEqual(rig.driver.sent, [])
 
     def test_wanted_off_found_on_goes_manual(self) -> None:
-        rt = RuntimeV1((snapshot(ROOM, "corner", LIVING_LIGHTS),), {})
+        corner = stored("s_0000c001", "Corner", (["light.l1"], "read"))
+        rt = RuntimeV1((snapshot(ROOM, corner.id, LIVING_LIGHTS),), {})
         rig = self.boot(
             rt,
             {
-                "light.l1": ha_on(255, kelvin=2700),
+                "light.l1": ha_on(255, kelvin=2890),
                 "light.l2": ha_on(),
                 "light.l3": HA_OFF,
             },
+            library={ROOM: [corner]},
         )
         rig.c.start()
         self.assertEqual(rig.own(ROOM).manual, {"light.l2"})
@@ -1335,11 +1445,12 @@ class RestoreTest(unittest.TestCase):
         self.assertEqual((a.adjust, a.only_on, a.salt), ({"brightness": 50}, True, 2))
 
     def test_effect_registered_before_start_sends_nothing(self) -> None:
-        mine = user_scene("s_00000001", "Mine", "strobe")
+        strobe = user_part("p_00000005", "strobe")
+        mine = stored("s_00000001", "Mine", ("all", strobe.id))
         rt = RuntimeV1((snapshot(ROOM, mine.id, LIVING_LIGHTS),), {})
         on = ha_on(102, xy=(0.56, 0.4))
         states = {"light.l1": HA_OFF, "light.l2": on, "light.l3": on}
-        rig = self.boot(rt, states, scenes=[mine])
+        rig = self.boot(rt, states, parts=[strobe], library={ROOM: [mine]})
         self.assertTrue(rig.c.status(ROOM).errors)
         rig.registry.add(type("Strobe", (Native,), {"key": "strobe"})())
         rig.c.apply_config(rig.config)
@@ -1361,6 +1472,23 @@ class RestoreTest(unittest.TestCase):
         self.assertEqual(rig.sent("light.l1"), [])
         self.assertEqual(rig.own(ROOM).manual, {"light.l1"})
 
+    def test_a_runtime_from_before_the_upgrade_finds_its_scene(self) -> None:
+        # Stopped after the config was upgraded, before the runtime was.
+        new_id = migrated_id("s_12186051", ROOM)
+        rt = RuntimeV1(
+            (snapshot(ROOM, "s_12186051", LIVING_LIGHTS),),
+            {f"s_12186051|{ROOM}": 3},
+        )
+        rig = self.boot(
+            rt,
+            {},
+            parts=[HELL],
+            library={ROOM: [stored(new_id, "Hell", ("all", HELL.id))]},
+        )
+        a = rig.own(ROOM)
+        self.assertEqual((a.scene_id, a.salt), (new_id, 3))
+        self.assertEqual(rig.c.salts, {f"{new_id}|{ROOM}": 3})
+
     def test_activation_made_before_start_is_left_alone(self) -> None:
         rt = RuntimeV1((snapshot(ROOM, "relax", LIVING_LIGHTS),), {})
         rig = self.boot(rt, dict.fromkeys(LIVING_LIGHTS, HA_OFF))
@@ -1370,18 +1498,23 @@ class RestoreTest(unittest.TestCase):
         self.assertIsNone(rig.own(ROOM))
 
 
+MINE = user_part("p_0000000a", "deal")
+
+
+def mine(**kw: Any) -> StoredScene:
+    return stored("s_00000001", "Mine", ("all", MINE.id), **kw)
+
+
 class ApplyConfigTest(unittest.TestCase):
-    def test_edited_scene_rebuilds_in_place(self) -> None:
-        mine = user_scene("s_00000001", "Mine", "deal")
-        rig = Rig(scenes=[mine])
+    def test_an_edited_part_rebuilds_in_place(self) -> None:
+        rig = Rig(parts=[MINE], library={ROOM: [mine()]})
         rig.activate(ROOM, "s_00000001")
         rig.echo()
         rig.call("turn_on", "light.l3", bare=False)
         a = rig.own(ROOM)
         before = rig.last("light.l1").brightness
         rig.clear()
-        edited = replace(mine, layers=(Layer("all", "deal", {"offset": 10}),))
-        rig.c.apply_config(replace(rig.config, scenes={mine.id: edited}))
+        rig.apply(parts=[replace(MINE, params={"offset": 10})], saved=[MINE.id])
         self.assertIs(rig.own(ROOM), a)
         self.assertEqual(a.manual, {"light.l3"})
         # Same effect and members: the deal in memory survives the edit.
@@ -1392,86 +1525,138 @@ class ApplyConfigTest(unittest.TestCase):
         self.assertEqual(rig.events(), [])
 
     def test_member_change_resets_memory(self) -> None:
-        mine = user_scene("s_00000001", "Mine", "deal")
-        rig = Rig(scenes=[mine])
+        rig = Rig(parts=[MINE], library={ROOM: [mine()]})
         rig.activate(ROOM, "s_00000001")
         run = rig.own(ROOM).runs[0]
-        edited = replace(mine, layers=(Layer(("light.l1",), "deal", {}),))
-        rig.c.apply_config(replace(rig.config, scenes={mine.id: edited}))
+        edited = stored("s_00000001", "Mine", (["light.l1"], MINE.id))
+        rig.apply(scenes={ROOM: [edited]})
         self.assertIsNot(rig.own(ROOM).runs[0], run)
         self.assertEqual(rig.last("light.l2"), OFF.replace(transition=0.4))
 
     def test_deleted_scene_ends(self) -> None:
-        mine = user_scene("s_00000001", "Mine")
-        rig = Rig(scenes=[mine])
+        rig = Rig(parts=[MINE], library={ROOM: [mine()]})
         rig.activate(ROOM, "s_00000001")
-        rig.c.apply_config(replace(rig.config, scenes={}))
+        rig.apply(scenes={})
         self.assertIsNone(rig.own(ROOM))
         self.assertEqual(rig.events("ended")[0]["reason"], "config")
 
-    def test_copy_replaces_and_reset_restores_the_preset(self) -> None:
+    def test_a_scene_whose_part_is_gone_ends(self) -> None:
+        rig = Rig(parts=[MINE], library={ROOM: [mine()]})
+        rig.activate(ROOM, "s_00000001")
+        rig.clear()
+        rig.apply(parts=[])
+        self.assertIsNone(rig.own(ROOM))
+        self.assertEqual(rig.driver.sent, [])
+
+    def test_an_edit_of_a_built_in_and_its_reset(self) -> None:
         rig = Rig()
         rig.activate(ROOM, "relax")
         a = rig.own(ROOM)
-        copy = user_scene(
-            "s_00000009",
-            "Relax",
-            "white",
-            {"kelvin": 2237, "brightness": 30},
-            preset="relax",
-        )
-        rig.c.apply_config(replace(rig.config, scenes={copy.id: copy}))
+        edit = replace(BUILTINS["relax"], params={"kelvin": 2237, "brightness": 30})
+        rig.apply(parts=[edit], saved=["relax"])
         self.assertIs(rig.own(ROOM), a)
-        self.assertIs(a.scene, copy)
+        self.assertEqual(a.scene, part_scene(edit))
         self.assertEqual(a.scene_id, "relax")
         self.assertEqual(rig.last("light.l1").brightness, 76 / 255)
-        rig.c.apply_config(replace(rig.config, scenes={}))
-        self.assertIs(a.scene, PRESETS["relax"])
+        rig.apply(parts=[])
+        self.assertEqual(a.scene, SCENES["relax"])
         self.assertEqual(rig.last("light.l1").brightness, 143 / 255)
+
+    def test_a_part_save_replans_every_room_that_plays_it(self) -> None:
+        rig = Rig(
+            parts=[HELL],
+            library={
+                ROOM: [stored("s_00000001", "Hell", ("all", HELL.id))],
+                KITCHEN: [stored("s_00000002", "Hell", ("all", HELL.id))],
+            },
+        )
+        rig.activate(ROOM, "s_00000001")
+        rig.activate(KITCHEN, "s_00000002")
+        living, kitchen = rig.own(ROOM), rig.own(KITCHEN)
+        rig.clear()
+        rig.apply(parts=[replace(HELL, params={"kelvin": 5000})], saved=[HELL.id])
+        self.assertEqual((rig.own(ROOM), rig.own(KITCHEN)), (living, kitchen))
+        for e in ("light.l1", "light.k1"):
+            self.assertEqual(rig.last(e).color.kelvin, 5000)
+
+    def test_a_part_save_converts_no_other_try(self) -> None:
+        rig = Rig(
+            parts=[HELL],
+            library={
+                ROOM: [stored("s_00000001", "Hell", ("all", HELL.id))],
+                KITCHEN: [stored(DRAFT.id, "Draft", ("all", HELL.id))],
+            },
+        )
+        rig.activate(KITCHEN, "relax")
+        before = rig.own(KITCHEN)
+        rig.c.try_scene(KITCHEN, DRAFT, {})
+        draft = rig.own(KITCHEN)
+        rig.apply(parts=[replace(HELL, params={"kelvin": 5000})], saved=[HELL.id])
+        self.assertIs(rig.own(KITCHEN), draft)
+        self.assertTrue(draft.draft)
+        self.assertEqual([s.id for s in draft.replaced], [before.id])
+        self.assertEqual(rig.last("light.k1").color.kelvin, 6000)
+
+    def test_saving_a_tried_part_converts_the_part_editors_try(self) -> None:
+        rig = Rig()
+        rig.activate(ROOM, "read")
+        edit = replace(BUILTINS["relax"], params={"kelvin": 2237, "brightness": 30})
+        rig.c.try_scene(ROOM, part_scene(edit), {})
+        draft = rig.own(ROOM)
+        rig.apply(parts=[edit], saved=["relax"])
+        self.assertIs(rig.own(ROOM), draft)
+        self.assertFalse(draft.draft)
+        self.assertEqual((draft.replaced, draft.scene_id), ((), "relax"))
+        self.assertEqual(rig.c.status(ROOM).scene_name, "Relax")
 
     def test_unchanged_scene_is_left_alone(self) -> None:
         rig = Rig()
         rig.activate(ROOM, "relax")
         rig.clear()
-        rig.c.apply_config(replace(rig.config, settings=Settings(transition=5)))
+        rig.apply(settings=Settings(transition=5))
         self.assertEqual(rig.driver.sent, [])
 
     def test_running_activations_follow_transition_edits(self) -> None:
-        mine = user_scene("s_00000001", "Mine", "white", {"kelvin": 2700})
-        rig = Rig(scenes=[mine])
-        rig.activate(ROOM, mine.id)
-        rig.activate(KITCHEN, mine.id, transition=5)
-        edited = replace(
-            mine, transition=8.0, layers=(Layer("all", "white", {"kelvin": 4000}),)
+        part = user_part("p_0000000b", "white", {"kelvin": 2700})
+        scene = stored("s_00000001", "Mine", ("all", part.id))
+        other = replace(scene, id="s_00000002")
+        rig = Rig(parts=[part], library={ROOM: [scene], KITCHEN: [other]})
+        rig.activate(ROOM, scene.id)
+        rig.activate(KITCHEN, other.id, transition=5)
+        rig.apply(
+            parts=[replace(part, params={"kelvin": 4000})],
+            scenes={
+                ROOM: [replace(scene, transition=8.0)],
+                KITCHEN: [replace(other, transition=8.0)],
+            },
         )
-        rig.c.apply_config(replace(rig.config, scenes={mine.id: edited}))
         self.assertEqual(rig.last("light.l1").transition, 8.0)
         self.assertEqual(rig.last("light.k1").transition, 5)  # given explicitly
-        unset = replace(edited, transition=None)
-        rig.c.apply_config(
-            Config(scenes={mine.id: unset}, settings=Settings(transition=3.0))
-        )
+        rig.apply(scenes={ROOM: [scene]}, settings=Settings(transition=3.0))
         rig.c.adjust_brightness(ROOM, value=50)
         self.assertEqual(rig.last("light.l1").transition, 3.0)
 
     def test_late_registered_effect_heals_the_layer(self) -> None:
-        mine = user_scene("s_00000001", "Mine", "strobe")
-        rig = Rig(scenes=[mine])
+        strobe = user_part("p_00000005", "strobe")
+        rig = Rig(
+            parts=[strobe],
+            library={ROOM: [stored("s_00000001", "Mine", ("all", strobe.id))]},
+        )
         rig.activate(ROOM, "s_00000001")
         self.assertTrue(rig.c.status(ROOM).errors)
-        strobe = type("Strobe", (Native,), {"key": "strobe"})
-        rig.registry.add(strobe())
+        rig.registry.add(type("Strobe", (Native,), {"key": "strobe"})())
         rig.c.apply_config(rig.config)
         self.assertEqual(rig.c.status(ROOM).errors, ())
         self.assertEqual(len(rig.sent("light.l1")), 1)
 
     def test_zone_scene_running_on_a_room_survives(self) -> None:
-        party = user_scene("s_00000003", "Party")
-        rig = Rig(scenes=[party])
+        party = stored("s_00000003", "Party", ("all", "tokyo"))
+        rig = Rig(library={ZONE: [party], ROOM: [replace(party, id="s_00000004")]})
         rig.activate(ZONE, "s_00000003")
         rig.c.activate(ROOM, rig.c.find_scene(ROOM, "Party"))
-        rig.c.apply_config(replace(rig.config, settings=Settings(transition=2)))
-        self.assertEqual(rig.own(ROOM).scene_id, "s_00000003")
+        rig.apply(settings=Settings(transition=2))
+        self.assertEqual(rig.own(ROOM).scene_id, "s_00000004")
+        self.assertEqual(rig.own(ZONE).scene_id, "s_00000003")
 
     def test_gone_target_ends(self) -> None:
         rig = Rig()
@@ -1482,6 +1667,7 @@ class ApplyConfigTest(unittest.TestCase):
 
 
 DRAFT = user_scene("s_0000abcd", "Draft scene", "white", {"kelvin": 6000})
+DRAFT_PART = user_part("p_0000abcd", "white", {"kelvin": 6000})
 
 
 class TryTest(unittest.TestCase):
@@ -1521,8 +1707,12 @@ class TryTest(unittest.TestCase):
         rig.clear()
         rig.c.try_scene(ROOM, DRAFT, {})
         self.assertEqual(rig.own(ROOM).manual, {"light.l3"})
-        saved = replace(DRAFT, name="Bright")
-        rig.c.apply_config(replace(rig.config, scenes={saved.id: saved}))
+        rig.apply(
+            parts=[DRAFT_PART],
+            scenes={ROOM: [stored(DRAFT.id, "Bright", ("all", DRAFT_PART.id))]},
+            saved=[DRAFT.id],
+        )
+        self.assertFalse(rig.own(ROOM).draft)
         rig.c.stop_try(ROOM)
         self.assertEqual(rig.own(ROOM).manual, {"light.l3"})  # still reclaimable
         self.assertEqual(rig.sent("light.l3"), [])
@@ -1594,12 +1784,12 @@ class TryTest(unittest.TestCase):
         rig.c.try_scene(ROOM, DRAFT, {})
         draft = rig.own(ROOM)
         rig.clear()
-        saved = replace(DRAFT, name="Bright")
-        rig.c.apply_config(replace(rig.config, scenes={saved.id: saved}))
+        saved = stored(DRAFT.id, "Bright", ("all", DRAFT_PART.id))
+        rig.apply(parts=[DRAFT_PART], scenes={ROOM: [saved]}, saved=[DRAFT.id])
         self.assertIs(rig.own(ROOM), draft)
         self.assertFalse(draft.draft)
         self.assertEqual(draft.replaced, ())
-        self.assertIs(draft.scene, saved)
+        self.assertEqual(draft.scene, replace(DRAFT, name="Bright"))
         self.assertEqual(rig.c.status(ROOM).scene_name, "Bright")
         self.assertEqual(rig.store.last.activations[0].scene_id, DRAFT.id)
         rig.c.stop_try(ROOM)
@@ -1608,7 +1798,11 @@ class TryTest(unittest.TestCase):
     def test_unrelated_config_change_keeps_the_draft(self) -> None:
         rig = Rig()
         rig.c.try_scene(ROOM, DRAFT, {})
-        rig.c.apply_config(replace(rig.config, settings=Settings(transition=3)))
+        rig.apply(settings=Settings(transition=3))
+        self.assertTrue(rig.own(ROOM).draft)
+        # Saved without its id, the scene is not what is being tried.
+        saved = stored(DRAFT.id, "Bright", ("all", DRAFT_PART.id))
+        rig.apply(parts=[DRAFT_PART], scenes={ROOM: [saved]}, saved=[DRAFT_PART.id])
         self.assertTrue(rig.own(ROOM).draft)
 
 

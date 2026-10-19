@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping, Sequence
+from collections.abc import Callable, Collection, Mapping, Sequence
 import dataclasses
 from functools import partial
 from typing import Any
@@ -18,26 +18,29 @@ from homeassistant.util import dt as dt_util
 
 from .const import DOMAIN, SIGNAL_CONFIG, SIGNAL_EFFECTS, SIGNAL_TARGETS
 from .data import MagicLightsData
-from .dto import bus_infos, light_info, scene_info, target_info
+from .dto import bus_infos, light_info, part_info, scene_info, target_info
 from .models import (
     Config,
+    Part,
     Scene,
     Settings,
     TargetId,
     TargetOptions,
     Zone,
+    is_user_part,
     new_zone_id,
 )
-from .presets import palettes_from_presets
+from .presets import palettes_from_parts
 from .validation import (
     OPTIONS_SCHEMA,
     SETTINGS_SCHEMA,
     ZONE_SCHEMA,
     ConfigError,
-    validate_scene,
+    validate,
+    validate_draft,
 )
 
-_LOCATED = frozenset({"invalid", "invalid_params", "unknown_effect"})
+_LOCATED = frozenset({"invalid", "invalid_params", "unknown_effect", "unknown_part"})
 
 ADJUST = vol.Schema(
     {
@@ -53,12 +56,13 @@ ADJUST = vol.Schema(
 def async_register_websocket(hass: HomeAssistant) -> None:
     for handler in (
         ws_config,
-        ws_scene_save,
+        ws_library_save,
         ws_scene_delete,
+        ws_scenes_order,
+        ws_part_delete,
         ws_zone_save,
         ws_zone_delete,
         ws_target_options,
-        ws_menus_save,
         ws_settings_save,
         ws_preview,
         ws_try,
@@ -114,86 +118,124 @@ def _send_invalid(
     connection.send_error(msg["id"], code, message)
 
 
-def _draft(data: MagicLightsData, raw: Mapping[str, Any]) -> Scene:
-    """Validate a scene that is previewed or tried, not stored.
-
-    Its name is not checked against other scenes: that happens on save.
-    """
-    return validate_scene(raw, data.registry, Config())
-
-
-def _fits(data: MagicLightsData, scene: Scene) -> set[TargetId]:
-    coordinator = data.coordinator
-    return {t.id for t in coordinator.targets.values() if coordinator.fits(scene, t)}
+def _checked(data: MagicLightsData, config: Config, only: Collection[str]) -> Config:
+    """Validate a changed config; only what `only` names can make it fail."""
+    return validate(
+        config.to_dict(),
+        data.registry,
+        data.builtins,
+        only=only,
+        live=data.coordinator.targets,
+    )
 
 
-def _with_fitting_scene(
-    config: Config, scene: Scene, before: set[TargetId], after: set[TargetId]
-) -> Mapping[TargetId, TargetOptions]:
-    """Show a user scene in hand-ordered menus of targets it newly has lights in."""
-    if scene.preset is not None:
-        return config.targets
-    return {
-        target_id: (
-            dataclasses.replace(
-                options, visible_scenes=(*options.visible_scenes, scene.id)
+def _owner(config: Config, scene_id: str) -> TargetId | None:
+    """Return the target a stored scene belongs to."""
+    return next(
+        (
+            t
+            for t, scenes in config.scenes.items()
+            if any(s.id == scene_id for s in scenes)
+        ),
+        None,
+    )
+
+
+def _with_library(
+    config: Config,
+    parts: Sequence[Mapping[str, Any]],
+    scenes: Sequence[Mapping[str, Any]],
+) -> tuple[dict[str, Any], set[str]]:
+    """Return the stored form with parts and scenes put in, and their ids."""
+    raw = config.to_dict()
+    saved: set[str] = set()
+    for part in parts:
+        part_id = str(part.get("id"))
+        # A part may come back in the API's shape; icon and category are the
+        # catalogue's.
+        raw["parts"][part_id] = {
+            k: v for k, v in part.items() if k not in ("icon", "category")
+        }
+        saved.add(part_id)
+    for item in scenes:
+        target_id, scene = item["target"], item["scene"]
+        scene_id = scene.get("id")
+        if _owner(config, scene_id) not in (None, target_id):
+            raise ConfigError(
+                "invalid", "a scene stays in its room", ["scenes", scene_id, "target"]
             )
-            if options.visible_scenes is not None
-            and target_id in after - before
-            and scene.id not in options.visible_scenes
+        listed = raw["scenes"].setdefault(target_id, [])
+        at = next((i for i, s in enumerate(listed) if s["id"] == scene_id), None)
+        if at is None:
+            listed.append(scene)
+        else:
+            listed[at] = scene
+        saved.add(scene_id)
+    return raw, saved
+
+
+def _without_pristine(config: Config, builtins: Mapping[str, Part]) -> Config:
+    """Drop the edits of built-ins that equal them: the built-in is unedited."""
+    parts = {
+        part_id: part
+        for part_id, part in config.parts.items()
+        if (builtin := builtins.get(part_id)) is None
+        or (part.effect, part.params) != (builtin.effect, builtin.params)
+    }
+    return dataclasses.replace(config, parts=parts)
+
+
+def _without_scenes(config: Config, gone: Collection[str]) -> Config:
+    """Drop scenes, and the target defaults that name them."""
+    scenes = {
+        target_id: kept
+        for target_id, listed in config.scenes.items()
+        if (kept := tuple(s for s in listed if s.id not in gone))
+    }
+    targets = {
+        target_id: (
+            dataclasses.replace(options, default_scene=None)
+            if options.default_scene in gone
             else options
         )
         for target_id, options in config.targets.items()
     }
+    return dataclasses.replace(config, scenes=scenes, targets=targets)
 
 
-def _pristine(scene: Scene, presets: Mapping[str, Scene]) -> bool:
-    """Whether an edit of a preset is the preset itself, defaults filled in."""
-    if (preset := presets.get(scene.preset or "")) is None:
-        return False
-    fields = ("layers", "others", "brightness", "transition", "icon")
-    return all(getattr(scene, f) == getattr(preset, f) for f in fields)
-
-
-def _without_refs(config: Config, scene_id: str) -> Config:
-    """Drop a deleted user scene from the menus and defaults that name it."""
-    targets = {
-        target_id: dataclasses.replace(
-            options,
-            visible_scenes=(
-                None
-                if options.visible_scenes is None
-                else tuple(s for s in options.visible_scenes if s != scene_id)
-            ),
-            default_scene=(
-                None if options.default_scene == scene_id else options.default_scene
-            ),
-        )
-        for target_id, options in config.targets.items()
-    }
-    settings = config.settings
-    if settings.default_scene == scene_id:
-        settings = dataclasses.replace(settings, default_scene=None)
-    return dataclasses.replace(config, targets=targets, settings=settings)
+def _draft(data: MagicLightsData, msg: Mapping[str, Any]) -> Scene:
+    """Resolve a scene that is previewed or tried over its unsaved parts."""
+    coordinator = data.coordinator
+    scene, parts = validate_draft(
+        msg["scene"], msg["parts"], data.registry, coordinator.parts
+    )
+    return coordinator.resolve_draft(scene, parts)
 
 
 def _config_dto(hass: HomeAssistant, data: MagicLightsData) -> dict[str, Any]:
     coordinator = data.coordinator
     config = coordinator.config
-    scenes = [*data.presets.values(), *config.scenes.values()]
+    registry = data.registry
     return {
         "zones": {zone_id: zone.to_dict() for zone_id, zone in config.zones.items()},
         "targets": [
-            target_info(hass, coordinator, data.registry, target)
+            target_info(hass, coordinator, target)
             for target in coordinator.targets.values()
         ],
-        "scenes": [scene_info(coordinator, data.registry, s) for s in scenes],
+        "parts": [
+            part_info(coordinator, registry, p) for p in coordinator.parts.values()
+        ],
+        "scenes": [
+            scene_info(coordinator, registry, target_id, scene)
+            for target_id, scenes in config.scenes.items()
+            for scene in scenes
+        ],
         "lights": [
             light_info(light) for _, light in sorted(data.lights.lights.items())
         ],
-        "effects": [info.to_dict() for info in data.registry.catalogue()],
+        "effects": [info.to_dict() for info in registry.catalogue()],
         "buses": bus_infos(data.lights.lights),
-        "palettes": palettes_from_presets(data.presets),
+        "palettes": palettes_from_parts(data.builtins),
         "settings": config.settings.to_dict(),
         "version": data.version,
     }
@@ -213,50 +255,59 @@ def ws_config(
 
 
 @websocket_api.websocket_command(
-    {vol.Required("type"): f"{DOMAIN}/scene/save", vol.Required("scene"): dict}
+    {
+        vol.Required("type"): f"{DOMAIN}/library/save",
+        vol.Optional("parts", default=list): [dict],
+        vol.Optional("scenes", default=list): [
+            {vol.Required("target"): str, vol.Required("scene"): dict}
+        ],
+    }
 )
 @websocket_api.require_admin
 @websocket_api.async_response
-async def ws_scene_save(
+async def ws_library_save(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Save a scene; an edit of a preset that matches the preset removes the edit."""
+    """Save parts and scenes together, or nothing.
+
+    An edit of a built-in that equals it removes the edit.
+    """
     if (data := _data_or_error(hass, connection, msg)) is None:
         return
     coordinator = data.coordinator
-    config = coordinator.config
     try:
-        scene = validate_scene(
-            msg["scene"],
-            data.registry,
-            config,
-            presets=data.presets,
-            fits=partial(_fits, data),
+        raw, saved = _with_library(coordinator.config, msg["parts"], msg["scenes"])
+        config = validate(
+            raw, data.registry, data.builtins, only=saved, live=coordinator.targets
         )
     except ConfigError as err:
         _send_invalid(connection, msg, err, skip=2)
         return
-    if _pristine(scene, data.presets):
-        if scene.id in config.scenes:
-            scenes = {k: v for k, v in config.scenes.items() if k != scene.id}
-            await data.async_commit(hass, dataclasses.replace(config, scenes=scenes))
-        preset = data.presets[scene.public_id]
-        connection.send_result(
-            msg["id"], {"scene": scene_info(coordinator, data.registry, preset)}
-        )
-        return
-    stored = config.scenes.get(scene.id)
-    before = set() if stored is None else _fits(data, stored)
-    await data.async_commit(
-        hass,
-        dataclasses.replace(
-            config,
-            scenes={**config.scenes, scene.id: scene},
-            targets=_with_fitting_scene(config, scene, before, _fits(data, scene)),
-        ),
-    )
+    config = _without_pristine(config, data.builtins)
+    await data.async_commit(hass, config, saved)
+    stored = {
+        (target_id, s.id): s
+        for target_id, scenes in config.scenes.items()
+        for s in scenes
+    }
+    part_ids = dict.fromkeys(str(p["id"]) for p in msg["parts"])
     connection.send_result(
-        msg["id"], {"scene": scene_info(coordinator, data.registry, scene)}
+        msg["id"],
+        {
+            "parts": [
+                part_info(coordinator, data.registry, coordinator.parts[part_id])
+                for part_id in part_ids
+            ],
+            "scenes": [
+                scene_info(
+                    coordinator,
+                    data.registry,
+                    item["target"],
+                    stored[item["target"], item["scene"]["id"]],
+                )
+                for item in msg["scenes"]
+            ],
+        },
     )
 
 
@@ -268,22 +319,101 @@ async def ws_scene_save(
 async def ws_scene_delete(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
-    """Delete a user scene; deleting an edited preset resets it everywhere."""
+    """Delete a scene; its target no longer switches on with it."""
     if (data := _data_or_error(hass, connection, msg)) is None:
         return
     config = data.coordinator.config
-    if (scene_id := msg["scene_id"]) not in config.scenes:
+    if _owner(config, scene_id := msg["scene_id"]) is None:
         connection.send_error(
             msg["id"], "not_found", f"There is no saved scene '{scene_id}'"
         )
         return
-    deleted = config.scenes[scene_id]
-    config = dataclasses.replace(
-        config, scenes={k: v for k, v in config.scenes.items() if k != scene_id}
+    await data.async_commit(hass, _without_scenes(config, {scene_id}))
+    connection.send_result(msg["id"], {})
+
+
+@websocket_api.websocket_command(
+    {
+        vol.Required("type"): f"{DOMAIN}/scenes/order",
+        vol.Required("target_id"): str,
+        vol.Required("scene_ids"): [str],
+    }
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_scenes_order(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Put a target's scenes in a new order: its menu's."""
+    if (data := _data_or_error(hass, connection, msg)) is None:
+        return
+    coordinator = data.coordinator
+    config = coordinator.config
+    if (target_id := msg["target_id"]) not in coordinator.targets:
+        connection.send_error(
+            msg["id"], "not_found", f"There is no target '{target_id}'"
+        )
+        return
+    by_id = {s.id: s for s in config.scenes.get(target_id, ())}
+    order = msg["scene_ids"]
+    if len(order) != len(by_id) or set(order) != by_id.keys():
+        connection.send_error(
+            msg["id"], "invalid", f"Not an order of the scenes of {target_id}"
+        )
+        return
+    if order:
+        scenes = {**config.scenes, target_id: tuple(by_id[s] for s in order)}
+        await data.async_commit(hass, dataclasses.replace(config, scenes=scenes))
+    target = coordinator.targets[target_id]
+    connection.send_result(
+        msg["id"], {"target": target_info(hass, coordinator, target)}
     )
-    # An edited preset's references name the preset, which stays.
-    if deleted.preset is None:
-        config = _without_refs(config, scene_id)
+
+
+@websocket_api.websocket_command(
+    {vol.Required("type"): f"{DOMAIN}/part/delete", vol.Required("part_id"): str}
+)
+@websocket_api.require_admin
+@websocket_api.async_response
+async def ws_part_delete(
+    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
+) -> None:
+    """Delete one of your parts, or reset an edited built-in.
+
+    A part that a scene of an existing target or the switch-on default uses
+    stays; scenes of targets that are gone go with it.
+    """
+    if (data := _data_or_error(hass, connection, msg)) is None:
+        return
+    coordinator = data.coordinator
+    config = coordinator.config
+    if (part_id := msg["part_id"]) not in config.parts:
+        connection.send_error(
+            msg["id"], "not_found", f"There is no saved part '{part_id}'"
+        )
+        return
+    parts = {k: v for k, v in config.parts.items() if k != part_id}
+    config = dataclasses.replace(config, parts=parts)
+    if is_user_part(part_id):
+        users = [
+            (target_id, scene)
+            for target_id, scenes in config.scenes.items()
+            for scene in scenes
+            if any(layer.part == part_id for layer in scene.layers)
+        ]
+        uses = [
+            f"{coordinator.targets[target_id].name} · {scene.name}"
+            for target_id, scene in users
+            if target_id in coordinator.targets
+        ]
+        if config.settings.default_scene == part_id:
+            uses.append("the switch-on default")
+        if uses:
+            connection.send_error(
+                msg["id"], "part_in_use", f"Used by {', '.join(uses)}"
+            )
+            return
+        config = _without_scenes(config, {scene.id for _, scene in users})
     await data.async_commit(hass, config)
     connection.send_result(msg["id"], {})
 
@@ -323,6 +453,7 @@ async def ws_zone_save(
 async def ws_zone_delete(
     hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
 ) -> None:
+    """Delete a zone with its options and scenes."""
     if (data := _data_or_error(hass, connection, msg)) is None:
         return
     config = data.coordinator.config
@@ -336,6 +467,7 @@ async def ws_zone_delete(
             config,
             zones={k: v for k, v in config.zones.items() if k != zone_id},
             targets={k: v for k, v in config.targets.items() if k != target_id},
+            scenes={k: v for k, v in config.scenes.items() if k != target_id},
         ),
     )
     connection.send_result(msg["id"], {})
@@ -368,67 +500,18 @@ async def ws_target_options(
         options = TargetOptions.from_dict(
             OPTIONS_SCHEMA({**current.to_dict(), **msg["options"]})
         )
+        config = _checked(
+            data,
+            dataclasses.replace(config, targets={**config.targets, target_id: options}),
+            {target_id},
+        )
     except vol.Invalid as err:
         _send_invalid(connection, msg, err)
         return
-    await data.async_commit(
-        hass,
-        dataclasses.replace(config, targets={**config.targets, target_id: options}),
-    )
+    await data.async_commit(hass, config)
     target = coordinator.targets[target_id]
     connection.send_result(
-        msg["id"], {"target": target_info(hass, coordinator, data.registry, target)}
-    )
-
-
-@websocket_api.websocket_command(
-    {
-        vol.Required("type"): f"{DOMAIN}/menus/save",
-        vol.Required("menus"): {str: vol.Maybe([str])},
-    }
-)
-@websocket_api.require_admin
-@websocket_api.async_response
-async def ws_menus_save(
-    hass: HomeAssistant, connection: ActiveConnection, msg: dict[str, Any]
-) -> None:
-    """Set the menus of several targets at once (None: the default menu)."""
-    if (data := _data_or_error(hass, connection, msg)) is None:
-        return
-    coordinator = data.coordinator
-    config = coordinator.config
-    known = {*data.presets, *(s.public_id for s in config.scenes.values())}
-    targets = dict(config.targets)
-    for target_id, menu in msg["menus"].items():
-        if target_id not in coordinator.targets:
-            connection.send_error(
-                msg["id"], "not_found", f"There is no target '{target_id}'"
-            )
-            return
-        if unknown := [s for s in menu or () if s not in known]:
-            connection.send_error(
-                msg["id"], "unknown_scene", f"There is no scene '{unknown[0]}'"
-            )
-            return
-        current = targets.get(target_id, TargetOptions())
-        try:
-            targets[target_id] = TargetOptions.from_dict(
-                OPTIONS_SCHEMA({**current.to_dict(), "visible_scenes": menu})
-            )
-        except vol.Invalid as err:
-            _send_invalid(connection, msg, err)
-            return
-    await data.async_commit(hass, dataclasses.replace(config, targets=targets))
-    connection.send_result(
-        msg["id"],
-        {
-            "targets": [
-                target_info(
-                    hass, coordinator, data.registry, coordinator.targets[target_id]
-                )
-                for target_id in msg["menus"]
-            ]
-        },
+        msg["id"], {"target": target_info(hass, coordinator, target)}
     )
 
 
@@ -448,21 +531,30 @@ async def ws_settings_save(
         settings = Settings.from_dict(
             SETTINGS_SCHEMA({**config.settings.to_dict(), **msg["settings"]})
         )
+        config = _checked(
+            data, dataclasses.replace(config, settings=settings), {"settings"}
+        )
     except vol.Invalid as err:
         _send_invalid(connection, msg, err)
         return
-    await data.async_commit(hass, dataclasses.replace(config, settings=settings))
+    await data.async_commit(hass, config)
     connection.send_result(msg["id"], {})
 
 
 # ---- runtime
+
+# A draft: the scene previewed or tried, and the parts it changes or adds.
+_DRAFT = {
+    vol.Required("scene"): dict,
+    vol.Optional("parts", default=list): [dict],
+}
 
 
 @websocket_api.websocket_command(
     {
         vol.Required("type"): f"{DOMAIN}/preview",
         vol.Required("target_id"): str,
-        vol.Required("scene"): dict,
+        **_DRAFT,
         vol.Optional("duration"): vol.All(
             vol.Coerce(float), vol.Range(min=0, max=86400)
         ),
@@ -479,7 +571,7 @@ def ws_preview(
     if (data := _data_or_error(hass, connection, msg)) is None:
         return
     try:
-        scene = _draft(data, msg["scene"])
+        scene = _draft(data, msg)
     except ConfigError as err:
         _send_invalid(connection, msg, err, skip=2)
         return
@@ -499,7 +591,7 @@ def ws_preview(
     {
         vol.Required("type"): f"{DOMAIN}/try",
         vol.Required("target_id"): str,
-        vol.Required("scene"): dict,
+        **_DRAFT,
         vol.Optional("adjust"): ADJUST,
     }
 )
@@ -512,7 +604,7 @@ def ws_try(
     if (data := _data_or_error(hass, connection, msg)) is None:
         return
     try:
-        scene = _draft(data, msg["scene"])
+        scene = _draft(data, msg)
     except ConfigError as err:
         _send_invalid(connection, msg, err, skip=2)
         return

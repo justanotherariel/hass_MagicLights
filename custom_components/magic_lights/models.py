@@ -29,7 +29,6 @@ if TYPE_CHECKING:
     from homeassistant.core import Context, HomeAssistant, State
 
 TargetId = str
-SceneCategory = Literal["white", "color", "dynamic", "adaptive", "custom"]
 PartCategory = Literal["white", "color", "dynamic", "adaptive"]
 LightStatus = Literal["scene", "manual", "elsewhere", "off", "on", "unavailable"]
 
@@ -294,51 +293,15 @@ class Layer:
 
 @dataclass(frozen=True, slots=True)
 class Scene:
+    """A scene as the engine runs it: a stored scene's parts resolved to looks."""
+
     id: str
     name: str
     icon: str | None
     layers: tuple[Layer, ...]
-    preset: str | None = None  # set: the edit of that preset, for every target
     others: Literal["off", "keep"] = "off"
-    brightness: int = 100
+    brightness: int = 100  # the scale an activation starts at
     transition: float | None = None
-    category: SceneCategory = "custom"
-    builtin: bool = False
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> Scene:
-        return cls(
-            id=data["id"],
-            name=data["name"],
-            icon=data.get("icon"),
-            layers=tuple(Layer.from_dict(layer) for layer in data["layers"]),
-            **_present(
-                data,
-                "preset",
-                "others",
-                "brightness",
-                "transition",
-                "category",
-            ),
-        )
-
-    @property
-    def public_id(self) -> str:
-        """The id targets know it by: an edited preset's is the preset's."""
-        return self.preset or self.id
-
-    def to_dict(self) -> dict[str, Any]:
-        """Return the stored form (StoredScene)."""
-        return {
-            "id": self.id,
-            "name": self.name,
-            "icon": self.icon,
-            "preset": self.preset,
-            "layers": [layer.to_dict() for layer in self.layers],
-            "others": self.others,
-            "brightness": self.brightness,
-            "transition": self.transition,
-        }
 
 
 @dataclass(frozen=True, slots=True)
@@ -472,18 +435,16 @@ def new_zone_id(name: str, taken: Collection[str]) -> str:
 class TargetOptions:
     excluded_lights: tuple[str, ...] = ()
     extra_lights: tuple[str, ...] = ()
-    visible_scenes: tuple[str, ...] | None = None  # None = defaults
-    default_scene: str | None = None  # None = inherit, "none" = no default
+    # A scene of this target; None = inherit (rooms), "none" = no default.
+    default_scene: str | None = None
     reclaim_on_turn_on: bool = True
     detect_changes: bool = True
 
     @classmethod
     def from_dict(cls, data: Mapping[str, Any]) -> TargetOptions:
-        visible = data.get("visible_scenes")
         return cls(
             excluded_lights=tuple(data.get("excluded_lights") or ()),
             extra_lights=tuple(data.get("extra_lights") or ()),
-            visible_scenes=None if visible is None else tuple(visible),
             **_present(data, "default_scene", "reclaim_on_turn_on", "detect_changes"),
         )
 
@@ -491,9 +452,6 @@ class TargetOptions:
         return {
             "excluded_lights": list(self.excluded_lights),
             "extra_lights": list(self.extra_lights),
-            "visible_scenes": (
-                None if self.visible_scenes is None else list(self.visible_scenes)
-            ),
             "default_scene": self.default_scene,
             "reclaim_on_turn_on": self.reclaim_on_turn_on,
             "detect_changes": self.detect_changes,
@@ -503,7 +461,7 @@ class TargetOptions:
 @dataclass(frozen=True, slots=True)
 class Settings:
     transition: float = DEFAULT_TRANSITION
-    default_scene: str | None = None
+    default_scene: str | None = None  # a part id
     native_effects: bool = True
     # Partial BusLimits overrides per bus id, merged over the bus kind's defaults.
     buses: Mapping[str, Mapping[str, float]] = field(default_factory=dict)
@@ -529,41 +487,7 @@ class Settings:
 
 @dataclass(frozen=True, slots=True)
 class Config:
-    zones: Mapping[str, Zone] = field(default_factory=dict)
-    targets: Mapping[TargetId, TargetOptions] = field(default_factory=dict)
-    scenes: Mapping[str, Scene] = field(default_factory=dict)
-    settings: Settings = field(default_factory=Settings)
-
-    @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> Config:
-        """Build from the stored form without validating effects."""
-        return cls(
-            zones={k: Zone.from_dict(v) for k, v in (data.get("zones") or {}).items()},
-            targets={
-                k: TargetOptions.from_dict(v)
-                for k, v in (data.get("targets") or {}).items()
-            },
-            scenes={
-                k: Scene.from_dict(v) for k, v in (data.get("scenes") or {}).items()
-            },
-            settings=Settings.from_dict(data.get("settings") or {}),
-        )
-
-    def to_dict(self) -> dict[str, Any]:
-        default = TargetOptions()
-        return {
-            "zones": {k: v.to_dict() for k, v in self.zones.items()},
-            "targets": {
-                k: v.to_dict() for k, v in self.targets.items() if v != default
-            },
-            "scenes": {k: v.to_dict() for k, v in self.scenes.items()},
-            "settings": self.settings.to_dict(),
-        }
-
-
-@dataclass(frozen=True, slots=True)
-class ConfigV4:
-    """Store v4: shared parts, and each target's scenes in menu order."""
+    """Shared parts, and each target's scenes in menu order."""
 
     zones: Mapping[str, Zone] = field(default_factory=dict)
     targets: Mapping[TargetId, TargetOptions] = field(default_factory=dict)
@@ -572,7 +496,7 @@ class ConfigV4:
     settings: Settings = field(default_factory=Settings)
 
     @classmethod
-    def from_dict(cls, data: Mapping[str, Any]) -> ConfigV4:
+    def from_dict(cls, data: Mapping[str, Any]) -> Config:
         """Build from the stored form without validating effects."""
         return cls(
             zones={k: Zone.from_dict(v) for k, v in (data.get("zones") or {}).items()},
@@ -590,15 +514,11 @@ class ConfigV4:
 
     def to_dict(self) -> dict[str, Any]:
         default = TargetOptions()
-        targets = {}
-        for target_id, options in self.targets.items():
-            if dataclasses.replace(options, visible_scenes=None) != default:
-                stored = options.to_dict()
-                del stored["visible_scenes"]  # a target's scenes are its menu
-                targets[target_id] = stored
         return {
             "zones": {k: v.to_dict() for k, v in self.zones.items()},
-            "targets": targets,
+            "targets": {
+                k: v.to_dict() for k, v in self.targets.items() if v != default
+            },
             "parts": {k: v.to_dict() for k, v in self.parts.items()},
             "scenes": {k: [s.to_dict() for s in v] for k, v in self.scenes.items()},
             "settings": self.settings.to_dict(),
@@ -807,20 +727,6 @@ class EffectLookup(Protocol):
     def get(self, key: str) -> Any: ...
 
 
-def available_scenes(
-    scenes: Mapping[str, Scene], presets: Mapping[str, Scene]
-) -> dict[str, Scene]:
-    """Return every scene by public id: presets, edited ones in place, then user scenes.
-
-    Presets keep catalogue order and user scenes stored order. A stored scene
-    whose preset left the catalogue is a user scene.
-    """
-    overrides = {s.preset: s for s in scenes.values() if s.preset in presets}
-    out = {pid: overrides.get(pid, preset) for pid, preset in presets.items()}
-    out.update((s.id, s) for s in scenes.values() if s.preset not in presets)
-    return out
-
-
 def all_parts(
     stored: Mapping[str, Part], builtins: Mapping[str, Part]
 ) -> dict[str, Part]:
@@ -854,4 +760,23 @@ def resolve(scene: StoredScene, parts: Mapping[str, Part]) -> Scene:
         ),
         others=scene.others,
         transition=scene.transition,
+    )
+
+
+def part_scene(part: Part) -> Scene:
+    """Return a part played on all of a target's lights, as a scene of its own."""
+    return Scene(
+        id=part.id,
+        name=part.name,
+        icon=part.icon,
+        layers=(Layer("all", part.effect, part.params),),
+    )
+
+
+def is_whole_room(scene: StoredScene, part_id: str) -> bool:
+    """Whether the scene plays just this part on all lights, as its part scene does."""
+    return (
+        scene.layers == (PartLayer("all", part_id),)
+        and scene.others == "off"
+        and scene.transition is None
     )

@@ -66,3 +66,34 @@ class HarnessCase(IsolatedAsyncioTestCase):
             "light", service, {"entity_id": entity_id, **data}, blocking=True
         )
         await self.h.idle()
+
+
+def part(part_id: str, name: str, effect: str = "white", **params: Any) -> dict:
+    """Return a stored part."""
+    return {"id": part_id, "name": name, "effect": effect, "params": params}
+
+
+def scene(scene_id: str, name: str, *layers: tuple[Any, str], **kw: Any) -> dict:
+    """Return a stored scene; each layer is (lights, part id)."""
+    return {
+        "id": scene_id,
+        "name": name,
+        "icon": None,
+        "layers": [{"lights": lights, "part": part_id} for lights, part_id in layers],
+        "others": "off",
+        "transition": None,
+        **kw,
+    }
+
+
+async def save(
+    h: Harness, target_id: str | None = None, *scenes: dict, parts: tuple = ()
+) -> Any:
+    """Save parts and a target's scenes in one library/save."""
+    return await h.ws(
+        {
+            "type": "magic_lights/library/save",
+            "parts": list(parts),
+            "scenes": [{"target": target_id, "scene": s} for s in scenes],
+        }
+    )

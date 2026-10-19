@@ -440,10 +440,26 @@ def _area_of(hass: HomeAssistant, entry: er.RegistryEntry) -> str | None:
     return device.area_id if device is not None else None
 
 
-def light_areas(hass: HomeAssistant) -> dict[str, set[str]]:
-    """Light entity ids per area, as the registries place them."""
-    out: dict[str, set[str]] = defaultdict(set)
+def areas(hass: HomeAssistant) -> dict[str, tuple[str, set[str]]]:
+    """Return every area with its name and the lights the registries place there.
+
+    Lights are filtered as the index filters them, by the registries and any
+    state known yet; an area without any is still listed, since extra lights
+    alone make it a room.
+    """
+    out = {
+        area.id: (area.name, set()) for area in ar.async_get(hass).async_list_areas()
+    }
     for entry in er.async_get(hass).entities.values():
-        if entry.domain == LIGHT_DOMAIN and (area_id := _area_of(hass, entry)):
-            out[area_id].add(entry.entity_id)
-    return dict(out)
+        state = hass.states.get(entry.entity_id)
+        if (
+            entry.domain != LIGHT_DOMAIN
+            or entry.disabled_by is not None
+            or entry.entity_category is not None
+            or _is_group_entry(hass, entry)
+            or (state is not None and _is_group(state.attributes))
+        ):
+            continue
+        if (area := out.get(_area_of(hass, entry) or "")) is not None:
+            area[1].add(entry.entity_id)
+    return out

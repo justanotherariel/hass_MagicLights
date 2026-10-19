@@ -18,44 +18,29 @@ from homeassistant.helpers import (
 
 from tests.harness import DOMAIN, WsError
 
-from . import BEDROOM, LIVING, HarnessCase
+from . import BEDROOM, LIVING, HarnessCase, part, save, scene
+
+ROOM = "room:living_room"
+EVENING = part("p_0000e001", "Evening glow", kelvin=2400, brightness=50)
 
 
 def evening(**changes: Any) -> dict[str, Any]:
-    scene = {
-        "id": "s_0000e001",
-        "name": "Evening",
-        "icon": None,
-        "preset": None,
-        "layers": [
-            {
-                "lights": ["room:living_room"],
-                "effect": "white",
-                "params": {"kelvin": 2400, "brightness": 50},
-            }
-        ],
-        "others": "off",
-        "brightness": 100,
-        "transition": None,
+    """Return a living room scene of the part EVENING."""
+    base = scene("s_0000e001", "Evening", (["room:living_room"], EVENING["id"]))
+    return base | changes
+
+
+PARTY = part(
+    "p_0000d001", "Party", "palette", palette=[{"xy": [0.2, 0.1]}, {"xy": [0.6, 0.35]}]
+)
+
+
+def draft(**params: Any) -> dict[str, Any]:
+    """Return a scene being tried, with its new part."""
+    return {
+        "scene": scene("s_0000d001", "Draft", ("all", PARTY["id"])),
+        "parts": [PARTY | {"params": PARTY["params"] | params}],
     }
-    return scene | changes
-
-
-def palette(**params: Any) -> dict[str, Any]:
-    return evening(
-        id="s_0000d001",
-        name="Draft",
-        layers=[
-            {
-                "lights": "all",
-                "effect": "palette",
-                "params": {
-                    "palette": [{"xy": [0.2, 0.1]}, {"xy": [0.6, 0.35]}],
-                    **params,
-                },
-            }
-        ],
-    )
 
 
 class ConfigTest(HarnessCase):
@@ -66,6 +51,7 @@ class ConfigTest(HarnessCase):
             {
                 "zones",
                 "targets",
+                "parts",
                 "scenes",
                 "lights",
                 "effects",
@@ -75,30 +61,30 @@ class ConfigTest(HarnessCase):
                 "version",
             },
         )
-        self.assertEqual(config["version"], "2.1.0")
-        self.assertEqual(len(config["scenes"]), 48)
+        self.assertEqual(config["version"], "3.0.0")
+        self.assertEqual(len(config["parts"]), 48)
+        self.assertEqual(config["scenes"], [])
         self.assertEqual(len(config["palettes"]), 35)
-        living = next(t for t in config["targets"] if t["id"] == "room:living_room")
+        living = next(t for t in config["targets"] if t["id"] == ROOM)
         self.assertEqual(living["select_entity_id"], LIVING)
         self.assertEqual(living["kind"], "room")
         self.assertEqual(len(living["lights"]), 4)
-        # Presets wait in "hidden" until picked.
-        self.assertEqual((living["scenes"], len(living["hidden"])), ([], 48))
-        self.assertEqual(len(living["swatches"]), 48)
-        relax = next(s for s in config["scenes"] if s["id"] == "relax")
+        # New rooms start empty.
+        self.assertEqual(living["scenes"], [])
+        self.assertNotIn("hidden", living)
+        self.assertNotIn("visible_scenes", living["options"])
+        relax = next(p for p in config["parts"] if p["id"] == "relax")
         self.assertEqual(
-            {k: relax[k] for k in ("builtin", "category", "dynamic", "override")},
-            {"builtin": True, "category": "white", "dynamic": False, "override": None},
+            {k: relax[k] for k in ("builtin", "edited", "category", "dynamic")},
+            {"builtin": True, "edited": False, "category": "white", "dynamic": False},
         )
-        self.assertNotIn("scope", relax)
-        self.assertEqual(
-            relax["fits"], sorted(t["id"] for t in config["targets"] if t["lights"])
-        )
-        self.assertEqual(living["swatches"]["relax"], relax["swatches"])
+        self.assertEqual((relax["used_by"], relax["dormant"]), ([], []))
+        self.assertEqual(relax["name"], "Relax")
+        self.assertTrue(relax["icon"].startswith("mdi:"))
         self.assertRegex(relax["swatches"][0], r"^#[0-9a-f]{6}$")
-        tokyo = next(s for s in config["scenes"] if s["id"] == "tokyo")
+        tokyo = next(p for p in config["parts"] if p["id"] == "tokyo")
         self.assertTrue(tokyo["dynamic"])
-        candle = next(s for s in config["scenes"] if s["id"] == "cozy_candle")
+        candle = next(p for p in config["parts"] if p["id"] == "cozy_candle")
         self.assertFalse(candle["dynamic"])  # no motion to switch
         effects = {e["key"]: e for e in config["effects"]}
         self.assertEqual(
@@ -117,10 +103,21 @@ class ConfigTest(HarnessCase):
         self.assertIn("candle", strip["caps"]["effects"])
         self.assertTrue(all(bus["lights"] for bus in config["buses"]))
 
+
+class LibraryTest(HarnessCase):
     async def test_save_edit_and_delete_a_running_scene(self) -> None:
         h = self.h
-        saved = await h.ws({"type": "magic_lights/scene/save", "scene": evening()})
-        self.assertEqual(saved["scene"]["swatches"], [saved["scene"]["swatches"][0]])
+        saved = await save(h, ROOM, evening(), parts=(EVENING,))
+        (info,) = saved["scenes"]
+        self.assertEqual(
+            {k: info[k] for k in ("target", "fits", "dormant")},
+            {"target": ROOM, "fits": True, "dormant": False},
+        )
+        self.assertEqual(len(info["swatches"]), 1)
+        (part_info,) = saved["parts"]
+        self.assertEqual(
+            (part_info["used_by"], part_info["builtin"]), (["s_0000e001"], False)
+        )
         self.assertIn("Evening", self.status(LIVING)["options"])
         self.assertNotIn("Evening", self.status(BEDROOM)["options"])
         await h.select(LIVING, "Evening")
@@ -128,178 +125,329 @@ class ConfigTest(HarnessCase):
             self.data_of("light.living_ceiling")[-1]["color_temp_kelvin"], 2400
         )
 
-        # Editing the running scene updates the room in place.
+        # Editing the part updates the room in place.
         h.clear_calls()
-        layer = {
-            "lights": "all",
-            "effect": "white",
-            "params": {"kelvin": 3000, "brightness": 50},
-        }
-        await h.ws(
-            {"type": "magic_lights/scene/save", "scene": evening(layers=[layer])}
-        )
+        await save(h, parts=(EVENING | {"params": {"kelvin": 3000}},))
         await h.idle()
         self.assertEqual(
             self.data_of("light.living_ceiling")[-1]["color_temp_kelvin"], 3000
         )
         self.assertEqual(self.state(LIVING), "Evening")
 
-        # Deleting it ends the activation; the lights stay as they are.
+        # Deleting the scene ends the activation; the lights stay as they are.
         h.clear_calls()
         await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000e001"})
         await h.idle()
         self.assertEqual(self.state(LIVING), "Manual")
         self.assertNotIn("Evening", self.status(LIVING)["options"])
         self.assertEqual(h.calls(), [])
+        # The part stays without a scene.
+        config = await h.ws({"type": "magic_lights/config"})
+        kept = next(p for p in config["parts"] if p["id"] == EVENING["id"])
+        self.assertEqual(kept["used_by"], [])
 
-    async def test_an_edited_preset_applies_everywhere_until_reset(self) -> None:
+    async def test_parts_and_scenes_save_together_or_not_at_all(self) -> None:
+        h = self.h
+        store = h.data().store
+        events: list[Any] = []
+        await h.ws_send({"type": "magic_lights/subscribe"}, events.append)
+        bedroom = scene("s_0000e002", "Evening", ("all", EVENING["id"]))
+        with patch.object(
+            store, "async_save_config", wraps=store.async_save_config
+        ) as saved:
+            await h.ws(
+                {
+                    "type": "magic_lights/library/save",
+                    "parts": [EVENING],
+                    "scenes": [
+                        {"target": ROOM, "scene": evening()},
+                        {"target": "room:bedroom", "scene": bedroom},
+                    ],
+                }
+            )
+            await h.idle()
+        self.assertEqual(saved.call_count, 1)
+        self.assertEqual(events.count({"config_changed": True}), 1)
+        for select in (LIVING, BEDROOM):
+            self.assertIn("Evening", self.status(select)["options"])
+
+        events.clear()
+        new_part = part("p_0000e003", "Night")
+        late = scene("s_0000e003", "Off", ("all", new_part["id"]))
+        with self.assertRaises(WsError) as err:
+            await save(h, ROOM, evening(name="Late"), late, parts=(new_part,))
+        self.assertEqual(err.exception.code, "reserved_name")
+        await h.idle()
+        self.assertEqual(events, [])
+        config = await h.ws({"type": "magic_lights/config"})
+        self.assertNotIn("p_0000e003", {p["id"] for p in config["parts"]})
+        self.assertEqual(
+            [s["name"] for s in config["scenes"] if s["target"] == ROOM], ["Evening"]
+        )
+
+    async def test_an_edited_built_in_applies_everywhere_until_reset(self) -> None:
         h = self.h
         await h.call("activate_scene", LIVING, scene="Relax")
         await h.call("activate_scene", BEDROOM, scene="Relax")
-        edit = evening(
-            id="s_0000c001",
-            name="Relax",
-            preset="relax",
-            layers=[
-                {
-                    "lights": "all",
-                    "effect": "white",
-                    "params": {"kelvin": 2237, "brightness": 20},
-                }
-            ],
-        )
         h.clear_calls()
-        saved = await h.ws({"type": "magic_lights/scene/save", "scene": edit})
+        edit = part("relax", "Relax", kelvin=2237, brightness=20)
+        saved = await save(h, parts=(edit,))
         await h.idle()
-        # Every room running the preset follows; the menu and ids stay.
+        self.assertTrue(saved["parts"][0]["edited"])
+        # Every room running it follows; ids and names stay.
         for light in ("light.living_ceiling", "light.bedroom_ceiling"):
             self.assertEqual(self.data_of(light)[-1]["brightness"], 51)
         self.assertEqual(self.status(LIVING)["scene_id"], "relax")
         self.assertEqual(self.state(BEDROOM), "Relax")
-        config = await h.ws({"type": "magic_lights/config"})
-        scenes = {s["id"]: s for s in config["scenes"]}
-        self.assertEqual(scenes["relax"]["override"], "s_0000c001")
-        # The edit runs wherever the preset did.
-        self.assertEqual(scenes["relax"]["fits"], [])
-        self.assertEqual(saved["scene"]["fits"], scenes["s_0000c001"]["fits"])
-        self.assertIn("room:bedroom", saved["scene"]["fits"])
 
         h.clear_calls()
-        await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000c001"})
+        await h.ws({"type": "magic_lights/part/delete", "part_id": "relax"})
         await h.idle()
         for light in ("light.living_ceiling", "light.bedroom_ceiling"):
             self.assertEqual(self.data_of(light)[-1]["brightness"], 143)
         self.assertEqual(self.state(LIVING), "Relax")
+        with self.assertRaises(WsError) as err:
+            await h.ws({"type": "magic_lights/part/delete", "part_id": "relax"})
+        self.assertEqual(err.exception.code, "not_found")
 
-    async def test_an_edit_equal_to_its_preset_is_not_kept(self) -> None:
+    async def test_an_edit_equal_to_its_built_in_is_not_kept(self) -> None:
         h = self.h
         config = await h.ws({"type": "magic_lights/config"})
-        relax = next(s for s in config["scenes"] if s["id"] == "relax")
-        untouched = {
-            k: relax[k]
-            for k in ("name", "icon", "others", "brightness", "transition", "layers")
-        }
-        store = h.data().store
-        edit = {**untouched, "id": "s_0000c001", "preset": "relax"}
-        with patch.object(
-            store, "async_save_config", wraps=store.async_save_config
-        ) as save:
-            reply = await h.ws({"type": "magic_lights/scene/save", "scene": edit})
-        self.assertEqual(save.call_count, 0)
-        self.assertEqual(
-            (reply["scene"]["id"], reply["scene"]["override"]), ("relax", None)
-        )
-
-        dimmer = {**edit, "brightness": 50}
-        await h.ws({"type": "magic_lights/scene/save", "scene": dimmer})
-        config = await h.ws({"type": "magic_lights/config"})
-        self.assertEqual(
-            next(s for s in config["scenes"] if s["id"] == "relax")["override"],
-            "s_0000c001",
-        )
+        relax = next(p for p in config["parts"] if p["id"] == "relax")
+        same = {k: relax[k] for k in ("id", "name", "effect", "params")}
+        reply = await save(h, parts=(same,))
+        self.assertFalse(reply["parts"][0]["edited"])
+        dimmer = same | {"params": same["params"] | {"brightness": 50}}
+        self.assertTrue((await save(h, parts=(dimmer,)))["parts"][0]["edited"])
         # Setting it back removes the edit.
-        reply = await h.ws({"type": "magic_lights/scene/save", "scene": edit})
-        self.assertEqual(reply["scene"]["id"], "relax")
-        config = await h.ws({"type": "magic_lights/config"})
-        self.assertEqual([s["id"] for s in config["scenes"] if not s["builtin"]], [])
+        self.assertFalse((await save(h, parts=(same,)))["parts"][0]["edited"])
+        stored = h.data().coordinator.config
+        self.assertNotIn("relax", stored.parts)
 
-    async def test_swatches_show_what_reaches_each_target(self) -> None:
+    async def test_a_part_saves_in_the_shape_it_is_read(self) -> None:
         h = self.h
-        warm = {"kelvin": 2200, "brightness": 50}
-        hell = evening(
-            name="Hell",
-            layers=[
-                {
-                    "lights": ["room:living_room", "room:kitchen"],
-                    "effect": "white",
-                    "params": {"kelvin": 5000, "brightness": 50},
-                },
-                {"lights": ["room:kitchen"], "effect": "white", "params": warm},
-            ],
-        )
-        saved = await h.ws({"type": "magic_lights/scene/save", "scene": hell})
-        await h.idle()
-        cold, warm_swatch = saved["scene"]["swatches"]
+        await save(h, parts=(part("p_0000e004", "Mine"),))
         config = await h.ws({"type": "magic_lights/config"})
-        targets = {t["id"]: t for t in config["targets"]}
-        self.assertEqual(targets["room:living_room"]["swatches"]["s_0000e001"], [cold])
-        self.assertEqual(
-            targets["room:kitchen"]["swatches"]["s_0000e001"], [cold, warm_swatch]
+        shape = ("id", "name", "effect", "params", "icon", "category")
+        mine, relax = (
+            next({k: p[k] for k in shape} for p in config["parts"] if p["id"] == i)
+            for i in ("p_0000e004", "relax")
         )
-        self.assertNotIn("s_0000e001", targets["room:bedroom"]["swatches"])
-        (living,) = self.status(LIVING)["scenes"]
-        self.assertEqual(living["swatches"], [cold])
-        self.assertEqual(saved["scene"]["fits"], ["room:kitchen", "room:living_room"])
+        dimmer = relax | {"params": relax["params"] | {"brightness": 50}}
+        reply = await save(h, parts=(mine | {"name": "Ours"}, dimmer))
+        self.assertEqual([p["name"] for p in reply["parts"]], ["Ours", "Relax"])
+        self.assertEqual(reply["parts"][1]["icon"], relax["icon"])
+        stored = h.data().coordinator.config.parts
+        for part_id in ("p_0000e004", "relax"):
+            self.assertIsNone(stored[part_id].icon)
+            self.assertIsNone(stored[part_id].category)
+        with self.assertRaises(WsError) as err:
+            await save(h, parts=(mine | {"builtin": False},))
+        self.assertEqual(err.exception.code, "invalid")
+
+    async def test_swatches_show_what_reaches_the_target(self) -> None:
+        h = self.h
+        cold = part("p_0000e004", "Cold", kelvin=5000, brightness=50)
+        warm = part("p_0000e005", "Warm", kelvin=2200, brightness=50)
+        hell = scene(
+            "s_0000e004",
+            "Hell",
+            ("all", cold["id"]),
+            (["light.kitchen_island"], warm["id"]),
+        )
+        saved = await save(h, ROOM, hell, parts=(cold, warm))
+        await h.idle()
+        cold_swatch = saved["parts"][0]["swatches"]
+        self.assertEqual(saved["scenes"][0]["swatches"], cold_swatch)
+        (summary,) = self.status(LIVING)["scenes"]
+        self.assertEqual(
+            (summary["id"], summary["swatches"]), ("s_0000e004", cold_swatch)
+        )
 
     async def test_errors_are_readable(self) -> None:
         h = self.h
         cases = [
             (
-                evening(name="relax"),
+                {"parts": [part("p_0000e009", "relax")]},
                 "duplicate_name",
-                "a scene named 'relax' already exists (a preset)",
+                "a part named 'relax' already exists (a built-in part)",
             ),
             (
-                evening(preset="relax"),
-                "preset_name",
-                "an edited preset keeps its name 'Relax'",
+                {"parts": [part("relax", "My relax")]},
+                "builtin_name",
+                "an edited built-in part keeps its name 'Relax'",
             ),
-            (evening(scope=["room:living_room"]), "invalid", None),
-            (evening(name="Off"), "reserved_name", "'Off' is a reserved name"),
             (
-                evening(layers=[{"lights": "all", "effect": "strobe", "params": {}}]),
+                {"parts": [part("p_0000e009", "Strobe", "strobe")]},
                 "unknown_effect",
-                "unknown effect 'strobe' (layer 1, effect)",
+                "unknown effect 'strobe' (effect)",
             ),
-            (evening(id="relax"), "invalid", None),
+            ({"parts": [part("disco", "Disco")]}, "unknown_part", None),
+            (
+                {"scenes": [{"target": ROOM, "scene": evening(name="Off")}]},
+                "reserved_name",
+                "'Off' is a reserved name",
+            ),
+            (
+                {"scenes": [{"target": ROOM, "scene": evening()}]},
+                "unknown_part",
+                "unknown part 'p_0000e001' (layer 1, part)",
+            ),
+            (
+                {
+                    "scenes": [
+                        {
+                            "target": ROOM,
+                            "scene": evening(scope=[ROOM]),
+                        }
+                    ]
+                },
+                "invalid",
+                None,
+            ),
+            (
+                {"scenes": [{"target": ROOM, "scene": evening(id="relax")}]},
+                "invalid",
+                None,
+            ),
+            (
+                {"scenes": [{"target": "room:attic", "scene": evening()}]},
+                "unknown_target",
+                None,
+            ),
         ]
-        for scene, code, message in cases:
+        for payload, code, message in cases:
             with self.subTest(code=code), self.assertRaises(WsError) as err:
-                await h.ws({"type": "magic_lights/scene/save", "scene": scene})
+                await h.ws({"type": "magic_lights/library/save", **payload})
             self.assertEqual(err.exception.code, code)
             if message is not None:
                 self.assertEqual(err.exception.message, message)
-        bad = evening(
-            layers=[{"lights": "all", "effect": "white", "params": {"brightness": 400}}]
-        )
+        bad = EVENING | {"params": {"brightness": 400}}
         with self.assertRaises(WsError) as err:
-            await h.ws({"type": "magic_lights/scene/save", "scene": bad})
+            await save(h, parts=(bad,))
         self.assertEqual(err.exception.code, "invalid_params")
-        self.assertTrue(err.exception.message.endswith("(layer 1, brightness)"))
+        self.assertTrue(err.exception.message.endswith("(brightness)"))
+        # A scene stays in its room.
+        await save(h, ROOM, evening(), parts=(EVENING,))
+        with self.assertRaises(WsError) as err:
+            await save(h, "room:bedroom", evening())
+        self.assertEqual(err.exception.code, "invalid")
         with self.assertRaises(WsError) as err:
             await h.ws({"type": "magic_lights/scene/delete", "scene_id": "relax"})
         self.assertEqual(err.exception.code, "not_found")
         with self.assertRaises(WsError) as err:
             await h.ws(
-                {
-                    "type": "magic_lights/try",
-                    "target_id": "room:attic",
-                    "scene": palette(),
-                }
+                {"type": "magic_lights/try", "target_id": "room:attic", **draft()}
             )
         self.assertEqual(err.exception.code, "home_assistant_error")
         self.assertEqual(err.exception.message, "There is no room or zone room:attic")
 
+    async def test_names_are_unique_per_target(self) -> None:
+        h = self.h
+        await save(h, ROOM, evening(), parts=(EVENING,))
+        bedroom = evening(id="s_0000e002", layers=[{"lights": "all", "part": "read"}])
+        await save(h, "room:bedroom", bedroom)
+        self.assertIn("Evening", self.status(BEDROOM)["options"])
+        twin = evening(id="s_0000e003", name="EVENING")
+        with self.assertRaises(WsError) as err:
+            await save(h, ROOM, twin)
+        self.assertEqual(err.exception.code, "duplicate_name")
+        self.assertIn(ROOM, err.exception.message)
+        # A scene may share a part's name.
+        await save(h, ROOM, twin | {"name": "Relax"})
+        self.assertIn("Relax", self.status(LIVING)["options"])
+
+    async def test_scenes_of_a_deleted_area_stay_dormant(self) -> None:
+        h = self.h
+        cozy = part("p_0000e006", "Cozy")
+        bedroom = scene("s_0000e002", "Cozy", ("all", cozy["id"]))
+        await save(h, "room:bedroom", bedroom, parts=(cozy,))
+        ar.async_get(h.hass).async_delete("bedroom")
+        await h.idle()
+        self.assertIsNone(h.hass.states.get(BEDROOM))
+        config = await h.ws({"type": "magic_lights/config"})
+        (dormant,) = config["scenes"]
+        self.assertEqual(
+            {k: dormant[k] for k in ("target", "fits", "dormant")},
+            {"target": "room:bedroom", "fits": False, "dormant": True},
+        )
+        (info,) = [p for p in config["parts"] if p["id"] == cozy["id"]]
+        self.assertEqual((info["used_by"], info["dormant"]), ([], ["s_0000e002"]))
+        # It blocks nothing: the same name elsewhere, an edit of its part.
+        await save(h, ROOM, scene("s_0000e003", "Cozy", ("all", cozy["id"])))
+        await save(h, parts=(cozy | {"params": {"kelvin": 2500}},))
+        # Saved itself, it has nowhere to be.
+        with self.assertRaises(WsError) as err:
+            await save(h, "room:bedroom", bedroom)
+        self.assertEqual(err.exception.code, "unknown_target")
+        # Deleting its part takes it along once no live scene uses the part.
+        await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000e003"})
+        await h.ws({"type": "magic_lights/part/delete", "part_id": cozy["id"]})
+        config = await h.ws({"type": "magic_lights/config"})
+        self.assertEqual(config["scenes"], [])
+
+    async def test_scenes_order(self) -> None:
+        h = self.h
+        read = scene("s_0000e002", "Reading", ("all", "read"))
+        await save(h, ROOM, evening(), read, parts=(EVENING,))
+        reply = await h.ws(
+            {
+                "type": "magic_lights/scenes/order",
+                "target_id": ROOM,
+                "scene_ids": ["s_0000e002", "s_0000e001"],
+            }
+        )
+        await h.idle()
+        self.assertEqual(reply["target"]["scenes"], ["s_0000e002", "s_0000e001"])
+        self.assertEqual(
+            self.status(LIVING)["options"], ["Off", "Reading", "Evening", "Manual"]
+        )
+        for target_id, ids, code in (
+            (ROOM, ["s_0000e002"], "invalid"),
+            (ROOM, ["s_0000e002", "s_0000e002"], "invalid"),
+            (ROOM, ["s_0000e002", "s_0000e001", "s_0000dead"], "invalid"),
+            ("room:attic", [], "not_found"),
+        ):
+            with self.subTest(ids=ids), self.assertRaises(WsError) as err:
+                await h.ws(
+                    {
+                        "type": "magic_lights/scenes/order",
+                        "target_id": target_id,
+                        "scene_ids": ids,
+                    }
+                )
+            self.assertEqual(err.exception.code, code)
+
+    async def test_a_part_in_use_stays(self) -> None:
+        h = self.h
+        await save(h, ROOM, evening(), parts=(EVENING,))
+        await h.ws(
+            {
+                "type": "magic_lights/settings/save",
+                "settings": {"default_scene": EVENING["id"]},
+            }
+        )
+        delete = {"type": "magic_lights/part/delete", "part_id": EVENING["id"]}
+        with self.assertRaises(WsError) as err:
+            await h.ws(delete)
+        self.assertEqual(
+            (err.exception.code, err.exception.message),
+            ("part_in_use", "Used by Living Room · Evening, the switch-on default"),
+        )
+        await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000e001"})
+        with self.assertRaises(WsError) as err:
+            await h.ws(delete)
+        self.assertEqual(err.exception.message, "Used by the switch-on default")
+        await h.ws(
+            {"type": "magic_lights/settings/save", "settings": {"default_scene": None}}
+        )
+        await h.ws(delete)
+        with self.assertRaises(WsError) as err:
+            await h.ws(delete)
+        self.assertEqual(err.exception.code, "not_found")
+
+
+class TargetTest(HarnessCase):
     async def test_zones(self) -> None:
         h = self.h
         events: list[Any] = []
@@ -339,132 +487,58 @@ class ConfigTest(HarnessCase):
             self.status(zone)["lights"],
             {"light.bedroom_ceiling": "off", "light.bedroom_nightstand": "off"},
         )
+        await save(
+            h, "zone:upstairs", scene("s_0000e007", "Up", (["room:bedroom"], "read"))
+        )
+        self.assertIn("Up", self.status(zone)["options"])
 
         await h.ws({"type": "magic_lights/zone/delete", "zone_id": "upstairs"})
         await h.idle()
         self.assertIsNone(h.hass.states.get(zone))
         self.assertIsNone(entities.async_get(zone))
         self.assertIsNone(devices.async_get(device.id))
-
-    async def test_names_are_unique_where_scenes_have_lights(self) -> None:
-        h = self.h
-        await h.ws({"type": "magic_lights/scene/save", "scene": evening()})
-        bedroom = evening(
-            id="s_0000e002",
-            layers=[{"lights": ["room:bedroom"], "effect": "white", "params": {}}],
-        )
-        await h.ws({"type": "magic_lights/scene/save", "scene": bedroom})
-        self.assertIn("Evening", self.status(BEDROOM)["options"])
-        self.assertIn("Evening", self.status(LIVING)["options"])
-        both = bedroom | {
-            "layers": [
-                {
-                    "lights": ["room:bedroom", "light.living_ceiling"],
-                    "effect": "white",
-                    "params": {},
-                }
-            ]
-        }
-        with self.assertRaises(WsError) as err:
-            await h.ws({"type": "magic_lights/scene/save", "scene": both})
-        self.assertEqual(err.exception.code, "duplicate_name")
-        self.assertIn("room:living_room", err.exception.message)
-
-    async def test_scenes_of_a_deleted_area_do_not_block_edits(self) -> None:
-        h = self.h
-        both = evening(
-            layers=[
-                {
-                    "lights": ["room:bedroom", "room:living_room"],
-                    "effect": "white",
-                    "params": {},
-                }
-            ]
-        )
-        bedroom = evening(
-            id="s_0000e002",
-            name="Cozy",
-            layers=[{"lights": ["room:bedroom"], "effect": "white", "params": {}}],
-        )
-        for scene in (both, bedroom):
-            await h.ws({"type": "magic_lights/scene/save", "scene": scene})
-        ar.async_get(h.hass).async_delete("bedroom")
-        await h.idle()
-        self.assertIsNone(h.hass.states.get(BEDROOM))
-        # Saved as it is, and the name of a scene without lights is free.
-        await h.ws(
-            {"type": "magic_lights/scene/save", "scene": both | {"brightness": 40}}
-        )
-        await h.ws(
-            {
-                "type": "magic_lights/scene/save",
-                "scene": evening(id="s_0000e003", name="Cozy"),
-            }
-        )
+        # Its scenes go with it.
+        config = await h.ws({"type": "magic_lights/config"})
+        self.assertEqual(config["scenes"], [])
 
     async def test_target_options_and_settings(self) -> None:
         h = self.h
+        await save(h, ROOM, evening(), parts=(EVENING,))
         reply = await h.ws(
             {
                 "type": "magic_lights/target/options",
-                "target_id": "room:living_room",
+                "target_id": ROOM,
                 "options": {
                     "excluded_lights": ["light.living_sofa_lamp"],
-                    "visible_scenes": ["tokyo", "relax"],
+                    "default_scene": "s_0000e001",
                 },
             }
         )
         await h.idle()
-        self.assertEqual(reply["target"]["scenes"], ["tokyo", "relax"])
         self.assertNotIn("light.living_sofa_lamp", reply["target"]["lights"])
-        self.assertEqual(
-            self.status(LIVING)["options"], ["Off", "Tokyo", "Relax", "Manual"]
-        )
+        self.assertEqual(reply["target"]["options"]["default_scene"], "s_0000e001")
         self.assertNotIn("light.living_sofa_lamp", self.status(LIVING)["lights"])
+        cases = [
+            (ROOM, {"visible_scenes": ["relax"]}, "invalid"),
+            (ROOM, {"default_scene": "relax"}, "invalid"),
+            ("room:bedroom", {"default_scene": "s_0000e001"}, "unknown_scene"),
+        ]
+        for target_id, options, code in cases:
+            with self.subTest(options=options), self.assertRaises(WsError) as err:
+                await h.ws(
+                    {
+                        "type": "magic_lights/target/options",
+                        "target_id": target_id,
+                        "options": options,
+                    }
+                )
+            self.assertEqual(err.exception.code, code)
 
-        # A new scene shows up in a menu the user has ordered.
-        await h.ws({"type": "magic_lights/scene/save", "scene": evening()})
-        self.assertEqual(
-            self.status(LIVING)["options"],
-            ["Off", "Tokyo", "Relax", "Evening", "Manual"],
-        )
-        # So does a scene set up in another room, there only.
-        await h.ws(
-            {
-                "type": "magic_lights/target/options",
-                "target_id": "room:bedroom",
-                "options": {"visible_scenes": ["read"]},
-            }
-        )
-        wider = evening(
-            layers=[
-                {
-                    "lights": ["room:living_room", "room:bedroom"],
-                    "effect": "white",
-                    "params": {},
-                }
-            ]
-        )
-        await h.ws({"type": "magic_lights/scene/save", "scene": wider})
-        self.assertEqual(
-            self.status(BEDROOM)["options"], ["Off", "Read", "Evening", "Manual"]
-        )
-        self.assertEqual(
-            self.status(LIVING)["options"],
-            ["Off", "Tokyo", "Relax", "Evening", "Manual"],
-        )
-        # Taken out of a menu, an edit that keeps its lights leaves it out.
-        await h.ws(
-            {
-                "type": "magic_lights/target/options",
-                "target_id": "room:bedroom",
-                "options": {"visible_scenes": ["read"]},
-            }
-        )
-        await h.ws(
-            {"type": "magic_lights/scene/save", "scene": wider | {"brightness": 60}}
-        )
-        self.assertEqual(self.status(BEDROOM)["options"], ["Off", "Read", "Manual"])
+        # Deleting the scene clears the default that names it.
+        await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000e001"})
+        config = await h.ws({"type": "magic_lights/config"})
+        living = next(t for t in config["targets"] if t["id"] == ROOM)
+        self.assertIsNone(living["options"]["default_scene"])
 
         await h.ws(
             {
@@ -472,6 +546,7 @@ class ConfigTest(HarnessCase):
                 "settings": {
                     "light_buses": {"light.office_desk": "zigbee:test"},
                     "transition": 2,
+                    "default_scene": "relax",
                 },
             }
         )
@@ -481,151 +556,24 @@ class ConfigTest(HarnessCase):
         config = await h.ws({"type": "magic_lights/config"})
         self.assertEqual(config["settings"]["light_buses"], {})
         self.assertEqual(config["settings"]["transition"], 2)
-        with self.assertRaises(WsError) as err:
-            await h.ws(
-                {"type": "magic_lights/settings/save", "settings": {"transition": -1}}
-            )
-        self.assertEqual(err.exception.code, "invalid")
-
-    async def test_menus_are_saved_in_one_commit(self) -> None:
-        h = self.h
-        events: list[Any] = []
-        await h.ws_send({"type": "magic_lights/subscribe"}, events.append)
-        await h.ws({"type": "magic_lights/scene/save", "scene": evening()})
-        await h.idle()
-        events.clear()
-        # What one target's write announces is the most a batch may announce.
-        await h.ws(
-            {
-                "type": "magic_lights/target/options",
-                "target_id": "room:office",
-                "options": {"visible_scenes": ["read"]},
-            }
-        )
-        await h.idle()
-        single = len(events)
-        events.clear()
-        store = h.data().store
-        with patch.object(
-            store, "async_save_config", wraps=store.async_save_config
-        ) as save:
-            reply = await h.ws(
-                {
-                    "type": "magic_lights/menus/save",
-                    "menus": {
-                        "room:living_room": ["tokyo", "s_0000e001", "relax"],
-                        "room:kitchen": ["read"],
-                        "room:bedroom": None,
-                    },
-                }
-            )
-            await h.idle()
-        self.assertEqual(save.call_count, 1)
-        self.assertEqual(len(events), single)
-        self.assertEqual(
-            {t["id"]: t["scenes"] for t in reply["targets"]},
-            {
-                "room:living_room": ["tokyo", "s_0000e001", "relax"],
-                "room:kitchen": ["read"],
-                "room:bedroom": [],
-            },
-        )
-        self.assertEqual(
-            self.status(LIVING)["options"],
-            ["Off", "Tokyo", "Evening", "Relax", "Manual"],
-        )
-        events.clear()
-
-        cases = [
-            ({"room:attic": ["relax"]}, "not_found"),
-            ({"room:kitchen": ["relax", "disco"]}, "unknown_scene"),
-            ({"room:kitchen": ["relax", "relax"]}, "invalid"),
-            ({"room:kitchen": [{}]}, "invalid_format"),
-        ]
-        for menus, code in cases:
-            with self.subTest(code=code), self.assertRaises(WsError) as err:
-                await h.ws(
-                    {
-                        "type": "magic_lights/menus/save",
-                        # A valid entry first: nothing of a refused call is kept.
-                        "menus": {"room:bedroom": ["read"], **menus},
-                    }
-                )
-            self.assertEqual(err.exception.code, code)
-        await h.idle()
-        self.assertEqual(events, [])
-        config = await h.ws({"type": "magic_lights/config"})
-        bedroom = next(t for t in config["targets"] if t["id"] == "room:bedroom")
-        self.assertIsNone(bedroom["options"]["visible_scenes"])
-
-    async def test_deleting_a_scene_forgets_where_it_was_picked(self) -> None:
-        h = self.h
-        copy = evening(id="s_0000c001", name="Relax", preset="relax")
-        for scene in (evening(), copy):
-            await h.ws({"type": "magic_lights/scene/save", "scene": scene})
-        await h.ws(
-            {
-                "type": "magic_lights/menus/save",
-                "menus": {
-                    "room:living_room": ["s_0000e001", "relax"],
-                    "room:kitchen": ["relax"],
-                },
-            }
-        )
-        for target_id, default in (
-            ("room:living_room", "s_0000e001"),
-            ("room:kitchen", "relax"),
+        self.assertEqual(config["settings"]["default_scene"], "relax")
+        for settings, code in (
+            ({"transition": -1}, "invalid"),
+            ({"default_scene": "p_0000dead"}, "unknown_part"),
+            ({"default_scene": "s_0000e001"}, "invalid"),
         ):
-            await h.ws(
-                {
-                    "type": "magic_lights/target/options",
-                    "target_id": target_id,
-                    "options": {"default_scene": default},
-                }
-            )
-        await h.ws(
-            {
-                "type": "magic_lights/settings/save",
-                "settings": {"default_scene": "s_0000e001"},
-            }
-        )
-
-        async def options() -> tuple[dict[str, Any], str | None]:
-            config = await h.ws({"type": "magic_lights/config"})
-            targets = {t["id"]: t["options"] for t in config["targets"]}
-            return targets, config["settings"]["default_scene"]
-
-        # Resetting a preset keeps the references: they name the preset.
-        await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000c001"})
-        targets, default = await options()
-        self.assertEqual(
-            targets["room:living_room"]["visible_scenes"], ["s_0000e001", "relax"]
-        )
-        self.assertEqual(targets["room:kitchen"]["default_scene"], "relax")
-        self.assertEqual(default, "s_0000e001")
-
-        await h.ws({"type": "magic_lights/scene/delete", "scene_id": "s_0000e001"})
-        targets, default = await options()
-        living = targets["room:living_room"]
-        self.assertEqual(
-            (living["visible_scenes"], living["default_scene"]), (["relax"], None)
-        )
-        self.assertEqual(
-            (
-                targets["room:kitchen"]["visible_scenes"],
-                targets["room:kitchen"]["default_scene"],
-            ),
-            (["relax"], "relax"),
-        )
-        self.assertIsNone(default)
+            with self.subTest(settings=settings), self.assertRaises(WsError) as err:
+                await h.ws({"type": "magic_lights/settings/save", "settings": settings})
+            self.assertEqual(err.exception.code, code)
 
     async def test_preview(self) -> None:
         h = self.h
         reply = await h.ws(
             {
                 "type": "magic_lights/preview",
-                "target_id": "room:living_room",
+                "target_id": ROOM,
                 "scene": evening(),
+                "parts": [EVENING],
             }
         )
         (frame,) = reply["frames"]
@@ -633,8 +581,8 @@ class ConfigTest(HarnessCase):
         reply = await h.ws(
             {
                 "type": "magic_lights/preview",
-                "target_id": "room:living_room",
-                "scene": palette(motion="dynamic", speed=1),
+                "target_id": ROOM,
+                **draft(motion="dynamic", speed=1),
                 "duration": 30,
                 "samples": 31,
                 "start": "2026-10-11T18:00:00Z",
@@ -644,37 +592,45 @@ class ConfigTest(HarnessCase):
         self.assertEqual(len(frames), 31)
         colours = {f["lights"]["light.living_ceiling"]["rgb"] for f in frames}
         self.assertGreater(len(colours), 1)
+        # A draft may only use parts that exist or come along.
+        with self.assertRaises(WsError) as err:
+            await h.ws(
+                {"type": "magic_lights/preview", "target_id": ROOM, "scene": evening()}
+            )
+        self.assertEqual(
+            (err.exception.code, err.exception.message),
+            ("unknown_part", "unknown part 'p_0000e001' (layer 1, part)"),
+        )
         self.assertEqual(h.calls(), [])
+        # Nothing of a draft is stored.
+        config = await h.ws({"type": "magic_lights/config"})
+        self.assertNotIn(PARTY["id"], {p["id"] for p in config["parts"]})
 
 
-class StoredParamsTest(HarnessCase):
+class StoredPartsTest(HarnessCase):
     # Stored without a colour: the effect's default applies.
     storage = {
-        "version": 3,
+        "version": 4,
         "minor_version": 1,
         "key": DOMAIN,
         "data": {
+            "parts": {
+                "p_0000a001": part("p_0000a001", "Warm", "static", brightness=47)
+            },
             "scenes": {
-                "s_0000a001": evening(
-                    id="s_0000a001",
-                    name="Warm",
-                    layers=[
-                        {
-                            "lights": "all",
-                            "effect": "static",
-                            "params": {"brightness": 47},
-                        }
-                    ],
-                )
-            }
+                ROOM: [scene("s_0000a001", "Warm", ("all", "p_0000a001"))],
+            },
         },
     }
 
     async def test_swatches_use_the_effect_defaults(self) -> None:
         with self.assertNoLogs("custom_components.magic_lights", logging.ERROR):
             config = await self.h.ws({"type": "magic_lights/config"})
-        warm = next(s for s in config["scenes"] if s["id"] == "s_0000a001")
+        warm = next(p for p in config["parts"] if p["id"] == "p_0000a001")
         self.assertEqual(len(warm["swatches"]), 1)
+        (stored,) = config["scenes"]
+        self.assertEqual(stored["swatches"], warm["swatches"])
+        self.assertEqual(self.status(LIVING)["options"], ["Off", "Warm", "Manual"])
 
 
 class AdminTest(HarnessCase):
@@ -682,11 +638,12 @@ class AdminTest(HarnessCase):
     SAMPLES: dict[str, Any] = {
         "scene": {},
         "scene_id": "s_0000e001",
+        "scene_ids": [],
+        "part_id": "p_0000e001",
         "zone": {},
         "zone_id": "upstairs",
-        "target_id": "room:living_room",
+        "target_id": ROOM,
         "options": {},
-        "menus": {},
         "settings": {},
     }
 
@@ -728,7 +685,9 @@ class AdminTest(HarnessCase):
             for msg_id, (command, _) in enumerate(commands, 1)
         }
         self.assertEqual(codes.pop(f"{DOMAIN}/subscribe"), None)
-        self.assertGreaterEqual(len(codes), 12)
+        self.assertEqual(len(codes), 14)
+        self.assertNotIn(f"{DOMAIN}/scene/save", codes)
+        self.assertNotIn(f"{DOMAIN}/menus/save", codes)
         self.assertEqual(set(codes.values()), {"unauthorized"})
 
 
@@ -737,13 +696,7 @@ class TryTest(HarnessCase):
         h = self.h
         await h.call("activate_scene", LIVING, scene="Relax")
         h.clear_calls()
-        await h.ws(
-            {
-                "type": "magic_lights/try",
-                "target_id": "room:living_room",
-                "scene": palette(),
-            }
-        )
+        await h.ws({"type": "magic_lights/try", "target_id": ROOM, **draft()})
         await h.idle()
         attrs = self.status(LIVING)
         self.assertEqual((attrs["scene_id"], attrs["scene_name"]), (None, "Draft"))
@@ -751,7 +704,7 @@ class TryTest(HarnessCase):
         self.assertIn("xy_color", self.data_of("light.living_ceiling")[-1])
 
         h.clear_calls()
-        await h.ws({"type": "magic_lights/try/stop", "target_id": "room:living_room"})
+        await h.ws({"type": "magic_lights/try/stop", "target_id": ROOM})
         await h.idle()
         self.assertEqual(self.state(LIVING), "Relax")
         self.assertEqual(
@@ -760,33 +713,41 @@ class TryTest(HarnessCase):
 
     async def test_saving_while_trying_keeps_the_scene(self) -> None:
         h = self.h
-        draft = palette()
-        await h.ws(
-            {
-                "type": "magic_lights/try",
-                "target_id": "room:living_room",
-                "scene": draft,
-            }
-        )
-        await h.ws(
-            {"type": "magic_lights/scene/save", "scene": {**draft, "name": "Party"}}
-        )
+        tried = draft()
+        await h.ws({"type": "magic_lights/try", "target_id": ROOM, **tried})
+        await save(h, ROOM, tried["scene"] | {"name": "Party"}, parts=tried["parts"])
         await h.idle()
         self.assertEqual(self.state(LIVING), "Party")
         h.ws_close()
         await h.idle()
         self.assertEqual(self.state(LIVING), "Party")
 
-    async def test_closing_the_editor_stops_trying(self) -> None:
+    async def test_saving_a_tried_part_keeps_it(self) -> None:
         h = self.h
         await h.call("activate_scene", LIVING, scene="Read")
+        edit = part("relax", "Relax", kelvin=2237, brightness=20)
         await h.ws(
             {
                 "type": "magic_lights/try",
-                "target_id": "room:living_room",
-                "scene": palette(),
+                "target_id": ROOM,
+                "scene": scene("relax", "Relax", ("all", "relax")),
+                "parts": [edit],
             }
         )
+        await h.idle()
+        self.assertEqual(self.state(LIVING), "Manual")
+        await save(h, parts=(edit,))
+        await h.idle()
+        self.assertEqual(self.state(LIVING), "Relax")
+        h.ws_close()
+        await h.idle()
+        self.assertEqual(self.state(LIVING), "Relax")
+        self.assertEqual(self.data_of("light.living_ceiling")[-1]["brightness"], 51)
+
+    async def test_closing_the_editor_stops_trying(self) -> None:
+        h = self.h
+        await h.call("activate_scene", LIVING, scene="Read")
+        await h.ws({"type": "magic_lights/try", "target_id": ROOM, **draft()})
         await h.idle()
         self.assertEqual(self.status(LIVING)["scene_name"], "Draft")
         h.ws_close()
@@ -796,27 +757,15 @@ class TryTest(HarnessCase):
     async def test_repeated_tries_keep_one_subscription(self) -> None:
         h = self.h
         for _ in range(3):
-            await h.ws(
-                {
-                    "type": "magic_lights/try",
-                    "target_id": "room:living_room",
-                    "scene": palette(),
-                }
-            )
+            await h.ws({"type": "magic_lights/try", "target_id": ROOM, **draft()})
         connection = h._ws  # noqa: SLF001
         self.assertEqual(len(connection.subscriptions), 1)
-        await h.ws({"type": "magic_lights/try/stop", "target_id": "room:living_room"})
+        await h.ws({"type": "magic_lights/try/stop", "target_id": ROOM})
         self.assertEqual(connection.subscriptions, {})
 
     async def test_lights_are_attributed_to_the_user(self) -> None:
         h = self.h
-        await h.ws(
-            {
-                "type": "magic_lights/try",
-                "target_id": "room:bedroom",
-                "scene": palette(),
-            }
-        )
+        await h.ws({"type": "magic_lights/try", "target_id": "room:bedroom", **draft()})
         await h.idle()
         (admin,) = [
             user

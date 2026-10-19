@@ -1,4 +1,4 @@
-"""presets/scenes.json and presets/parts.json against the real effects."""
+"""presets/parts.json against the real effects."""
 
 from __future__ import annotations
 
@@ -12,10 +12,9 @@ from custom_components.magic_lights.effects.base import RenderContext, as_frame
 from custom_components.magic_lights.effects.schema import PaletteSelector
 from custom_components.magic_lights.models import normalise
 from custom_components.magic_lights.presets import (
-    SCENES_FILE,
+    PARTS_FILE,
     load_parts,
-    load_presets,
-    palettes_from_presets,
+    palettes_from_parts,
 )
 
 from .fakes import BERLIN, START, make_caps, make_light
@@ -49,92 +48,71 @@ LIGHTS = (
 HEX = re.compile(r"^#[0-9a-f]{6}$")
 
 
-class PresetTest(unittest.TestCase):
+class BuiltinPartTest(unittest.TestCase):
     @classmethod
     def setUpClass(cls) -> None:
         cls.registry = Registry(BUILTIN)
-        cls.raw = json.loads(SCENES_FILE.read_text(encoding="utf-8"))
-        cls.presets = load_presets(cls.registry)
+        cls.raw = json.loads(PARTS_FILE.read_text(encoding="utf-8"))
+        cls.parts = load_parts(cls.registry)
 
     def test_all_load_with_stable_ids(self) -> None:
         with self.assertNoLogs("custom_components.magic_lights.presets", "ERROR"):
-            presets = load_presets(self.registry)
-        self.assertEqual(list(presets), IDS)
-
-    def test_parts_are_the_presets(self) -> None:
-        with self.assertNoLogs("custom_components.magic_lights.presets", "ERROR"):
             parts = load_parts(self.registry)
         self.assertEqual(list(parts), IDS)
-        for part_id, part in parts.items():
-            with self.subTest(part_id):
-                preset = self.presets[part_id]
-                (layer,) = preset.layers
-                self.assertEqual(
-                    (part.name, part.icon, part.category, part.effect, part.params),
-                    (
-                        preset.name,
-                        preset.icon,
-                        preset.category,
-                        layer.effect,
-                        layer.params,
-                    ),
-                )
 
     def test_every_param_validates(self) -> None:
         for item in self.raw:
-            for i, layer in enumerate(item["layers"]):
-                with self.subTest(item["id"], layer=i):
-                    effect = self.registry.get(layer["effect"])
-                    keys = {marker.schema for marker in effect.schema.schema}
-                    self.assertLessEqual(set(layer["params"]), keys)
-                    params = effect.validate(layer["params"])
-                    self.assertEqual(effect.validate(params), params)
-                    self.assertEqual(self.presets[item["id"]].layers[i].params, params)
+            with self.subTest(item["id"]):
+                effect = self.registry.get(item["effect"])
+                keys = {marker.schema for marker in effect.schema.schema}
+                self.assertLessEqual(set(item["params"]), keys)
+                params = effect.validate(item["params"])
+                self.assertEqual(effect.validate(params), params)
+                self.assertEqual(self.parts[item["id"]].params, params)
 
-    def test_every_preset_renders(self) -> None:
+    def test_every_part_renders(self) -> None:
         members = tuple(light.entity_id for light in LIGHTS)
-        for scene in self.presets.values():
-            for i, layer in enumerate(scene.layers):
-                with self.subTest(scene.id, layer=i):
-                    effect = self.registry.get(layer.effect)
-                    ctx = RenderContext(
-                        lights=LIGHTS,
-                        members=members,
-                        params=layer.params,
-                        now=START,
-                        t=0.0,
-                        sun=BERLIN,
-                        rng=random.Random(f"{scene.id}|room:test|{i}|0"),
-                        memory={},
-                        prev={},
-                        min_period=0.5,
-                        adjust={},
-                        first=True,
-                    )
-                    frame = as_frame(effect.render(ctx))
-                    self.assertEqual(set(frame.states), set(members))
-                    for light in LIGHTS:
-                        state = frame.states[light.entity_id]
-                        self.assertTrue(state.on)
-                        if state.brightness is not None:
-                            self.assertTrue(0 < state.brightness <= 1)
-                        if state.effect is not None:
-                            self.assertTrue(light.supports_effect(state.effect))
-                            self.assertIsNotNone(state.color)
-                        if state.gradient is not None:
-                            self.assertTrue(light.caps.gradient_points)
-                            self.assertIsNotNone(state.color)
-                        normalise(state, light.caps)
-                    swatches = effect.swatches(layer.params)
-                    self.assertTrue(1 <= len(swatches) <= 5)
-                    self.assertTrue(all(HEX.match(s) for s in swatches), swatches)
+        for part in self.parts.values():
+            with self.subTest(part.id):
+                effect = self.registry.get(part.effect)
+                ctx = RenderContext(
+                    lights=LIGHTS,
+                    members=members,
+                    params=part.params,
+                    now=START,
+                    t=0.0,
+                    sun=BERLIN,
+                    rng=random.Random(f"{part.id}|room:test|0|0"),
+                    memory={},
+                    prev={},
+                    min_period=0.5,
+                    adjust={},
+                    first=True,
+                )
+                frame = as_frame(effect.render(ctx))
+                self.assertEqual(set(frame.states), set(members))
+                for light in LIGHTS:
+                    state = frame.states[light.entity_id]
+                    self.assertTrue(state.on)
+                    if state.brightness is not None:
+                        self.assertTrue(0 < state.brightness <= 1)
+                    if state.effect is not None:
+                        self.assertTrue(light.supports_effect(state.effect))
+                        self.assertIsNotNone(state.color)
+                    if state.gradient is not None:
+                        self.assertTrue(light.caps.gradient_points)
+                        self.assertIsNotNone(state.color)
+                    normalise(state, light.caps)
+                swatches = effect.swatches(part.params)
+                self.assertTrue(1 <= len(swatches) <= 5)
+                self.assertTrue(all(HEX.match(s) for s in swatches), swatches)
 
-    def test_adaptive_presets_hold_their_day_brightness(self) -> None:
+    def test_adaptive_parts_hold_their_day_brightness(self) -> None:
         for item in self.raw:
             if item["category"] != "adaptive":
                 continue
             with self.subTest(item["id"]):
-                params = self.presets[item["id"]].layers[0].params
+                params = self.parts[item["id"]].params
                 self.assertEqual(params["brightness_mode"], "static")
                 self.assertEqual(params["brightness"], params["max_brightness"])
                 self.assertLess(params["min_brightness"], params["max_brightness"])
@@ -146,12 +124,12 @@ class PresetTest(unittest.TestCase):
             "dynamic": {"light_effect"},
             "adaptive": {"adaptive"},
         }
-        for scene in self.presets.values():
-            with self.subTest(scene.id):
-                self.assertIn(scene.layers[0].effect, effects[scene.category])
+        for part in self.parts.values():
+            with self.subTest(part.id):
+                self.assertIn(part.effect, effects[part.category])
 
     def test_palettes_validate(self) -> None:
-        palettes = palettes_from_presets(self.presets)
+        palettes = palettes_from_parts(self.parts)
         self.assertEqual(len(palettes), 35)
         selector = PaletteSelector({"min": 1, "max": 9})
         for palette in palettes:
