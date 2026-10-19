@@ -185,6 +185,23 @@ const nameProblem = (name: string, what: string): string | undefined => {
   return undefined;
 };
 
+const isReserved = (name: string): boolean => ["off", "manual"].includes(name.trim().toLowerCase());
+
+/** A part's name plays in the scene menu when the part is the switch-on default. */
+const partNameProblem = (part: Part): Problem | undefined => {
+  const named = nameProblem(part.name, "part");
+  if (named) return { part: part.id, message: named };
+  if (isReserved(part.name)) return { part: part.id, message: `"${part.name.trim()}" is reserved for the scene menu.` };
+  return undefined;
+};
+
+/** What the backend would reject of a part on its own; the part editor's Try and Save wait for none. */
+export const partProblems = (part: Part, effectOf: (key: string) => EffectInfo | undefined): Problem[] => {
+  const problems = [partNameProblem(part)].filter((p) => p !== undefined);
+  if (!effectOf(part.effect)) problems.push({ part: part.id, message: `The effect "${part.effect}" is not installed.` });
+  return problems;
+};
+
 /** What the backend would reject before it gets the chance; Try and Save wait for none. */
 export const sceneProblems = (
   draft: Draft,
@@ -195,7 +212,7 @@ export const sceneProblems = (
   const { scene } = draft;
   const named = nameProblem(scene.name, "scene");
   if (named) problems.push({ message: named });
-  else if (["off", "manual"].includes(scene.name.trim().toLowerCase())) {
+  else if (isReserved(scene.name)) {
     problems.push({ message: `"${scene.name.trim()}" is reserved for the scene menu.` });
   }
   const partOf = (id: string) => draft.parts.find((p) => p.id === id) ?? saved(id);
@@ -210,8 +227,8 @@ export const sceneProblems = (
     }
   });
   for (const part of draft.parts) {
-    const problem = nameProblem(part.name, "part");
-    if (problem) problems.push({ part: part.id, message: problem });
+    const problem = partNameProblem(part);
+    if (problem) problems.push(problem);
   }
   return problems;
 };

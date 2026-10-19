@@ -10,6 +10,7 @@ import type { HomeAssistant, PanelInfo, Route, Unsubscribe, Zone } from "../shar
 import { debounce, defineElement, errorMessage, navigate, type ConfirmRequest } from "../shared/util";
 import { renderEditorBar, type EditorTitle } from "./editor/ml-editor-bar";
 import {
+  type HomeTab,
   type Page,
   type TargetTab,
   editorPath,
@@ -23,6 +24,8 @@ import {
   targetPath,
 } from "./routes";
 import { type Draft, MlStore, type StoreHost } from "./store";
+
+const HOME_TABS: Record<HomeTab, string> = { rooms: "Rooms", parts: "Parts" };
 
 const TARGET_TABS: Record<TargetTab, string> = {
   scenes: "Scenes",
@@ -59,6 +62,9 @@ class MagicLightsPanel extends LitElement implements StoreHost {
   @state() private _zoneDialog?: ZoneDialogRequest;
 
   @state() private _editorTitle?: EditorTitle;
+
+  /** The Parts tab's search query; undefined while the field is closed. */
+  @state() private _partSearch?: string;
 
   private _unsubscribe?: Promise<Unsubscribe | undefined>;
 
@@ -172,7 +178,7 @@ class MagicLightsPanel extends LitElement implements StoreHost {
   private _renderBar(page: Page) {
     switch (page.name) {
       case "home":
-        return this._homeBar();
+        return this._homeBar(page);
       case "settings":
         return html`<div slot="title">Magic Lights settings</div>`;
       case "target":
@@ -180,6 +186,8 @@ class MagicLightsPanel extends LitElement implements StoreHost {
       case "editor":
       case "new_scene":
         return this._editorBar(page);
+      case "part":
+        return this._partBar(page);
       default:
         return html`<div slot="title">Magic Lights</div>`;
     }
@@ -199,31 +207,93 @@ class MagicLightsPanel extends LitElement implements StoreHost {
     }
     switch (page.name) {
       case "home":
-        return html`<ml-home .hass=${this.hass} .store=${store} .narrow=${this.narrow}></ml-home>`;
+        return this._homeBody(store, page);
       case "settings":
         return html`<ml-settings .hass=${this.hass} .store=${store} .narrow=${this.narrow}></ml-settings>`;
       case "target":
         return this._targetBody(store, page);
       case "editor":
         return this._editorBody(store, page);
+      case "part":
+        return html`<ml-part-editor
+          .hass=${this.hass}
+          .store=${store}
+          .partId=${page.partId}
+          .narrow=${this.narrow}
+        ></ml-part-editor>`;
       default:
         // A redirect or a new scene, resolved in updated().
         return this._spinner();
     }
   }
 
-  // ---- home
+  // ---- home: Rooms | Parts
 
-  private _homeBar() {
+  private _homeBar(page: PageOf<"home">) {
+    const tabs = html`<ha-tab-group
+      class="home-tabs"
+      slot=${this.narrow ? "subRow" : nothing}
+      @wa-tab-show=${(ev: CustomEvent<{ name: string }>) => {
+        const tab = ev.detail.name as HomeTab;
+        if (!tab || tab === page.tab) return;
+        this._partSearch = undefined;
+        replaceWith(homePath(tab));
+      }}
+    >
+      ${(Object.keys(HOME_TABS) as HomeTab[]).map(
+        (tab) =>
+          html`<ha-tab-group-tab slot="nav" panel=${tab} .active=${page.tab === tab}>
+            ${HOME_TABS[tab]}
+          </ha-tab-group-tab>`,
+      )}
+    </ha-tab-group>`;
+    const title = this.panel?.title ?? "Magic Lights";
     return html`
-      <div slot="title">${this.panel?.title ?? "Magic Lights"}</div>
-      <ha-icon-button slot="actionItems" .label=${"New zone"} @click=${() => (this._zoneDialog = {})}>
-        <ha-icon icon="mdi:plus"></ha-icon>
-      </ha-icon-button>
+      ${
+        this.narrow
+          ? html`<div slot="title">${title}</div>
+              ${tabs}`
+          : html`<div slot="title" class="title-with-tabs"><span class="title-text">${title}</span>${tabs}</div>`
+      }
+      ${
+        page.tab === "rooms"
+          ? html`<ha-icon-button slot="actionItems" .label=${"New zone"} @click=${() => (this._zoneDialog = {})}>
+              <ha-icon icon="mdi:plus"></ha-icon>
+            </ha-icon-button>`
+          : html`<ha-icon-button
+              slot="actionItems"
+              class="search-toggle"
+              .label=${"Search parts"}
+              aria-pressed=${this._partSearch === undefined ? "false" : "true"}
+              @click=${() => (this._partSearch = this._partSearch === undefined ? "" : undefined)}
+            >
+              <ha-icon icon="mdi:magnify"></ha-icon>
+            </ha-icon-button>`
+      }
       <ha-icon-button slot="actionItems" .label=${"Settings"} @click=${() => go(settingsPath())}>
         <ha-icon icon="mdi:cog"></ha-icon>
       </ha-icon-button>
     `;
+  }
+
+  private async _setPartSearch(value: string | undefined): Promise<void> {
+    this._partSearch = value;
+    if (value !== undefined) return;
+    // Closing the field with Escape would otherwise drop focus to the page.
+    await this.updateComplete;
+    this.renderRoot.querySelector<HTMLElement>(".search-toggle")?.focus();
+  }
+
+  private _homeBody(store: MlStore, page: PageOf<"home">) {
+    return page.tab === "parts"
+      ? html`<ml-parts
+          .hass=${this.hass}
+          .store=${store}
+          .narrow=${this.narrow}
+          .search=${this._partSearch}
+          @ml-search=${(ev: CustomEvent<{ value?: string }>) => this._setPartSearch(ev.detail.value)}
+        ></ml-parts>`
+      : html`<ml-home .hass=${this.hass} .store=${store} .narrow=${this.narrow}></ml-home>`;
   }
 
   // ---- room or zone
@@ -322,7 +392,7 @@ class MagicLightsPanel extends LitElement implements StoreHost {
     let bar: EditorTitle | undefined;
     if (page.name === "editor") {
       const { sceneId } = page;
-      if (this._editorTitle?.sceneId === sceneId) bar = this._editorTitle;
+      if (this._editorTitle?.id === sceneId) bar = this._editorTitle;
       else title = this._sceneName(page.targetId, sceneId) || "Scene";
     }
     return renderEditorBar(bar, title, this.narrow);
@@ -343,6 +413,13 @@ class MagicLightsPanel extends LitElement implements StoreHost {
       .sceneId=${page.sceneId}
       .narrow=${this.narrow}
     ></ml-scene-editor>`;
+  }
+
+  // ---- part editor
+
+  private _partBar(page: PageOf<"part">) {
+    const bar = this._editorTitle?.id === page.partId ? this._editorTitle : undefined;
+    return renderEditorBar(bar, this._store?.part(page.partId)?.name || "Part", this.narrow);
   }
 
   // ---- shared
@@ -393,7 +470,11 @@ class MagicLightsPanel extends LitElement implements StoreHost {
     >
       <p class="confirm-text">${confirm.text}</p>
       <ha-dialog-footer slot="footer">
-        <ha-button slot="secondaryAction" appearance="plain" data-dialog="close">Cancel</ha-button>
+        ${
+          confirm.notice
+            ? nothing
+            : html`<ha-button slot="secondaryAction" appearance="plain" data-dialog="close">Cancel</ha-button>`
+        }
         <ha-button
           slot="primaryAction"
           variant=${confirm.destructive ? "danger" : "brand"}
@@ -427,10 +508,28 @@ class MagicLightsPanel extends LitElement implements StoreHost {
       margin: 0 auto;
       padding: var(--ha-space-4) var(--ha-space-4) var(--ha-space-10);
     }
+    /* Wide: the home tabs sit in the bar, centred in the space the title leaves. */
+    .title-with-tabs {
+      display: flex;
+      align-items: center;
+      gap: var(--ha-space-6);
+      min-width: 0;
+    }
+    .title-text {
+      flex: none;
+    }
+    .title-with-tabs .home-tabs {
+      flex: 1;
+      display: flex;
+      justify-content: center;
+      font-size: var(--ha-font-size-m);
+      line-height: normal;
+    }
     .content.home {
       max-width: 1440px;
     }
-    .content.editor {
+    .content.editor,
+    .content.part {
       max-width: 1280px;
     }
     :host([narrow]) .content {

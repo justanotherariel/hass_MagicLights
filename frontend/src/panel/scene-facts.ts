@@ -1,11 +1,12 @@
-// What a part or scene looks like, in a line: the room page's tiles, the part picker and
-// the editor. The look is read from the effect's schema (form-rules), never from the
-// effect itself. Pure, tested without a DOM.
+// What a part or scene looks like, in a line, and where a part is used: the room page's
+// tiles, the part picker, the editor and the home Parts tab. The look is read from the
+// effect's schema (form-rules), never from the effect itself. Pure, tested without a DOM.
 
-import type { EffectInfo, Look, StoredScene } from "../shared/types";
+import type { EffectInfo, Look, PartInfo, SceneInfo, StoredScene } from "../shared/types";
 import { humanise, plural, withUnit } from "../shared/util";
 import { withDefaults } from "./editor/editor-model";
 import { formLayout } from "./editor/form-rules";
+import { groupParts, type MlStore, type PartGroupKey } from "./store";
 
 const span = (values: number[], unit: string): string => {
   const lo = Math.min(...values);
@@ -69,6 +70,61 @@ export const matchesQuery = (name: string, query: string): boolean => {
   const q = query.trim().toLowerCase();
   return !q || name.toLowerCase().includes(q);
 };
+
+// ---- the home Parts tab
+
+export interface PartEntry {
+  part: PartInfo;
+  /** The scenes of existing rooms that play it. */
+  uses: SceneInfo[];
+  /** What a light switched on in an idle room plays (settings). */
+  isDefault: boolean;
+}
+
+/** Every part once: the built-ins in catalogue order, then yours. */
+export const partEntries = (store: MlStore): PartEntry[] =>
+  store.parts().map((part) => ({
+    part,
+    uses: store.usesOf(part.id),
+    isDefault: store.config.settings.default_scene === part.id,
+  }));
+
+export interface PartFold {
+  key: PartGroupKey;
+  title: string;
+  entries: PartEntry[];
+}
+
+export interface PartSections {
+  yours: PartEntry[];
+  /** Built-ins a scene uses, that you edited, or the switch-on default. */
+  builtins: PartEntry[];
+  /** The rest of the catalogue, one fold per category. */
+  more: PartFold[];
+}
+
+export const partSections = (entries: readonly PartEntry[]): PartSections => {
+  const yours: PartEntry[] = [];
+  const builtins: PartEntry[] = [];
+  const rest: PartEntry[] = [];
+  for (const entry of entries) {
+    if (!entry.part.builtin) yours.push(entry);
+    else if (entry.uses.length || entry.part.edited || entry.isDefault) builtins.push(entry);
+    else rest.push(entry);
+  }
+  const more = groupParts(rest.map((e) => e.part)).map(({ key, title, parts }) => ({
+    key,
+    title,
+    entries: rest.filter((e) => parts.includes(e.part)),
+  }));
+  return { yours, builtins, more };
+};
+
+/** What keeps a part from being deleted: the scenes that play it and the switch-on default. */
+export const partHolders = (store: MlStore, partId: string): string[] => [
+  ...store.usesOf(partId).map((scene) => store.sceneLabel(scene)),
+  ...(store.config.settings.default_scene === partId ? ["the switch-on default"] : []),
+];
 
 /** A menu with `sceneId` moved `by` places, kept inside the list. */
 export const movedBy = (ids: readonly string[], sceneId: string, by: number): string[] => {

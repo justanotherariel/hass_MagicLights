@@ -35,6 +35,8 @@ export interface ConfirmParams {
   text: string;
   confirmText: string;
   destructive?: boolean;
+  /** Only tells: no Cancel, the one button closes it. */
+  notice?: boolean;
 }
 
 export interface ConfirmRequest extends ConfirmParams {

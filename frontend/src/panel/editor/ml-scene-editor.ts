@@ -34,6 +34,7 @@ import {
   withoutUnusedParts,
   type Problem,
 } from "./editor-model";
+import { draftRunning, PLAY_STEP, previewSpan, reducedMotion, secondsToday, TryQueue } from "./live";
 import type { EditorTitle } from "./ml-editor-bar";
 import { partsIn } from "./parts";
 import { dropWorkingCopy, keepWorkingCopy, openWorkingCopy, type WorkingCopy } from "./working-copy";
@@ -46,19 +47,8 @@ const STALE_NOTE: Record<NonNullable<WorkingCopy["stale"]>, string> = {
   saved: "The scene or its parts were saved elsewhere since; saving these changes replaces that.",
   deleted: "The scene was deleted since; saving these changes brings it back.",
 };
-const MOTION_PREVIEW = { duration: 60, samples: 120 };
-const DAY_PREVIEW = { duration: 86400, samples: 96 };
-/** How often a moving preview advances, in ms. */
-const PLAY_STEP = 500;
 
 type Busy = "save" | "try" | "delete";
-
-const reducedMotion = (): boolean => matchMedia("(prefers-reduced-motion: reduce)").matches;
-
-const secondsToday = (): number => {
-  const now = new Date();
-  return now.getHours() * 3600 + now.getMinutes() * 60 + now.getSeconds();
-};
 
 class MlSceneEditor extends LitElement {
   @property({ attribute: false }) hass!: HomeAssistant;
@@ -111,8 +101,7 @@ class MlSceneEditor extends LitElement {
   /** Saved, deleted or discarded: leaving needs no guard. */
   private _leaving = false;
 
-  /** try / try/stop calls in order, so a late Try never outlives Stop. */
-  private _tryQueue: Promise<unknown> = Promise.resolve();
+  private _tries = new TryQueue();
 
   /** A stop on leaving is on its way; the status may still show the draft. */
   private _stopping = false;
@@ -177,7 +166,7 @@ class MlSceneEditor extends LitElement {
     this._restored = copy.restored && this._dirty;
     this._stale = this._restored ? copy.stale : undefined;
     // A draft running here is this editor's from before a reload.
-    this._trying = !this._stopping && this._draftRunning(this.targetId);
+    this._trying = !this._stopping && draftRunning(this.store, this.hass, this.targetId);
     this._refreshPreview();
   }
 
@@ -194,7 +183,8 @@ class MlSceneEditor extends LitElement {
     if (!this._trying) return;
     this._trying = false;
     this._stopping = true;
-    this._queueTry(() => this.store.stopTry(room))
+    this._tries
+      .run(() => this.store.stopTry(room))
       .catch(() => undefined)
       .finally(() => (this._stopping = false));
   }
@@ -294,16 +284,9 @@ class MlSceneEditor extends LitElement {
     if (!draft || !room || this._problems.length) return;
     const seq = ++this._previewSeq;
     const day = this._isDay(draft);
-    const start = new Date();
-    start.setHours(0, 0, 0, 0);
     const { scene, parts } = this._payload(draft);
     try {
-      const frames = await this.store.preview({
-        target_id: room as TargetId,
-        scene,
-        parts,
-        ...(day ? { ...DAY_PREVIEW, start: start.toISOString() } : MOTION_PREVIEW),
-      });
+      const frames = await this.store.preview({ target_id: room as TargetId, scene, parts, ...previewSpan(day) });
       if (seq !== this._previewSeq) return;
       // A day opens at the time of day, motion at its start.
       if (day !== this._day || !this._frames) this._t = day ? secondsToday() : 0;
@@ -329,26 +312,14 @@ class MlSceneEditor extends LitElement {
     }
   }
 
-  private _queueTry(action: () => Promise<void>): Promise<void> {
-    const run = this._tryQueue.then(action);
-    this._tryQueue = run.catch(() => undefined);
-    return run;
-  }
-
   /** While trying, the room follows the edits. */
   private _refreshTry(): void {
     const room = this._open?.targetId;
     if (!room || !this._trying) return;
-    this._queueTry(async () => {
+    this._tries.run(async () => {
       if (!this._trying || !this._draft || this._problems.length) return;
       await this.store.tryScene(room, this._payload(this._draft));
     }).catch((err) => (this._error = `Could not update the lights: ${errorMessage(err)}`));
-  }
-
-  /** A draft of the editor's Try runs here: its status has no scene id (engine/status.py). */
-  private _draftRunning(targetId: string): boolean {
-    const attrs = this.store.status(this.hass, targetId)?.attrs;
-    return attrs?.status === "scene" && attrs.scene_id === null && attrs.via === null;
   }
 
   // ---- actions
@@ -360,7 +331,7 @@ class MlSceneEditor extends LitElement {
     this._busy = "try";
     this._error = undefined;
     try {
-      await this._queueTry(() => this.store.tryScene(room, this._payload(draft)));
+      await this._tries.run(() => this.store.tryScene(room, this._payload(draft)));
       this._trying = true;
     } catch (err) {
       this._error = `Could not try the scene: ${errorMessage(err)}`;
@@ -375,7 +346,7 @@ class MlSceneEditor extends LitElement {
     this._busy = "try";
     this._trying = false;
     try {
-      await this._queueTry(() => this.store.stopTry(room));
+      await this._tries.run(() => this.store.stopTry(room));
     } catch (err) {
       this._error = `Could not stop trying: ${errorMessage(err)}`;
     } finally {
@@ -412,7 +383,7 @@ class MlSceneEditor extends LitElement {
     try {
       if (this._trying) {
         this._trying = false;
-        await this._queueTry(() => this.store.stopTry(this.targetId));
+        await this._tries.run(() => this.store.stopTry(this.targetId));
       }
       await this.store.deleteScene(draft.scene.id);
     } catch (err) {
@@ -458,7 +429,7 @@ class MlSceneEditor extends LitElement {
     if (!draft || !target || !this._baseline) return undefined;
     const valid = this._problems.length === 0;
     return {
-      sceneId: this.sceneId,
+      id: this.sceneId,
       title: draft.scene.name.trim(),
       badge: this._stored ? target.name : `New scene · ${target.name}`,
       room: target.name,

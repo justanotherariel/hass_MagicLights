@@ -6,6 +6,7 @@ import {
   newScenePath,
   parentPath,
   parseRoute,
+  partPath,
   settingsPath,
   targetPath,
 } from "../src/panel/routes";
@@ -13,9 +14,14 @@ import {
 const strip = (p: string) => p.replace("/magic_lights", "");
 
 test("routes parse", () => {
-  assert.deepEqual(parseRoute(""), { name: "home" });
-  assert.deepEqual(parseRoute("/"), { name: "home" });
+  assert.deepEqual(parseRoute(""), { name: "home", tab: "rooms" });
+  assert.deepEqual(parseRoute("/"), { name: "home", tab: "rooms" });
+  assert.deepEqual(parseRoute("/parts"), { name: "home", tab: "parts" });
   assert.deepEqual(parseRoute("/settings"), { name: "settings" });
+  assert.deepEqual(parseRoute("/part/relax"), { name: "part", partId: "relax" });
+  assert.deepEqual(parseRoute("/part/p_0a1b2c3d"), { name: "part", partId: "p_0a1b2c3d" });
+  assert.deepEqual(parseRoute("/part"), { name: "not_found" });
+  assert.deepEqual(parseRoute("/part/relax/edit"), { name: "not_found" });
   assert.deepEqual(parseRoute("/t/room:living_room"), { name: "target", targetId: "room:living_room", tab: "scenes" });
   assert.deepEqual(parseRoute("/t/zone:downstairs/lights"), { name: "target", targetId: "zone:downstairs", tab: "lights" });
   assert.deepEqual(parseRoute("/t/room%3Akitchen/settings"), { name: "target", targetId: "room:kitchen", tab: "settings" });
@@ -36,16 +42,18 @@ test("routes parse", () => {
   assert.deepEqual(parseRoute("/t/room%E0%A4%A/settings"), { name: "not_found" }, "malformed escape");
 });
 
-test("links from when scenes were shared by rooms lead to the room or home", () => {
+test("links from when scenes were shared by rooms lead to the room, the parts or home", () => {
   assert.deepEqual(parseRoute("/scene/relax/in/room:kitchen"), { name: "redirect", path: "/magic_lights/t/room:kitchen" });
   assert.deepEqual(parseRoute("/scene/s_0a1b2c3d"), { name: "redirect", path: "/magic_lights" });
-  assert.deepEqual(parseRoute("/scenes"), { name: "redirect", path: "/magic_lights" });
+  assert.deepEqual(parseRoute("/scenes"), { name: "redirect", path: "/magic_lights/parts" });
   assert.deepEqual(parseRoute("/scene"), { name: "not_found" });
   assert.deepEqual(parseRoute("/scene/relax/at/room:kitchen"), { name: "not_found" });
 });
 
 test("paths round-trip", () => {
-  assert.deepEqual(parseRoute(strip(homePath())), { name: "home" });
+  assert.deepEqual(parseRoute(strip(homePath())), { name: "home", tab: "rooms" });
+  assert.deepEqual(parseRoute(strip(homePath("parts"))), { name: "home", tab: "parts" });
+  assert.deepEqual(parseRoute(strip(partPath("savanna_sunset"))), { name: "part", partId: "savanna_sunset" });
   assert.deepEqual(parseRoute(strip(targetPath("room:a"))), { name: "target", targetId: "room:a", tab: "scenes" });
   assert.deepEqual(parseRoute(strip(targetPath("room:a", "lights"))), { name: "target", targetId: "room:a", tab: "lights" });
   assert.deepEqual(parseRoute(strip(editorPath("zone:z", "s_00000001"))), {
@@ -59,8 +67,10 @@ test("paths round-trip", () => {
   assert.equal(settingsPath(), "/magic_lights/settings");
 });
 
-test("back from the editor leads to its room", () => {
-  assert.equal(parentPath({ name: "home" }), undefined);
+test("back from the editor leads to its room, from the part editor to the parts", () => {
+  assert.equal(parentPath({ name: "home", tab: "rooms" }), undefined);
+  assert.equal(parentPath({ name: "home", tab: "parts" }), undefined);
+  assert.equal(parentPath({ name: "part", partId: "relax" }), "/magic_lights/parts");
   assert.equal(parentPath({ name: "settings" }), "/magic_lights");
   assert.equal(parentPath({ name: "target", targetId: "room:a", tab: "lights" }), "/magic_lights");
   assert.equal(parentPath({ name: "editor", targetId: "room:a", sceneId: "s_00000001" }), "/magic_lights/t/room:a");

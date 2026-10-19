@@ -1,22 +1,23 @@
-// The editor's part of the panel's top bar: the scene's name with its room, and Try /
-// Save. The editor describes them in an ml-editor-title event; the panel renders them
-// with renderEditorBar into the bar's slots.
+// An editor's part of the panel's top bar: the scene's or part's name with a badge, and
+// Try / Save. The editor describes them in an ml-editor-title event; the panel renders
+// them with renderEditorBar into the bar's slots.
 
 import { LitElement, css, html, nothing } from "lit";
 import { property } from "lit/decorators.js";
 import { defineElement } from "../../shared/util";
 
 export interface EditorTitle {
-  sceneId: string;
+  /** The scene or part being edited. */
+  id: string;
   title: string;
-  /** "Living Room", "New scene · Living Room". */
+  /** "Living Room", "New scene · Living Room", "Built-in". */
   badge: string;
-  /** The scene's room, where Try runs. */
+  /** Where Try runs. */
   room: string;
   trying: boolean;
   canTry: boolean;
   canSave: boolean;
-  busy?: "save" | "try" | "delete";
+  busy?: "save" | "try" | "delete" | "reset";
   onTry(): void;
   onStopTry(): void;
   onSave(): void;

@@ -1,8 +1,9 @@
-// The editor's working copy: a draft in sessionStorage under the scene id, kept next to
-// its base, the draft as it was first opened plus each edited part as it was saved when
-// its edit began. After a reload the edits are measured against that, so a scene that was
-// never saved still knows it has unsaved changes, and a draft whose scene or parts were
-// saved or deleted elsewhere since says so.
+// The editors' working copies. The scene editor's: a draft in sessionStorage under the
+// scene id, kept next to its base, the draft as it was first opened plus each edited part
+// as it was saved when its edit began. After a reload the edits are measured against that,
+// so a scene that was never saved still knows it has unsaved changes, and a draft whose
+// scene or parts were saved or deleted elsewhere since says so. The part editor's works
+// the same way for one part.
 
 import type { Part, StoredScene } from "../../shared/types";
 import { type Draft, type MlStore, toStoredPart, toStoredScene } from "../store";
@@ -101,3 +102,57 @@ export const dropWorkingCopy = (store: MlStore, sceneId: string): void => {
   store.setDraft(sceneId, undefined);
   store.setDraft(baseKey(sceneId), undefined);
 };
+
+// ---- the part editor's working copy, under the part id
+
+interface StoredPartCopy {
+  draft: Part;
+  /** The part as it was saved when the draft began; null for one made by Copy. */
+  base: Part | null;
+}
+
+export interface PartCopy {
+  draft: Part;
+  /** What the edits are measured against: the part as saved now, null while it is new. */
+  saved: Part | null;
+  restored: boolean;
+  stale?: DraftStale;
+}
+
+const savedPart = (store: MlStore, partId: string): Part | null => {
+  const part = store.part(partId);
+  return part ? toStoredPart(part) : null;
+};
+
+/** What happened to the saved part since the draft began. */
+export const partStale = (base: Part | null, saved: Part | null): DraftStale | undefined => {
+  if (stableJson(base) === stableJson(saved)) return undefined;
+  return saved ? "saved" : "deleted";
+};
+
+/** The draft of a part: the stored one (an earlier visit, or a Copy), else the saved part. */
+export const openPartCopy = (store: MlStore, partId: string): PartCopy | undefined => {
+  const stored = store.partDraft<StoredPartCopy>(partId);
+  const restored = stored?.draft?.id === partId ? stored : undefined;
+  const saved = savedPart(store, partId);
+  if (restored) return { draft: restored.draft, saved, restored: true, stale: partStale(restored.base, saved) };
+  if (!saved) return undefined;
+  store.setPartDraft(partId, { draft: saved, base: saved } satisfies StoredPartCopy);
+  return { draft: saved, saved, restored: false };
+};
+
+/** A working copy that starts at `part`, measured against `base` (null: a part Copy made). */
+export const startPartCopy = (store: MlStore, part: Part, base: Part | null = null): void =>
+  store.setPartDraft(part.id, { draft: part, base } satisfies StoredPartCopy);
+
+export const keepPartCopy = (store: MlStore, draft: Part): void => {
+  const stored = store.partDraft<StoredPartCopy>(draft.id);
+  const base = stored?.draft ? stored.base : savedPart(store, draft.id);
+  store.setPartDraft(draft.id, { draft, base } satisfies StoredPartCopy);
+};
+
+export const dropPartCopy = (store: MlStore, partId: string): void => store.setPartDraft(partId, undefined);
+
+/** Whether the part differs from how it is saved; a new one always does. */
+export const isPartDirty = (draft: Part, saved: Part | null): boolean =>
+  !saved || stableJson(toStoredPart(draft)) !== stableJson(saved);

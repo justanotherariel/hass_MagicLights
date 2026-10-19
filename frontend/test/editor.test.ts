@@ -290,8 +290,9 @@ test("a part edit is pending for every scene that uses it; Copy forks it for thi
 test("Used by counts this scene first, saved or new to the part", async () => {
   const store = await MlStore.load({ hass: fakeHass(), storeChanged: () => undefined });
   const ids = (users: ReturnType<typeof partUsers>) => users.map((s) => s?.id);
-  assert.deepEqual(ids(partUsers(store.usesOf("relax"), "s_00000004")), ["s_00000004", "s_00000001"]);
-  assert.deepEqual(ids(partUsers(store.usesOf("relax"), "s_0000beef")), [undefined, "s_00000001", "s_00000004"]);
+  // The kitchen's Relax comes first among the users; the living room's is this scene.
+  assert.deepEqual(ids(partUsers(store.usesOf("relax"), "s_00000001")), ["s_00000001", "s_00000004"]);
+  assert.deepEqual(ids(partUsers(store.usesOf("relax"), "s_0000beef")), [undefined, "s_00000004", "s_00000001"]);
   assert.deepEqual(ids(partUsers(store.usesOf("p_00000001"), "s_00000002")), ["s_00000002"], "only this scene");
 });
 

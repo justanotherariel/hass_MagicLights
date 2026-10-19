@@ -83,6 +83,8 @@ The **built-in parts** cover whites, 35 colour palettes, two candle looks and th
 
 A built-in part can be **edited** for every scene that uses it. It keeps its name and id, so automations keep working, and shows as **Edited**, with the changed settings marked. **Reset** brings its own look back; saving it unchanged does the same. The editor previews the scene and can **Try** it on the room; **Stop trying** brings back what ran before.
 
+The home screen's **Parts** tab lists every part: yours first, then the built-ins a scene uses, that you edited or that lights switch on to, and the rest folded by kind. Each part shows the scenes that use it ("Living Room · Hell"); tap one to open that scene. Opening a part edits it outside any scene: preview it in any room, **Try** it there on all lights, **Copy** it, or **Delete** a part of yours once no scene uses it (scenes of rooms that are gone go with it). An edited built-in offers **Reset to built-in** instead.
+
 ### Manual lights and overrides
 
 A light in a running scene becomes **manual** when you take over:

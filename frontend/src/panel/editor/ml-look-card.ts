@@ -2,10 +2,12 @@
 // uses it. Its name (a built-in keeps its own), what its lights do (the effect) and the
 // effect's form; for an effect of the adaptive category the form carries the day curve.
 // Copy forks the part for this scene. Edits go up as ml-part-edit, Copy as ml-part-copy.
+// The part editor shows it `standalone`: its own footer copies and resets a saved edit, and
+// lists the scenes that use the part.
 
 import { LitElement, css, html, nothing, type PropertyValues } from "lit";
 import { property, state } from "lit/decorators.js";
-import type { EffectInfo, HomeAssistant, Part, PartInfo, PreviewFrame } from "../../shared/types";
+import type { EffectInfo, HomeAssistant, Look, Part, PartInfo, PreviewFrame } from "../../shared/types";
 import { defineElement, fire, plural } from "../../shared/util";
 import "../components/ml-swatch";
 import type { MlStore } from "../store";
@@ -35,6 +37,9 @@ class MlLookCard extends LitElement {
 
   @property({ type: Boolean, reflect: true }) narrow = false;
 
+  /** In the part editor, outside any scene. */
+  @property({ type: Boolean }) standalone = false;
+
   @state() private _naming = false;
 
   /** Params a part had under an effect it was switched away from, by "part:effect". */
@@ -42,6 +47,8 @@ class MlLookCard extends LitElement {
 
   /** Opens the name for typing, its text selected: after Copy. */
   async focusName(): Promise<void> {
+    // A pending switch to another part would close the field again.
+    await this.updateComplete;
     this._naming = true;
     await this.updateComplete;
     const input = this.renderRoot.querySelector<HTMLElement & { select(): void; updateComplete: Promise<unknown> }>(
@@ -71,13 +78,17 @@ class MlLookCard extends LitElement {
       <div class="card-content">
         <div class="head">
           ${this._renderIdentity(effect)}
-          <ha-button appearance="outlined" size="s" @click=${() => fire(this, "ml-part-copy")}>
-            <ha-icon slot="start" icon="mdi:content-copy"></ha-icon>
-            Copy
-          </ha-button>
+          ${
+            this.standalone
+              ? nothing
+              : html`<ha-button appearance="outlined" size="s" @click=${() => fire(this, "ml-part-copy")}>
+                  <ha-icon slot="start" icon="mdi:content-copy"></ha-icon>
+                  Copy
+                </ha-button>`
+          }
         </div>
         ${this.problems.map((p) => html`<p class="problem">${p.message}</p>`)}
-        ${this._renderUsers()}
+        ${this.standalone ? nothing : this._renderUsers()}
         <div class="field">
           <span class="label">
             What the lights do
@@ -146,10 +157,12 @@ class MlLookCard extends LitElement {
     </div>`;
   }
 
-  /** "Part", "New part", or "Built-in" with "Edited · Reset". */
+  /** "Part", "New part", or "Built-in" with "Edited · Reset"; the part editor's footer resets a saved edit. */
   private _renderKind() {
     const info = this._info;
-    if (!info) return html`<span class="hint">New part · saved with the scene</span>`;
+    if (!info) {
+      return html`<span class="hint">New part · saved with ${this.standalone ? "Save" : "the scene"}</span>`;
+    }
     if (!info.builtin) return html`<span class="hint">Part</span>`;
     const original = info.original;
     const effect = this.store.effect(this.draftPart.effect);
@@ -159,17 +172,18 @@ class MlLookCard extends LitElement {
       ${
         edited && original
           ? html`<span class="chip edited">Edited</span>
-              <ha-button
-                appearance="plain"
-                size="s"
-                @click=${() => this._edit({ ...this.draftPart, effect: original.effect, params: structuredClone(original.params) })}
-              >
-                <ha-icon slot="start" icon="mdi:restore"></ha-icon>
-                Reset
-              </ha-button>`
+              ${this.standalone && info.edited ? nothing : this._renderReset(original)}`
           : nothing
       }
     </span>`;
+  }
+
+  private _renderReset(original: Look) {
+    const reset = () => this._edit({ ...this.draftPart, effect: original.effect, params: structuredClone(original.params) });
+    return html`<ha-button appearance="plain" size="s" @click=${reset}>
+      <ha-icon slot="start" icon="mdi:restore"></ha-icon>
+      Reset
+    </ha-button>`;
   }
 
   /** "Used by 7 scenes — changes apply to all", the scenes folded under it. */
@@ -187,7 +201,7 @@ class MlLookCard extends LitElement {
         <span><b>Used by ${plural(users.length, "scene")}</b> — changes apply to all</span>
       </span>
       <ul class="users">
-        ${users.map((scene) => html`<li>${scene && scene.id !== this.sceneId ? this.store.sceneLabel(scene) : "This scene"}</li>`)}
+        ${users.map((scene) => html`<li>${scene && scene.id !== this.sceneId ? this.store.useLabel(scene) : "This scene"}</li>`)}
       </ul>
     </ha-expansion-panel>`;
   }

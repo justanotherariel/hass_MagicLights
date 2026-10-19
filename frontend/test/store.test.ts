@@ -25,10 +25,16 @@ test("a room's scenes are its own, in menu order, lightless ones included", asyn
   assert.equal(store.scene("s_00000003")?.fits, false);
 });
 
-test("a part's uses are the scenes of existing rooms", async () => {
+test("a part's uses are the scenes of existing rooms, rooms by name, then zones", async () => {
   const { store } = await load();
-  assert.deepEqual(store.usesOf("relax").map((s) => store.sceneLabel(s)), ["Living room · Relax", "Kitchen · Relax"]);
+  assert.deepEqual(store.usesOf("relax").map((s) => store.sceneLabel(s)), ["Kitchen · Relax", "Living room · Relax"]);
+  assert.deepEqual(store.usesOf("savanna_sunset").map((s) => store.sceneLabel(s)), [
+    "Kitchen · Savanna sunset",
+    "Downstairs · Savanna sunset",
+  ]);
   assert.deepEqual(store.usesOf("p_00000002").map((s) => s.id), ["s_00000003"], "not the dormant one");
+  assert.deepEqual(store.dormantUsesOf("p_00000002").map((s) => s.id), ["s_0000000a"]);
+  assert.deepEqual(store.dormantUsesOf("relax"), []);
   assert.equal(store.sceneLabel(store.scene("s_0000000a")!), "Unknown room · Nachtlicht");
   assert.deepEqual(store.usesOf("nope"), []);
 });

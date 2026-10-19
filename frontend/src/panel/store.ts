@@ -76,6 +76,7 @@ export interface SelectOption {
 const RESERVED = new Set(["off", "manual"]);
 
 const DRAFT_PREFIX = "magic_lights.draft.";
+const PART_DRAFT_PREFIX = "magic_lights.part-draft.";
 
 /** A new scene's icon when its part has none: your parts carry no icon. */
 export const SCENE_ICON = "mdi:palette-outline";
@@ -85,6 +86,24 @@ const storage = (): Storage | undefined => {
     return window.sessionStorage;
   } catch {
     return undefined;
+  }
+};
+
+const readItem = <T>(item: string): T | undefined => {
+  try {
+    const raw = storage()?.getItem(item);
+    return raw ? (JSON.parse(raw) as T) : undefined;
+  } catch {
+    return undefined;
+  }
+};
+
+const writeItem = (item: string, value: object | undefined): void => {
+  try {
+    if (value) storage()?.setItem(item, JSON.stringify(value));
+    else storage()?.removeItem(item);
+  } catch {
+    // Storage full or blocked: the draft lives only in the editor.
   }
 };
 
@@ -203,9 +222,15 @@ export class MlStore {
     return (this._targets.get(targetId)?.scenes ?? []).flatMap((id) => this._scenes.get(id) ?? []);
   }
 
-  /** The scenes of existing targets that use a part. */
+  /** The scenes of existing targets that use a part, rooms by name, then zones, each in menu order. */
   usesOf(partId: string): SceneInfo[] {
-    return (this._parts.get(partId)?.used_by ?? []).flatMap((id) => this._scenes.get(id) ?? []);
+    const used = new Set(this._parts.get(partId)?.used_by);
+    return this.targets.flatMap((target) => this.scenesOf(target.id).filter((scene) => used.has(scene.id)));
+  }
+
+  /** The scenes of targets that are gone that use a part. */
+  dormantUsesOf(partId: string): SceneInfo[] {
+    return (this._parts.get(partId)?.dormant ?? []).flatMap((id) => this._scenes.get(id) ?? []);
   }
 
   /** The target's scene of the whole room playing the part, if it has one. */
@@ -253,6 +278,11 @@ export class MlStore {
   /** "Living Room · Hell" for a scene, "Unknown room · Hell" once its target is gone. */
   sceneLabel(scene: SceneInfo): string {
     return `${scene.dormant ? "Unknown room" : this.targetName(scene.target)} · ${scene.name}`;
+  }
+
+  /** A scene that plays a part: its label, flagged when it has no lights in its room. */
+  useLabel(scene: SceneInfo): string {
+    return scene.fits ? this.sceneLabel(scene) : `${this.sceneLabel(scene)} · needs set-up`;
   }
 
   status(hass: HomeAssistant, targetId: string): TargetStatusView | undefined {
@@ -323,26 +353,24 @@ export class MlStore {
     };
   }
 
-  // ---- editor drafts (sessionStorage, keyed by scene; editor/working-copy.ts keeps
-  // the draft's base next to it)
+  // ---- editor drafts (sessionStorage, keyed by scene or part; editor/working-copy.ts
+  // keeps each draft's base next to it)
 
   draft<T = Draft>(key: string): T | undefined {
-    try {
-      const raw = storage()?.getItem(`${DRAFT_PREFIX}${key}`);
-      return raw ? (JSON.parse(raw) as T) : undefined;
-    } catch {
-      return undefined;
-    }
+    return readItem<T>(`${DRAFT_PREFIX}${key}`);
   }
 
   setDraft(key: string, value: object | undefined): void {
-    const item = `${DRAFT_PREFIX}${key}`;
-    try {
-      if (value) storage()?.setItem(item, JSON.stringify(value));
-      else storage()?.removeItem(item);
-    } catch {
-      // Storage full or blocked: the draft lives only in the editor.
-    }
+    writeItem(`${DRAFT_PREFIX}${key}`, value);
+  }
+
+  /** The part editor's draft of a part (editor/working-copy.ts). */
+  partDraft<T>(partId: string): T | undefined {
+    return readItem<T>(`${PART_DRAFT_PREFIX}${partId}`);
+  }
+
+  setPartDraft(partId: string, value: object | undefined): void {
+    writeItem(`${PART_DRAFT_PREFIX}${partId}`, value);
   }
 
   // ---- config writes (each refreshes the store)
