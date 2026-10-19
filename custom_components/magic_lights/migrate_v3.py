@@ -51,7 +51,7 @@ def migrate(
     data = copy.deepcopy(dict(data))
     zones: Mapping[str, Raw] = data.get("zones") or {}
     targets: Mapping[str, Raw] = data.get("targets") or {}
-    lights = _target_lights(zones, targets, areas)
+    lights = target_lights(zones, targets, areas)
     scenes: dict[str, Raw] = {}
     gone: set[str] = set()
     for scene_id, scene in (data.get("scenes") or {}).items():
@@ -109,12 +109,16 @@ def _scope_refs(scope: Sequence[str], zones: Mapping[str, Raw]) -> list[str]:
     return list(dict.fromkeys(refs))
 
 
-def _target_lights(
+def target_lights(
     zones: Mapping[str, Raw],
     targets: Mapping[str, Raw],
     areas: Mapping[str, Collection[str]],
 ) -> dict[str, set[str]]:
-    """Every light each target may have held in v2."""
+    """Every light each target may hold: a room's area lights and extras, a zone's.
+
+    Unlike LightIndex, a light HA no longer knows still counts, and options
+    alone make a room.
+    """
     room_ids = {
         *areas,
         *(t.removeprefix("room:") for t in targets if t.startswith("room:")),
@@ -277,7 +281,8 @@ def _mergeable(members: Sequence[Raw], targets: Mapping[str, Raw]) -> bool:
     )
 
 
-def _key(layer: Raw, effects: EffectLookup) -> tuple[str, Any]:
+def layer_key(layer: Raw, effects: EffectLookup) -> tuple[str, Any]:
+    """Return a layer's look: its effect and params, defaults filled if known."""
     params = layer.get("params") or {}
     if (effect := effects.get(layer["effect"])) is not None:
         params = effect.validate(params)
@@ -304,7 +309,7 @@ def _merge_layers(members: Sequence[Raw], effects: EffectLookup) -> list[Raw]:
     layers yet; otherwise it is appended.
     """
     # The most shared first layer comes first; sorted() keeps stored order on ties.
-    firsts = [_key(m["layers"][0], effects) for m in members]
+    firsts = [layer_key(m["layers"][0], effects) for m in members]
     ordered = [
         members[i]
         for i in sorted(range(len(members)), key=lambda i: -firsts.count(firsts[i]))
@@ -313,7 +318,7 @@ def _merge_layers(members: Sequence[Raw], effects: EffectLookup) -> list[Raw]:
     for member in ordered:
         placed: list[tuple[int, Raw]] = []
         for layer in member["layers"]:
-            key = _key(layer, effects)
+            key = layer_key(layer, effects)
             floor = max(
                 (
                     pos
